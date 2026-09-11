@@ -33,6 +33,8 @@ import com.ted.shouhuan.ui.device.PairingScreen
 import com.ted.shouhuan.ui.heart.HeartRateScreen
 import com.ted.shouhuan.ui.heart.HeartRateViewModel
 import com.ted.shouhuan.ui.home.HomeScreen
+import com.ted.shouhuan.ui.market.MarketScreen
+import com.ted.shouhuan.ui.market.MarketViewModel
 import com.ted.shouhuan.ui.notify.NotifyScreen
 import com.ted.shouhuan.ui.sleep.SleepScreen
 import com.ted.shouhuan.ui.watchface.WatchFaceScreen
@@ -62,6 +64,9 @@ fun AppRoot() {
     // 表盘页单独一条会话：它是一次性的「连上 → 传完 → 断开」，
     // 跟心率那条长连接混在一起只会互相干扰。
     val watchFaceVm: WatchFaceViewModel = viewModel()
+
+    // 市场页：目录拉取和下载进度不该随着页面推入/弹出被销毁重建。
+    val marketVm: MarketViewModel = viewModel()
 
     // 设备页的状态提到这里：配对页和设备页要共用同一份配对信息，
     // 在配对页存完回到设备页，那页已经是新数据了，不需要手动刷新。
@@ -109,7 +114,16 @@ fun AppRoot() {
             composable("heart") { HeartRateScreen(heartVm) }
             composable("sleep") { SleepScreen() }
             composable("notify") { NotifyScreen() }
-            composable("watchface") { WatchFaceScreen(watchFaceVm) }
+            composable("watchface") {
+                WatchFaceScreen(
+                    vm = watchFaceVm,
+                    onOpenMarket = { nav.navigate("market") { launchSingleTop = true } },
+                )
+            }
+            // 市场页不是 tab，从表盘页推上来（和配对页同一个模式）。
+            composable("market") {
+                MarketScreen(marketVm, onBack = { nav.popBackStack() })
+            }
             composable("device") {
                 DeviceScreen(deviceVm, onPair = { nav.navigate("pairing") { launchSingleTop = true } })
             }

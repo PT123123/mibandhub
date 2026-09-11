@@ -1,0 +1,102 @@
+{
+  "version": 1,
+  "updated": "2026-09-12",
+  "faces": [
+    {
+      "id": "mk01",
+      "name": "冰蓝数码",
+      "author": "shouhuan 自制",
+      "source": "本仓库用 watchface-js 生成",
+      "license": "CC0-1.0",
+      "file": "faces/mk01.bin",
+      "preview": "previews/mk01.png",
+      "sizeBytes": 395147,
+      "crc32": "d2eda6cd",
+      "note": "时间 / 日期 / 步数 / 电量"
+    },
+    {
+      "id": "mk02",
+      "name": "玫红数码",
+      "author": "shouhuan 自制",
+      "source": "本仓库用 watchface-js 生成",
+      "license": "CC0-1.0",
+      "file": "faces/mk02.bin",
+      "preview": "previews/mk02.png",
+      "sizeBytes": 395147,
+      "crc32": "b57532eb",
+      "note": "时间 / 日期 / 步数 / 电量"
+    },
+    {
+      "id": "mk03",
+      "name": "橙阳数码",
+      "author": "shouhuan 自制",
+      "source": "本仓库用 watchface-js 生成",
+      "license": "CC0-1.0",
+      "file": "faces/mk03.bin",
+      "preview": "previews/mk03.png",
+      "sizeBytes": 395147,
+      "crc32": "bd2f2e2c",
+      "note": "时间 / 日期 / 步数 / 电量"
+    },
+    {
+      "id": "mk04",
+      "name": "森绿数码",
+      "author": "shouhuan 自制",
+      "source": "本仓库用 watchface-js 生成",
+      "license": "CC0-1.0",
+      "file": "faces/mk04.bin",
+      "preview": "previews/mk04.png",
+      "sizeBytes": 395147,
+      "crc32": "eebcf317",
+      "note": "时间 / 日期 / 步数 / 电量"
+    },
+    {
+      "id": "mk05",
+      "name": "青瓷终端",
+      "author": "shouhuan 自制",
+      "source": "本仓库用 watchface-js 生成",
+      "license": "CC0-1.0",
+      "file": "faces/mk05.bin",
+      "preview": "previews/mk05.png",
+      "sizeBytes": 377200,
+      "crc32": "8134593a",
+      "note": "时间 / 日期 / 星期 / 步数 / 电量"
+    },
+    {
+      "id": "mk06",
+      "name": "石墨终端",
+      "author": "shouhuan 自制",
+      "source": "本仓库用 watchface-js 生成",
+      "license": "CC0-1.0",
+      "file": "faces/mk06.bin",
+      "preview": "previews/mk06.png",
+      "sizeBytes": 377200,
+      "crc32": "53c39d3a",
+      "note": "时间 / 日期 / 星期 / 步数 / 电量"
+    },
+    {
+      "id": "mk07",
+      "name": "樱粉终端",
+      "author": "shouhuan 自制",
+      "source": "本仓库用 watchface-js 生成",
+      "license": "CC0-1.0",
+      "file": "faces/mk07.bin",
+      "preview": "previews/mk07.png",
+      "sizeBytes": 377200,
+      "crc32": "f8425957",
+      "note": "时间 / 日期 / 星期 / 步数 / 电量"
+    },
+    {
+      "id": "mk08",
+      "name": "葡紫终端",
+      "author": "shouhuan 自制",
+      "source": "本仓库用 watchface-js 生成",
+      "license": "CC0-1.0",
+      "file": "faces/mk08.bin",
+      "preview": "previews/mk08.png",
+      "sizeBytes": 377200,
+      "crc32": "a3fef21c",
+      "note": "时间 / 日期 / 星期 / 步数 / 电量"
+    }
+  ]
+}
