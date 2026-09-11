@@ -12,6 +12,7 @@
 #   just build apk          只编译 APK
 #   just build tools        只做 Python 那套
 #   just install            自动判断装什么（adb 设备 → APK；Termux → 小部件；否则 → 命令行入口）
+#   just install phone      编译并装到「手机」—— 多台 adb 设备（手机+平板）里认出手机那台
 #   just install apk        编译并装到手机
 #   just install cli        装 xiaomi-authkey / parse-log 命令行入口
 #   just install termux     装 Termux 桌面小部件
@@ -125,96 +126,28 @@ build target="all":
 
 
 #   just install                自动判断
+#   just install phone          装到「手机」：多台 adb 设备里按 ro.build.characteristics 挑 phone 那台
 #   just install apk [serial]   装到手机
 #   just install cli [目录]     装命令行入口（默认 ~/.local/bin）
 #   just install termux         装 Termux 桌面小部件
 #   just install /some/dir      等价于 install cli /some/dir
 #   DRY_RUN=1 just install      只打印计划，不真的装
-# 安装到该装的地方：没给目标就自动判断
+#   just install                自动判断
+#   just install phone          装到「手机」：多台 adb 设备里认出手机那台（跳过平板）
+#   just install apk [serial]   装到手机
+#   just install cli [目录]     装命令行入口（默认 ~/.local/bin）
+#   just install termux         装 Termux 桌面小部件
+#   just install /some/dir      等价于 install cli /some/dir
+#   DRY_RUN=1 just install      只打印计划，不真的装
+#
+# 实现体在 tools/just_install.sh —— 刻意用「不带 shebang 的单行薄包装」
+#（fetch、setup-phone 同款模式）：Windows 上 just 执行 shebang 配方要把
+# 临时脚本路径（…\Temp\just-XXXX\install）拼进命令字符串，个别终端环境会把
+# C:\Users\... 的反斜杠当转义吃掉，bash 打不开脚本直接 127。
+#
+# 安装到该装的地方：没给目标就自动判断。
 install target="auto" extra="":
-    #!/usr/bin/env bash
-    set -euo pipefail
-    cd "{{root}}"
-
-    [ -f xiaomi_authkey.py ] || { echo "错误：不在项目根目录（{{root}}）"; exit 1; }
-
-    mode="{{target}}"
-    extra="{{extra}}"
-
-    # DRY_RUN=1 时只打印，不真的动手机/家目录
-    dry() {
-      if [ "${DRY_RUN:-0}" = "1" ]; then
-        echo "    [dry-run] $*"
-      else
-        "$@"
-      fi
-    }
-
-    # 位置参数直接给路径（just install /some/dir）时当成 cli 的目标目录
-    case "$mode" in
-      /*|./*|../*|~*) extra="$mode"; mode="cli" ;;
-    esac
-
-    # ---------------- 自动判断 ----------------
-    if [ "$mode" = "auto" ]; then
-      mode=""
-      if command -v adb >/dev/null 2>&1; then
-        # adb devices 在 Windows 上输出带 \r，不先剥掉的话 $2 恒不等于 "device"
-        serial="$(adb devices 2>/dev/null | tr -d '\r' | awk 'NR>1 && $2=="device" {print $1; exit}' || true)"
-        if [ -n "${serial:-}" ]; then
-          echo "自动判断：检测到 adb 设备 $serial → 安装 APK"
-          mode="apk"; extra="$serial"
-        fi
-      fi
-      if [ -z "$mode" ]; then
-        case "${PREFIX:-}" in
-          *com.termux*)
-            echo "自动判断：检测到 Termux → 安装桌面小部件"
-            mode="termux"
-            ;;
-          *)
-            echo "自动判断：没有 adb 设备、也不在 Termux → 安装命令行入口到 ~/.local/bin"
-            mode="cli"
-            ;;
-        esac
-      fi
-    fi
-
-    case "$mode" in
-      apk|android|app)
-        if [ "${DRY_RUN:-0}" = "1" ]; then
-          echo
-          echo "    [dry-run] bash tools/gradle.sh assembleDebug"
-          echo "    [dry-run] bash tools/android_install.sh <debug apk> ${extra:-(唯一连接的设备)}"
-          exit 0
-        fi
-        echo
-        echo "==> 编译 APK"
-        bash tools/gradle.sh assembleDebug
-        apkfile="$(ls app/build/outputs/apk/debug/*.apk 2>/dev/null | head -1 || true)"
-        [ -n "$apkfile" ] || { echo "错误：没找到 debug APK 产物" >&2; exit 1; }
-        echo
-        echo "==> 装到手机"
-        bash tools/android_install.sh "$apkfile" "$extra"
-        ;;
-
-      termux)
-        [ -f termux/install.sh ] || { echo "错误：找不到 termux/install.sh" >&2; exit 1; }
-        echo
-        dry bash termux/install.sh
-        ;;
-
-      cli|"")
-        echo
-        dry bash tools/install_cli.sh "$extra"
-        ;;
-
-      *)
-        echo "未知安装目标：$mode" >&2
-        echo "可用：auto（默认）/ apk [serial] / cli [目录] / termux，或者直接给一个目录" >&2
-        exit 2
-        ;;
-    esac
+    bash tools/just_install.sh "{{target}}" "{{extra}}"
 
 
 #   just clean          只清 Python 侧
