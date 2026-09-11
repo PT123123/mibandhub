@@ -28,6 +28,8 @@ import androidx.navigation.compose.composable
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import com.ted.shouhuan.ui.device.DeviceScreen
+import com.ted.shouhuan.ui.device.DeviceViewModel
+import com.ted.shouhuan.ui.device.PairingScreen
 import com.ted.shouhuan.ui.heart.HeartRateScreen
 import com.ted.shouhuan.ui.heart.HeartRateViewModel
 import com.ted.shouhuan.ui.home.HomeScreen
@@ -60,6 +62,10 @@ fun AppRoot() {
     // 表盘页单独一条会话：它是一次性的「连上 → 传完 → 断开」，
     // 跟心率那条长连接混在一起只会互相干扰。
     val watchFaceVm: WatchFaceViewModel = viewModel()
+
+    // 设备页的状态提到这里：配对页和设备页要共用同一份配对信息，
+    // 在配对页存完回到设备页，那页已经是新数据了，不需要手动刷新。
+    val deviceVm: DeviceViewModel = viewModel()
 
     Scaffold(
         containerColor = MaterialTheme.colorScheme.background,
@@ -104,7 +110,11 @@ fun AppRoot() {
             composable("sleep") { SleepScreen() }
             composable("notify") { NotifyScreen() }
             composable("watchface") { WatchFaceScreen(watchFaceVm) }
-            composable("device") { DeviceScreen() }
+            composable("device") {
+                DeviceScreen(deviceVm, onPair = { nav.navigate("pairing") { launchSingleTop = true } })
+            }
+            // 配对页不是 tab，从设备页推上来；存完就 pop 回去。
+            composable("pairing") { PairingScreen(deviceVm, onDone = { nav.popBackStack() }) }
         }
     }
 }

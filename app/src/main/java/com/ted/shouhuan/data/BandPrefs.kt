@@ -78,9 +78,19 @@ class BandPrefs(private val context: Context) {
         context.bandDataStore.edit { it.remove(Keys.MEASURE_HISTORY) }
     }
 
-    /** 忘记设备：把密钥一并抹掉。 */
+    /**
+     * 忘记设备：把设备身份与密钥一并抹掉。
+     *
+     * 只删设备相关的键，**不动测量记录** —— 「不要这台手环了」和「把心率历史也删掉」
+     * 是两件事，顺手清空等于让用户莫名其妙丢数据。
+     */
     suspend fun forgetDevice() {
-        context.bandDataStore.edit { it.clear() }
+        context.bandDataStore.edit {
+            it.remove(Keys.MAC)
+            it.remove(Keys.NAME)
+            it.remove(Keys.AUTH_KEY)
+            it.remove(Keys.HAS_DEVICE)
+        }
     }
 
     // ------------------------------------------------------------------
