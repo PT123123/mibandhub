@@ -14,8 +14,9 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.ted.shouhuan.ble.ConnectionState
 import com.ted.shouhuan.data.BandPrefs
-import com.ted.shouhuan.data.BuiltInWatchFace
-import com.ted.shouhuan.data.BuiltInWatchFaces
+import com.ted.shouhuan.data.MarketRepository
+import com.ted.shouhuan.data.WatchfaceLibrary
+import com.ted.shouhuan.data.WatchfaceRef
 import com.ted.shouhuan.proto.BandSession
 import com.ted.shouhuan.proto.WatchFace
 import com.ted.shouhuan.proto.WatchFaceOutcome
@@ -90,9 +91,13 @@ class WatchFaceViewModel(app: Application) : AndroidViewModel(app) {
     private val _file = MutableStateFlow<WatchFaceFileInfo?>(null)
     val file: StateFlow<WatchFaceFileInfo?> = _file.asStateFlow()
 
-    /** 当前选中的内置表盘（走文件选择器时清空）—— 界面据此高亮卡片。 */
-    private val _selectedBuiltInId = MutableStateFlow<String?>(null)
-    val selectedBuiltInId: StateFlow<String?> = _selectedBuiltInId.asStateFlow()
+    /** 表盘库（内置 + 市场已下载）—— 从市场回来或删了东西后 [refreshLibrary] 一下。 */
+    private val _library = MutableStateFlow<List<WatchfaceRef>>(emptyList())
+    val library: StateFlow<List<WatchfaceRef>> = _library.asStateFlow()
+
+    /** 当前选中的库内表盘（走文件选择器时清空）—— 界面据此高亮卡片。 */
+    private val _selectedLibraryId = MutableStateFlow<String?>(null)
+    val selectedLibraryId: StateFlow<String?> = _selectedLibraryId.asStateFlow()
 
     /** 协议日志 —— 实验性功能，出问题时这些原始字节就是唯一线索。 */
     private val _logs = MutableStateFlow<List<String>>(emptyList())
@@ -120,18 +125,44 @@ class WatchFaceViewModel(app: Application) : AndroidViewModel(app) {
                 !mac.isNullOrBlank() && !key.isNullOrBlank()
             }.collect { _configured.value = it }
         }
+        refreshLibrary()
     }
 
     // ------------------------------------------------------------------
     // 对外动作
     // ------------------------------------------------------------------
 
-    /** 用户点了一张内置表盘。 */
-    fun selectBuiltIn(face: BuiltInWatchFace) {
+    /** 重读表盘库（内置 + 已下载）。从市场页回来、删了表盘之后调用。 */
+    fun refreshLibrary() {
+        val app = getApplication<Application>()
+        viewModelScope.launch {
+            _library.value = withContext(Dispatchers.IO) { WatchfaceLibrary.load(app) }
+        }
+    }
+
+    /** 删一份市场下载的表盘；正在选中的话连选择一起清掉。 */
+    fun deleteDownloaded(ref: WatchfaceRef) {
+        if (ref.source != WatchfaceRef.Source.DOWNLOADED) return
+        val app = getApplication<Application>()
+        viewModelScope.launch {
+            withContext(Dispatchers.IO) { MarketRepository.get(app).delete(ref.id) }
+            if (_selectedLibraryId.value == ref.id) {
+                _selectedLibraryId.value = null
+                payload = null
+                _file.value = null
+                _phase.value = WatchFacePhase.Idle
+            }
+            refreshLibrary()
+            session.log("已删除表盘：${ref.name}")
+        }
+    }
+
+    /** 用户点了一张库内表盘（内置或市场下载）。 */
+    fun selectLibraryFace(ref: WatchfaceRef) {
         if (running?.isActive == true) return
         viewModelScope.launch {
             val result = withContext(Dispatchers.IO) {
-                runCatching { BuiltInWatchFaces.readPayload(getApplication(), face) }
+                runCatching { WatchfaceLibrary.readPayload(getApplication(), ref) }
             }
             result.fold(
                 onSuccess = { bytes ->
@@ -141,22 +172,26 @@ class WatchFaceViewModel(app: Application) : AndroidViewModel(app) {
                         return@fold
                     }
                     payload = bytes
-                    _selectedBuiltInId.value = face.id
+                    _selectedLibraryId.value = ref.id
                     _file.value = WatchFaceFileInfo(
-                        name = face.name,
+                        name = ref.name,
                         sizeBytes = bytes.size,
                         crc32 = WatchFace.crc32Of(bytes),
-                        author = face.author,
-                        license = face.license,
+                        author = ref.author,
+                        license = ref.license,
                     )
                     _phase.value = WatchFacePhase.Idle
-                    session.log("已选中内置表盘：${face.name}（${bytes.size} 字节）")
+                    session.log("已选中表盘：${ref.name}（${bytes.size} 字节）")
                 },
                 onFailure = { t ->
                     _phase.value = WatchFacePhase.Failure(
-                        title = "读不了内置表盘",
+                        title = "读不了这份表盘",
                         detail = t.message ?: t.javaClass.simpleName,
-                        hint = "assets 里的表盘包缺失或损坏 —— 换个构建产物试试。",
+                        hint = if (ref.source == WatchfaceRef.Source.DOWNLOADED) {
+                            "下载的文件可能不完整 —— 去市场里删掉重下一次。"
+                        } else {
+                            "assets 里的表盘包缺失或损坏 —— 换个构建产物试试。"
+                        },
                     )
                 },
             )
@@ -184,7 +219,7 @@ class WatchFaceViewModel(app: Application) : AndroidViewModel(app) {
                         return@fold
                     }
                     payload = bytes
-                    _selectedBuiltInId.value = null
+                    _selectedLibraryId.value = null
                     _file.value = WatchFaceFileInfo(name, bytes.size, WatchFace.crc32Of(bytes))
                     _phase.value = WatchFacePhase.Idle
                     session.log("已选中：$name（${bytes.size} 字节）")
