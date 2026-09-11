@@ -121,23 +121,21 @@ object AuthLab {
                 return@coroutineScope false
             }
 
-            // 手环开测后的前几帧常常是 0（还没采到脉搏），所以不能只看第一条 ——
-            // 收满一段时间、把所有读数都列出来，才分得清「没数据」和「数据就是 0」。
+            // 手环开测后的前几帧是 0（还没采到脉搏）。`HeartRateParser` 已经把 0 滤成 null，
+            // 所以这里收到的每一帧都是**有效**读数 —— 收满一段时间全列出来即可。
             val readings = mutableListOf<Int>()
             withTimeoutOrNull(HR_WAIT_MS) {
                 session.heartRate.filterNotNull().collect { readings += it }
             }
-            Log.i(TAG, "共收到 ${readings.size} 帧心率：[${readings.joinToString()}]")
+            Log.i(TAG, "共收到 ${readings.size} 帧有效心率：[${readings.joinToString()}]")
             val best = readings.maxOrNull()
             if (best == null) {
-                Log.e(TAG, "✗ ${HR_WAIT_MS / 1000}s 内一帧心率都没收到")
-            } else if (best <= 0) {
-                Log.e(TAG, "✗ 收到 ${readings.size} 帧但全是 0 —— 手环没采到脉搏（戴上手腕再试）")
+                Log.e(TAG, "✗ ${HR_WAIT_MS / 1000}s 内一帧有效心率都没收到（读数为 0 的帧算无效，会被滤掉）")
             } else {
                 Log.i(TAG, "★ 心率最大值 $best bpm ✓")
             }
             session.stopRealtimeHeartRate()
-            return@coroutineScope best != null && best > 0
+            return@coroutineScope best != null
         } finally {
             logPump.cancel()
             session.disconnect()
