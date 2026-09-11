@@ -38,3 +38,20 @@ data class BandNotification(
 
 /** 可被转发的应用。 */
 data class AppRule(val packageName: String, val appName: String, val enabled: Boolean)
+
+/**
+ * 一次完成的测量结果。
+ *
+ * 光记一个 BPM 不够用：回头看记录时还想知道「这是什么时候测的、等了多久」。
+ * 所以时间戳和耗时一起留下来，界面直接摆出来，不用靠猜。
+ *
+ * 放在 data 层（而不是心率页）是因为它要被 [BandPrefs] 持久化 —— 换了界面它还得在。
+ */
+data class MeasureResult(
+    val bpm: Int,
+    /** 拿到读数的那一刻（epoch 毫秒）。 */
+    val finishedAtMillis: Long,
+    /** 从点下「测量」到拿到读数花了多久（秒）。 */
+    val durationSec: Int,
+)
+

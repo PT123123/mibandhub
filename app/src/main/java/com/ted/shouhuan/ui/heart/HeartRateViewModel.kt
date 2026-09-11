@@ -12,32 +12,22 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.ted.shouhuan.ble.ConnectionState
 import com.ted.shouhuan.data.BandPrefs
+import com.ted.shouhuan.data.MeasureResult
 import com.ted.shouhuan.proto.BandSession
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
-
-/**
- * 一次完成的测量结果。
- *
- * 光记一个 BPM 不够用：回头看记录时还想知道「这是什么时候测的、等了多久」。
- * 所以时间戳和耗时一起留下来，界面直接摆出来，不用靠猜。
- */
-data class MeasureResult(
-    val bpm: Int,
-    /** 拿到读数的那一刻（epoch 毫秒）。 */
-    val finishedAtMillis: Long,
-    /** 从点下「测量」到拿到读数花了多久（秒）。 */
-    val durationSec: Int,
-)
 
 /** 一次测量走到哪一步了。 */
 sealed interface MeasurePhase {
@@ -100,9 +90,6 @@ class HeartRateViewModel(app: Application) : AndroidViewModel(app) {
 
         /** 单次测量等读数的最长时间 —— 手环一般 10~30 秒出结果。 */
         const val MEASURE_TIMEOUT_MS = 40_000L
-
-        /** 测量记录最多留多少条（只存内存，进程死了就没了）。 */
-        const val HISTORY_LIMIT = 20
     }
 
     private val prefs = BandPrefs(app)
@@ -115,17 +102,24 @@ class HeartRateViewModel(app: Application) : AndroidViewModel(app) {
     private val _elapsedSec = MutableStateFlow(0)
     val elapsedSec: StateFlow<Int> = _elapsedSec.asStateFlow()
 
+    /**
+     * 测量记录，新的在前。
+     *
+     * 直接以本地存储为唯一来源，而不是在内存里另存一份：这样「界面上看到的」
+     * 和「重启后还在的」天然是同一份，不会出现两边对不上。
+     */
+    val history: StateFlow<List<MeasureResult>> = prefs.measureHistory
+        .stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
+
+    /** 最近一次测量 —— 就是记录里的第一条，重启后依然在。 */
+    val lastResult: StateFlow<MeasureResult?> = history
+        .map { it.firstOrNull() }
+        .stateIn(viewModelScope, SharingStarted.Eagerly, null)
+
     /** 最近一次测到的值。切到别的页面再回来还在。 */
-    private val _lastBpm = MutableStateFlow<Int?>(null)
-    val lastBpm: StateFlow<Int?> = _lastBpm.asStateFlow()
-
-    /** 最近一次完成的测量明细（读数 + 时间 + 耗时）。没测过就是 null。 */
-    private val _lastResult = MutableStateFlow<MeasureResult?>(null)
-    val lastResult: StateFlow<MeasureResult?> = _lastResult.asStateFlow()
-
-    /** 测量记录，新的在前。 */
-    private val _history = MutableStateFlow<List<MeasureResult>>(emptyList())
-    val history: StateFlow<List<MeasureResult>> = _history.asStateFlow()
+    val lastBpm: StateFlow<Int?> = history
+        .map { it.firstOrNull()?.bpm }
+        .stateIn(viewModelScope, SharingStarted.Eagerly, null)
 
     /** 设置里是否已经配好手环（MAC + AuthKey 都在）。 */
     private val _configured = MutableStateFlow(false)
@@ -237,14 +231,15 @@ class HeartRateViewModel(app: Application) : AndroidViewModel(app) {
 
             when (reading) {
                 is Reading.Ok -> {
+                    val finishedAt = System.currentTimeMillis()
                     val result = MeasureResult(
                         bpm = reading.bpm,
-                        finishedAtMillis = System.currentTimeMillis(),
-                        durationSec = ((System.currentTimeMillis() - startedAtMillis) / 1000).toInt(),
+                        finishedAtMillis = finishedAt,
+                        durationSec = ((finishedAt - startedAtMillis) / 1000).toInt(),
                     )
-                    _lastBpm.value = result.bpm
-                    _lastResult.value = result
-                    _history.value = (listOf(result) + _history.value).take(HISTORY_LIMIT)
+                    // 先落盘再改状态：记录是唯一来源，写进去之后 lastResult / lastBpm
+                    // 会自己跟着更新，界面和存储不会各说各话。
+                    prefs.recordMeasure(result)
                     _phase.value = MeasurePhase.Success(result)
                 }
 
