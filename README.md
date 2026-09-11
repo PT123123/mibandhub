@@ -10,9 +10,9 @@
 | 路径 | 内容 |
 |---|---|
 | `app/` | **Android App 主体**（Kotlin + Compose） |
-| `app/src/main/java/com/ted/shouhuan/ui/` | 界面：首页 / 心率 / 睡眠 / 通知 / 设备 |
+| `app/src/main/java/com/ted/shouhuan/ui/` | 界面：首页 / 心率 / 睡眠 / 通知 / 表盘 / 设备 |
 | `app/src/main/java/com/ted/shouhuan/ble/` | BLE 连接层：连接、服务发现、串行写队列 |
-| `app/src/main/java/com/ted/shouhuan/proto/` | 协议层：认证握手、心率指令、电量 |
+| `app/src/main/java/com/ted/shouhuan/proto/` | 协议层：认证握手、心率指令、电量、表盘下发 |
 | `app/src/main/java/com/ted/shouhuan/data/` | 本地存储（密钥/MAC）与数据模型 |
 | `app/src/main/java/com/ted/shouhuan/service/` | 前台服务 + 通知监听 |
 | `xiaomi_authkey.py` / `parse_log.py` | 取 AuthKey 的工具（配对时要用，见文末附录） |
@@ -20,7 +20,7 @@
 
 ## 当前进度
 
-- [x] 工程骨架 + Compose 界面（5 个页面，深色优先）
+- [x] 工程骨架 + Compose 界面（6 个页面，深色优先）
 - [x] 协议调研：对着 Gadgetbridge 源码核对 UUID / 认证握手 / 心率指令 / 电量格式
 - [x] BLE 连接层 + **两步**认证状态机（authFlags 用真机实测定成 `0x00`，见下表）
 - [x] `assembleDebug` 出包，真机安装并冷启动
@@ -29,7 +29,7 @@
 - [x] 心率页测量明细：读数 + 测量时刻（精确到秒）+ 耗时，并保留最近 20 次测量记录
 - [ ] 睡眠数据拉取（走 chunked transfer 解析活动数据）
 - [ ] 通知转发到手表
-- [ ] 表盘管理 —— 正式功能还没做，但**协议可行性已经真机实测过**。
+- [x] 表盘下发 —— **功能已实现，但页面顶上标着「实验性」**。
       上游没有可抄的实现：Gadgetbridge 对 Mi Band 5 不支持表盘安装/切换
       （`MiBand5Coordinator` 继承的 `supportsAppsManagement` 默认 false，
       整个 huami 目录下只有 Zepp OS 设备才有 `PREF_WATCHFACE`）。
@@ -45,10 +45,15 @@
       | 校验命令 `04` | ❓ 收到的是没记录过的 `10 20 08` / `10 20 00`，**不是** `10 04 01` |
 
       也就是说**通道完全打通、包体也被完整接收**，卡在最后一步的校验语义上，
-      表盘是否真的生效还没确认。探针在 debug 源集里：
-      `app/src/debug/java/com/ted/shouhuan/debug/WatchFaceLab.kt`（release 包中不存在）。
+      表盘是否真的生效还没确认 —— 这正是页面上标「实验性」的原因。
       包体格式来自官方 App 的缓存：`files/WatchFace/data.zip`，
       里面是 160 张 `face_data_<风格>_<布局>_<序号>.png`。
+
+      **下发必须限速**（`BandSession.PACKET_INTERVAL_NANOS`，6 ms/包 ≈ 166 包/秒）：
+      手环的接收缓冲有限，而每秒能灌多少取决于当时协商的 BLE 连接间隔。
+      全速写（实测约 300 包/秒）会在 4000 包上下被整包打回；匀速推就能跑完。
+      这里是**真机跑生产代码发现的** —— 实验台那次刚好跑在较慢的连接参数上，
+      所以看起来正常，换成应用里这条路立刻就暴露了。
 
 ## 构建与装机
 
