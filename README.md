@@ -26,8 +26,29 @@
 - [x] `assembleDebug` 出包，真机安装并冷启动
 - [x] 心率页接上真实会话：连接 → 认证 → 单次测量，全过程有状态提示与失败原因
 - [x] 真机连上手环、读到实时心率（76 bpm）
+- [x] 心率页测量明细：读数 + 测量时刻（精确到秒）+ 耗时，并保留最近 20 次测量记录
 - [ ] 睡眠数据拉取（走 chunked transfer 解析活动数据）
 - [ ] 通知转发到手表
+- [ ] 表盘管理 —— 正式功能还没做，但**协议可行性已经真机实测过**。
+      上游没有可抄的实现：Gadgetbridge 对 Mi Band 5 不支持表盘安装/切换
+      （`MiBand5Coordinator` 继承的 `supportsAppsManagement` 默认 false，
+      整个 huami 目录下只有 Zepp OS 设备才有 `PREF_WATCHFACE`）。
+      于是照 `UpdateFirmwareOperationNew`（`MiBand5Support extends MiBand4Support`，
+      Mi Band 5 用的就是它）的字节自己试。实测结果：
+
+      | 步骤 | 结果 |
+      |---|---|
+      | 固件通道是否存在（`1531` 控制 / `1532` 数据） | ✅ 两个特征都在 |
+      | 表盘元数据 `01 08 <size u32le> <crc32 u32le>` | ✅ 手环回 `10 01 01 …`（11 字节） |
+      | 数据流（每 100 包插一条 `00` 到 `1531`） | ✅ 12119 包 / 242371 字节推完 |
+      | 收尾 `00` | ✅ 手环回 `10 03 01`「数据齐了」 |
+      | 校验命令 `04` | ❓ 收到的是没记录过的 `10 20 08` / `10 20 00`，**不是** `10 04 01` |
+
+      也就是说**通道完全打通、包体也被完整接收**，卡在最后一步的校验语义上，
+      表盘是否真的生效还没确认。探针在 debug 源集里：
+      `app/src/debug/java/com/ted/shouhuan/debug/WatchFaceLab.kt`（release 包中不存在）。
+      包体格式来自官方 App 的缓存：`files/WatchFace/data.zip`，
+      里面是 160 张 `face_data_<风格>_<布局>_<序号>.png`。
 
 ## 构建与装机
 
