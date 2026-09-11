@@ -45,8 +45,8 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.ted.shouhuan.ble.ConnectionState
-import com.ted.shouhuan.data.BuiltInWatchFace
-import com.ted.shouhuan.data.BuiltInWatchFaces
+import com.ted.shouhuan.data.WatchfaceLibrary
+import com.ted.shouhuan.data.WatchfaceRef
 import com.ted.shouhuan.proto.WatchFace
 import com.ted.shouhuan.ui.components.KeyValueRow
 import com.ted.shouhuan.ui.components.NoticeBanner
@@ -60,28 +60,35 @@ import com.ted.shouhuan.ui.theme.StepBlue
 /**
  * 表盘页。
  *
- * 这条链路 2026-09-12 真机验证通过：协议对齐 Gadgetbridge 后，内置表盘
+ * 这条链路 2026-09-12 真机验证通过：协议对齐 Gadgetbridge 后，表盘
  * 下发到手环并成功换上。此前长期卡在「包被完整接收但生效未确认」，根因是
  * 少了表盘槽选择命令、校验命令没带 CRC16（详见 docs/watchface.md §2.1）。
  *
- * 最后那张「协议日志」卡是有意留的：这条协议的应答语义（比如 0x20 的拒绝码）
- * 没有完整文档，出问题时唯一的线索就是手环回来的原始字节。
+ * 页面结构：在线市场（拉仓库目录、下载）→ 我的表盘（内置 + 已下载）→
+ * 表盘包/下发。最后那张「协议日志」卡是有意留的：这条协议的应答语义
+ * （比如 0x20 的拒绝码）没有完整文档，出问题时唯一的线索就是原始字节。
  */
 @Composable
-fun WatchFaceScreen(vm: WatchFaceViewModel) {
+fun WatchFaceScreen(
+    vm: WatchFaceViewModel,
+    onOpenMarket: () -> Unit,
+) {
     val phase by vm.phase.collectAsStateWithLifecycle()
     val file by vm.file.collectAsStateWithLifecycle()
     val logs by vm.logs.collectAsStateWithLifecycle()
     val configured by vm.configured.collectAsStateWithLifecycle()
     val connection by vm.connectionState.collectAsStateWithLifecycle()
-    val selectedBuiltInId by vm.selectedBuiltInId.collectAsStateWithLifecycle()
+    val selectedLibraryId by vm.selectedLibraryId.collectAsStateWithLifecycle()
+    val library by vm.library.collectAsStateWithLifecycle()
+
+    // 从市场页回来时重读一遍库 —— 那边可能下了新的、也可能删了旧的。
+    androidx.compose.runtime.LaunchedEffect(Unit) { vm.refreshLibrary() }
 
     val context = LocalContext.current
-    // 内置表盘和预览图都很小（几 KB ~ 几百 KB），remember 里同步解码一次即可。
-    val builtIns = remember { BuiltInWatchFaces.load(context) }
-    val previews = remember(builtIns) {
-        builtIns.mapNotNull { face ->
-            BuiltInWatchFaces.readPreview(context, face)?.let { face.id to it.asImageBitmap() }
+    // 预览图都很小（每张几 KB ~ 十几 KB），库里变了就整批重解码一次。
+    val previews = remember(library) {
+        library.mapNotNull { ref ->
+            WatchfaceLibrary.readPreview(context, ref)?.let { ref.id to it.asImageBitmap() }
         }.toMap()
     }
 
@@ -138,31 +145,58 @@ fun WatchFaceScreen(vm: WatchFaceViewModel) {
 
         Spacer(Modifier.height(12.dp))
 
-        // ---- 内置表盘：点一张就填进下面的「表盘包」 ----
-        if (builtIns.isNotEmpty()) {
-            SectionCard(title = "内置表盘", accent = Mint) {
+        // ---- 在线市场：仓库里的 market/ 目录，下载后进「我的表盘」 ----
+        SectionCard(title = "在线市场", accent = Mint) {
+            Text(
+                "从本仓库的表盘市场浏览并下载更多表盘（带预览图），下载完出现在下面的「我的表盘」里。",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Spacer(Modifier.height(12.dp))
+            Button(
+                onClick = onOpenMarket,
+                modifier = Modifier.fillMaxWidth(),
+                enabled = !busy,
+                shape = RoundedCornerShape(14.dp),
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = MaterialTheme.colorScheme.surfaceVariant,
+                    contentColor = MaterialTheme.colorScheme.onSurface,
+                ),
+            ) {
+                Text("进入市场")
+            }
+        }
+
+        Spacer(Modifier.height(12.dp))
+
+        // ---- 我的表盘：内置 + 市场下载，点一张就填进下面的「表盘包」 ----
+        if (library.isNotEmpty()) {
+            SectionCard(title = "我的表盘", accent = StepBlue) {
                 Text(
-                    "随 App 打包的现成表盘，点一张即可选用。来源与授权随表盘原样标注。",
+                    "内置的随 App 走，市场下载的存在本机。点一张即可选用，来源与授权随表盘原样标注。",
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
                 Spacer(Modifier.height(12.dp))
-                Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                    builtIns.forEach { face ->
-                        BuiltInCard(
-                            face = face,
-                            preview = previews[face.id],
-                            selected = face.id == selectedBuiltInId,
-                            enabled = !busy,
-                            onSelect = { vm.selectBuiltIn(face) },
-                            modifier = Modifier.weight(1f),
-                        )
+                library.chunked(3).forEach { rowRefs ->
+                    Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                        rowRefs.forEach { ref ->
+                            LibraryCard(
+                                ref = ref,
+                                preview = previews[ref.id],
+                                selected = ref.id == selectedLibraryId,
+                                enabled = !busy,
+                                onSelect = { vm.selectLibraryFace(ref) },
+                                modifier = Modifier.weight(1f),
+                            )
+                        }
+                        repeat(3 - rowRefs.size) { Spacer(Modifier.weight(1f)) }
                     }
-                }
-                builtIns.firstOrNull { it.id == selectedBuiltInId }?.let { face ->
                     Spacer(Modifier.height(10.dp))
+                }
+                library.firstOrNull { it.id == selectedLibraryId }?.let { ref ->
                     Text(
-                        "${face.source} · ${face.license}" + (face.note?.let { " · $it" } ?: ""),
+                        "${ref.source} · ${ref.license}" + (ref.note?.let { " · $it" } ?: ""),
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
@@ -361,10 +395,10 @@ fun WatchFaceScreen(vm: WatchFaceViewModel) {
     }
 }
 
-/** 内置表盘的小卡片：预览图 + 名字 + 作者，选中描蓝边。 */
+/** 「我的表盘」的小卡片：预览图 + 名字 + 作者，选中描蓝边；市场下载的带标记。 */
 @Composable
-private fun BuiltInCard(
-    face: BuiltInWatchFace,
+private fun LibraryCard(
+    ref: WatchfaceRef,
     preview: ImageBitmap?,
     selected: Boolean,
     enabled: Boolean,
@@ -395,7 +429,7 @@ private fun BuiltInCard(
         if (preview != null) {
             Image(
                 bitmap = preview,
-                contentDescription = face.name,
+                contentDescription = ref.name,
                 modifier = imageModifier,
                 contentScale = ContentScale.Crop,
             )
@@ -413,14 +447,14 @@ private fun BuiltInCard(
         }
         Spacer(Modifier.height(6.dp))
         Text(
-            face.name,
+            ref.name,
             style = MaterialTheme.typography.labelMedium,
             maxLines = 1,
             overflow = TextOverflow.Ellipsis,
             textAlign = TextAlign.Center,
         )
         Text(
-            face.author,
+            ref.author + if (ref.source == WatchfaceRef.Source.DOWNLOADED) " · 已下载" else "",
             style = MaterialTheme.typography.labelSmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             maxLines = 1,

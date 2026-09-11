@@ -101,6 +101,9 @@ App 连手环只需要两样东西：**手环的 MAC** 和 **AuthKey**（32 位�
       实验台：`app/src/debug/java/com/ted/shouhuan/debug/ActivityLab.kt`。
 - [ ] 通知转发到手表
 - [x] 表盘下发 —— **已真机验证（2026-09-12）：内置表盘下发后手环成功换上。**
+      另有**在线表盘市场**：表盘页「进入市场」→ 浏览带预览的表盘（本仓库
+      `market/` 目录，GitHub raw 分发）→ 下载到本机 → 进「我的表盘」一键下发。
+      只收自制 CC0 内容；生成器在 `tools/watchfaces/make_market.py`。
       上游没有可抄的实现：Gadgetbridge 对 Mi Band 5 不支持表盘安装/切换
       （`MiBand5Coordinator` 继承的 `supportsAppsManagement` 默认 false，
       整个 huami 目录下只有 Zepp OS 设备才有 `PREF_WATCHFACE`）。
