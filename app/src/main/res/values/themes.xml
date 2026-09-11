@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Compose 应用只需要一个 NoActionBar 容器主题；配色由 Compose 的
+         ShouhuanTheme 负责，这里只把窗口底色和系统栏设好，避免启动瞬间白屏闪一下。 -->
+    <style name="Theme.Shouhuan" parent="android:Theme.Material.NoActionBar">
+        <item name="android:windowBackground">#0B0F14</item>
+        <item name="android:statusBarColor">@android:color/transparent</item>
+        <item name="android:navigationBarColor">@android:color/transparent</item>
+        <item name="android:windowLightStatusBar">false</item>
+        <item name="android:windowLightNavigationBar">false</item>
+    </style>
+</resources>

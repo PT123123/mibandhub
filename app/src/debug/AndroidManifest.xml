@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  debug 源集专用清单：只在 debug 构建里合入，release 包里不存在这个入口。
+
+  加它是因为认证实验台必须能从 adb 直接拉起（`am start`），而 adb shell 是另一个 UID，
+  非 exported 的组件起不来。
+-->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <application>
+
+        <activity
+            android:name="com.ted.shouhuan.debug.AuthLabActivity"
+            android:excludeFromRecents="true"
+            android:exported="true"
+            android:noHistory="true"
+            android:theme="@style/Theme.Shouhuan" />
+
+    </application>
+
+</manifest>
