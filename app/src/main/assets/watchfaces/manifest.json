@@ -1,0 +1,35 @@
+[
+  {
+    "id": "digital-codex",
+    "name": "Digital Codex",
+    "author": "gryffyn",
+    "source": "https://amazfitwatchfaces.com/mi-band-5/view/5183",
+    "license": "CC BY-NC-SA 4.0",
+    "file": "digital-codex.bin",
+    "preview": "digital-codex.png",
+    "sizeBytes": 459744,
+    "note": "社区表盘，原样分发（非商用授权）"
+  },
+  {
+    "id": "mint-minimal",
+    "name": "薄荷极简",
+    "author": "shouhuan 自制",
+    "source": "本仓库用 watchface-js 生成",
+    "license": "CC0-1.0",
+    "file": "mint-minimal.bin",
+    "preview": "mint-minimal.png",
+    "sizeBytes": 322083,
+    "note": "时间 / 日期 / 步数 / 电量"
+  },
+  {
+    "id": "amber-minimal",
+    "name": "琥珀极简",
+    "author": "shouhuan 自制",
+    "source": "本仓库用 watchface-js 生成",
+    "license": "CC0-1.0",
+    "file": "amber-minimal.bin",
+    "preview": "amber-minimal.png",
+    "sizeBytes": 304136,
+    "note": "时间 / 日期 / 星期 / 步数 / 电量"
+  }
+]

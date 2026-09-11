@@ -314,6 +314,29 @@ class BandSession(
         // 排空上一次残留的应答 —— 别把旧消息当成这次的回执。
         while (firmwareIn.tryReceive().isSuccess) { /* discard */ }
 
+        // ---- ⓪ 选表盘槽（仅 UIHH 容器）----
+        // 照 Gadgetbridge：表盘上传前要先往配置特征写「39 00 00 ff ff ff <表盘ID>」，
+        // 手环才知道收到的包归哪个表盘槽。缺了这一步，数据推得再完整，
+        // 收尾校验也会被拒（实测回 10 20 08 / 10 20 00，表盘不换）。
+        if (WatchFace.isUihh(payload)) {
+            if (!connection.hasCharacteristic(WatchFace.CHAR_CONFIG)) {
+                return@coroutineScope WatchFaceOutcome.Failed(
+                    title = "这个手环没有表盘配置通道",
+                    detail = "连接上找不到 00000003 这条配置特征，没法选表盘槽。",
+                    hint = "这条特征华米设备才有；把协议日志发出来一起看看。",
+                )
+            }
+            val slot = WatchFace.slotSelectPacket(payload)
+            log("⓪ 选表盘槽 -> ${WatchFace.hex(slot)}")
+            if (!connection.write(WatchFace.CHAR_CONFIG, slot)) {
+                return@coroutineScope WatchFaceOutcome.Failed(
+                    title = "写表盘槽选择命令失败",
+                    detail = "配置特征（00000003）拒绝写入。",
+                    hint = "手环可能已经断开了，重连后再试。",
+                )
+            }
+        }
+
         val crc = WatchFace.crc32Of(payload)
         val totalPackets = WatchFace.packetCount(payload.size)
         val startedAt = System.currentTimeMillis()
@@ -333,28 +356,47 @@ class BandSession(
         }
 
         // ---- ② 手环收下了吗 ----
-        when (val resp = awaitFirmware(INIT_TIMEOUT_MS)) {
-            null -> return@coroutineScope WatchFaceOutcome.Failed(
-                title = "手环没有回应元数据",
-                detail = "${INIT_TIMEOUT_MS / 1000} 秒内 1531 上没有任何回复。",
-                hint = "手环是不是还连在「小米运动健康」上？它同一时间只服务一个 App。",
-            )
+        // 上游实现里 ⓪ 的槽选择命令不会有应答，但万一某版固件回了，
+        // 别把它误判成「元数据被拒」—— 认不出的 Ack 先记日志、继续等真正的 10 01 01。
+        var initAcked = false
+        var attempts = 0
+        while (!initAcked && attempts < 3) {
+            attempts++
+            when (val resp = awaitFirmware(INIT_TIMEOUT_MS)) {
+                null -> return@coroutineScope WatchFaceOutcome.Failed(
+                    title = "手环没有回应元数据",
+                    detail = "${INIT_TIMEOUT_MS / 1000} 秒内 1531 上没有任何回复。",
+                    hint = "手环是不是还连在「小米运动健康」上？它同一时间只服务一个 App。",
+                )
 
-            is WatchFace.Response.Ack -> {
-                log("② <- ${WatchFace.hex(resp.raw)}")
-                if (resp.command != WatchFace.CMD_INIT || !resp.ok) {
-                    return@coroutineScope WatchFaceOutcome.Failed(
-                        title = "手环拒了这份表盘包",
-                        detail = "元数据没被接受，手环回的是 ${WatchFace.hex(resp.raw)}。",
-                        hint = "包体格式可能不被这台固件认。",
-                    )
+                is WatchFace.Response.Ack -> {
+                    log("② <- ${WatchFace.hex(resp.raw)}")
+                    if (resp.command == WatchFace.CMD_INIT && resp.ok) {
+                        log("   ✓ 手环收下了元数据")
+                        initAcked = true
+                    } else if (resp.ok) {
+                        // 槽选择之类的旁路应答 —— 不是拒绝，继续等元数据的回执。
+                        log("   （0x%02x 不是元数据应答，继续等）".format(resp.command))
+                    } else {
+                        return@coroutineScope WatchFaceOutcome.Failed(
+                            title = "手环拒了这份表盘包",
+                            detail = "元数据没被接受，手环回的是 ${WatchFace.hex(resp.raw)}。",
+                            hint = "包体格式可能不被这台固件认。",
+                        )
+                    }
                 }
-                log("   ✓ 手环收下了元数据")
-            }
 
-            is WatchFace.Response.Other -> return@coroutineScope WatchFaceOutcome.Failed(
-                title = "手环回了个看不懂的东西",
-                detail = "元数据之后收到 ${WatchFace.hex(resp.raw)}，不像标准的应答格式。",
+                is WatchFace.Response.Other -> return@coroutineScope WatchFaceOutcome.Failed(
+                    title = "手环回了个看不懂的东西",
+                    detail = "元数据之后收到 ${WatchFace.hex(resp.raw)}，不像标准的应答格式。",
+                )
+            }
+        }
+        if (!initAcked) {
+            return@coroutineScope WatchFaceOutcome.Failed(
+                title = "手环没有回应元数据",
+                detail = "等了几轮也没等到 10 01 01。",
+                hint = "把协议日志发出来一起看看。",
             )
         }
 
@@ -429,8 +471,8 @@ class BandSession(
             when (resp) {
                 is WatchFace.Response.Ack -> when (resp.command) {
                     WatchFace.CMD_DATA_COMPLETE -> {
-                        log("⑥ ✓ 手环说数据齐了，请求校验")
-                        val checksum = WatchFace.checksumPacket()
+                        log("⑥ ✓ 手环说数据齐了，请求校验（带 CRC16）")
+                        val checksum = WatchFace.checksumPacket(payload)
                         if (!connection.write(WatchFace.CHAR_CONTROL, checksum)) {
                             return@coroutineScope WatchFaceOutcome.Failed(
                                 "写校验命令失败",
