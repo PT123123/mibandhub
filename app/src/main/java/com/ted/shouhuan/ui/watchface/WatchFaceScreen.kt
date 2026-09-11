@@ -3,13 +3,17 @@ package com.ted.shouhuan.ui.watchface
 import android.Manifest
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.Image
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -27,13 +31,22 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.ted.shouhuan.ble.ConnectionState
+import com.ted.shouhuan.data.BuiltInWatchFace
+import com.ted.shouhuan.data.BuiltInWatchFaces
 import com.ted.shouhuan.proto.WatchFace
 import com.ted.shouhuan.ui.components.KeyValueRow
 import com.ted.shouhuan.ui.components.NoticeBanner
@@ -45,14 +58,14 @@ import com.ted.shouhuan.ui.theme.PulseRed
 import com.ted.shouhuan.ui.theme.StepBlue
 
 /**
- * 表盘页（**实验性**）。
+ * 表盘页。
  *
- * 页面顶上就写着「实验性」，不是谦虚：这条链路只实测到「包被完整接收」，
- * 「手环是否真的换上了表盘」还没确认。所以界面把三件事分开说清楚 ——
- * 包选了什么、传到哪一步、手环最后回了什么 —— 而不是含糊地报一句成功或失败。
+ * 这条链路 2026-09-12 真机验证通过：协议对齐 Gadgetbridge 后，内置表盘
+ * 下发到手环并成功换上。此前长期卡在「包被完整接收但生效未确认」，根因是
+ * 少了表盘槽选择命令、校验命令没带 CRC16（详见 docs/watchface.md §2.1）。
  *
- * 最后那张「协议日志」卡是有意留的：这条协议还没有可靠的上游参考，
- * 出问题时唯一的线索就是手环回来的原始字节。
+ * 最后那张「协议日志」卡是有意留的：这条协议的应答语义（比如 0x20 的拒绝码）
+ * 没有完整文档，出问题时唯一的线索就是手环回来的原始字节。
  */
 @Composable
 fun WatchFaceScreen(vm: WatchFaceViewModel) {
@@ -61,6 +74,16 @@ fun WatchFaceScreen(vm: WatchFaceViewModel) {
     val logs by vm.logs.collectAsStateWithLifecycle()
     val configured by vm.configured.collectAsStateWithLifecycle()
     val connection by vm.connectionState.collectAsStateWithLifecycle()
+    val selectedBuiltInId by vm.selectedBuiltInId.collectAsStateWithLifecycle()
+
+    val context = LocalContext.current
+    // 内置表盘和预览图都很小（几 KB ~ 几百 KB），remember 里同步解码一次即可。
+    val builtIns = remember { BuiltInWatchFaces.load(context) }
+    val previews = remember(builtIns) {
+        builtIns.mapNotNull { face ->
+            BuiltInWatchFaces.readPreview(context, face)?.let { face.id to it.asImageBitmap() }
+        }.toMap()
+    }
 
     val permissionLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.RequestPermission(),
@@ -90,19 +113,17 @@ fun WatchFaceScreen(vm: WatchFaceViewModel) {
 
         Row(verticalAlignment = Alignment.CenterVertically) {
             Text("表盘", style = MaterialTheme.typography.titleLarge)
-            Spacer(Modifier.width(8.dp))
-            ExperimentalChip()
         }
 
         Spacer(Modifier.height(14.dp))
 
-        // ---- 先把「实验性」写明白：能做什么、不能保证什么 ----
+        // ---- 能做什么、要注意什么，开门见山 ----
         NoticeBanner(
-            title = "实验性功能",
-            tone = NotifyAmber,
-            detail = "协议只实测到「表盘包被手环完整接收」，最后一步「手环是否真的换上」" +
-                "还没确认 —— 传完请自己看一眼手环屏幕。",
-            hint = "传坏不会毁手环：包体带 CRC32 校验，不完整或对不上时手环会自己丢弃，现有表盘不受影响。",
+            title = "已真机验证",
+            tone = Mint,
+            detail = "协议已对齐 Gadgetbridge，2026-09-12 真机换表盘成功。" +
+                "Mi Band 5 有 3 个自定义表盘槽位。",
+            hint = "传坏不会毁手环：包体带校验和，不完整或对不上时手环会自己丢弃，现有表盘不受影响。",
         )
 
         if (!configured) {
@@ -117,20 +138,55 @@ fun WatchFaceScreen(vm: WatchFaceViewModel) {
 
         Spacer(Modifier.height(12.dp))
 
+        // ---- 内置表盘：点一张就填进下面的「表盘包」 ----
+        if (builtIns.isNotEmpty()) {
+            SectionCard(title = "内置表盘", accent = Mint) {
+                Text(
+                    "随 App 打包的现成表盘，点一张即可选用。来源与授权随表盘原样标注。",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Spacer(Modifier.height(12.dp))
+                Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    builtIns.forEach { face ->
+                        BuiltInCard(
+                            face = face,
+                            preview = previews[face.id],
+                            selected = face.id == selectedBuiltInId,
+                            enabled = !busy,
+                            onSelect = { vm.selectBuiltIn(face) },
+                            modifier = Modifier.weight(1f),
+                        )
+                    }
+                }
+                builtIns.firstOrNull { it.id == selectedBuiltInId }?.let { face ->
+                    Spacer(Modifier.height(10.dp))
+                    Text(
+                        "${face.source} · ${face.license}" + (face.note?.let { " · $it" } ?: ""),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+            Spacer(Modifier.height(12.dp))
+        }
+
         // ---- 表盘包 ----
         SectionCard(title = "表盘包", accent = StepBlue) {
             val picked = file
             if (picked == null) {
                 Text(
-                    "挑一个表盘包（zip）。小米运动健康会把用过的表盘缓存在手机里，" +
-                        "也可以直接选它。",
+                    "从上面选一张内置表盘，或挑一个 .bin 表盘文件 —— " +
+                        "社区表盘站（如 amazfitwatchfaces.com）的 Mi Band 5 表盘就是 .bin。",
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             } else {
-                KeyValueRow("文件", picked.name)
+                KeyValueRow("名称", picked.name)
                 KeyValueRow("大小", formatSize(picked.sizeBytes))
                 KeyValueRow("CRC32", WatchFace.hex32(picked.crc32), valueColor = StepBlue)
+                picked.author?.let { KeyValueRow("来源", it) }
+                picked.license?.let { KeyValueRow("授权", it) }
             }
 
             Spacer(Modifier.height(14.dp))
@@ -305,20 +361,70 @@ fun WatchFaceScreen(vm: WatchFaceViewModel) {
     }
 }
 
-/** 标题旁那个「实验性」小标，提醒这一页的能力还没定型。 */
+/** 内置表盘的小卡片：预览图 + 名字 + 作者，选中描蓝边。 */
 @Composable
-private fun ExperimentalChip() {
-    Box(
-        Modifier
-            .clip(RoundedCornerShape(6.dp))
-            .background(NotifyAmber.copy(alpha = 0.16f))
-            .border(1.dp, NotifyAmber.copy(alpha = 0.5f), RoundedCornerShape(6.dp))
-            .padding(horizontal = 7.dp, vertical = 2.dp),
+private fun BuiltInCard(
+    face: BuiltInWatchFace,
+    preview: ImageBitmap?,
+    selected: Boolean,
+    enabled: Boolean,
+    onSelect: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val outline = if (selected) {
+        Modifier.border(BorderStroke(2.dp, StepBlue), RoundedCornerShape(12.dp))
+    } else {
+        Modifier.border(
+            BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.35f)),
+            RoundedCornerShape(12.dp),
+        )
+    }
+    Column(
+        modifier
+            .clip(RoundedCornerShape(12.dp))
+            .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f))
+            .then(outline)
+            .clickable(enabled = enabled, onClick = onSelect)
+            .padding(7.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
     ) {
+        val imageModifier = Modifier
+            .fillMaxWidth()
+            .aspectRatio(126f / 294f)
+            .clip(RoundedCornerShape(8.dp))
+        if (preview != null) {
+            Image(
+                bitmap = preview,
+                contentDescription = face.name,
+                modifier = imageModifier,
+                contentScale = ContentScale.Crop,
+            )
+        } else {
+            Box(
+                imageModifier.background(MaterialTheme.colorScheme.surfaceVariant),
+                contentAlignment = Alignment.Center,
+            ) {
+                Text(
+                    "无预览",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
+        Spacer(Modifier.height(6.dp))
         Text(
-            "实验性",
+            face.name,
+            style = MaterialTheme.typography.labelMedium,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            textAlign = TextAlign.Center,
+        )
+        Text(
+            face.author,
             style = MaterialTheme.typography.labelSmall,
-            color = NotifyAmber,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
         )
     }
 }
