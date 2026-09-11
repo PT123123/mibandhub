@@ -1,5 +1,8 @@
 package com.ted.shouhuan.ui.device
 
+import android.Manifest
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -15,34 +18,75 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.unit.dp
-import com.ted.shouhuan.data.DemoData
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.ted.shouhuan.ble.ConnectionState
+import com.ted.shouhuan.data.Pairing
 import com.ted.shouhuan.ui.components.KeyValueRow
+import com.ted.shouhuan.ui.components.NoticeBanner
 import com.ted.shouhuan.ui.components.SectionCard
 import com.ted.shouhuan.ui.components.StatusDot
+import com.ted.shouhuan.ui.theme.Mint
 import com.ted.shouhuan.ui.theme.NotifyAmber
 import com.ted.shouhuan.ui.theme.PulseRed
+import kotlinx.coroutines.launch
 
+/**
+ * 设备页：配对信息 + 手动连接。
+ *
+ * 这一页的数据全部来自本地存储与真实连接状态 —— 没有任何演示值。
+ * 读数拿不到就显示「—」，不编一个好看的数字出来：设备页一旦有个假的电量，
+ * 后面用户就没法判断哪个数字是能信的。
+ */
 @Composable
-fun DeviceScreen() {
-    val band = DemoData.bandStatus()
-    var connected by remember { mutableStateOf(band.connected) }
-    var autoConnect by remember { mutableStateOf(true) }
-    var backgroundSync by remember { mutableStateOf(true) }
+fun DeviceScreen(vm: DeviceViewModel, onPair: () -> Unit) {
+    val mac by vm.mac.collectAsStateWithLifecycle()
+    val name by vm.name.collectAsStateWithLifecycle()
+    val authKey by vm.authKey.collectAsStateWithLifecycle()
+    val paired by vm.paired.collectAsStateWithLifecycle()
+    val connected by vm.connected.collectAsStateWithLifecycle()
+    val connection by vm.connectionState.collectAsStateWithLifecycle()
+    val battery by vm.battery.collectAsStateWithLifecycle()
+    val error by vm.error.collectAsStateWithLifecycle()
+    val autoConnect by vm.autoConnect.collectAsStateWithLifecycle()
+    val forwardNotifications by vm.forwardNotifications.collectAsStateWithLifecycle()
+
+    val scope = rememberCoroutineScope()
+    var confirmForget by remember { mutableStateOf(false) }
+
+    val permissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestPermission(),
+        onResult = { granted -> vm.onPermissionResult(granted) },
+    )
+    val connect = {
+        // API < 31 没有 BLUETOOTH_CONNECT 这个运行时权限，hasBluetoothPermission() 恒为 true，
+        // 所以走不到 launch 那条分支。
+        if (vm.hasBluetoothPermission()) vm.connect() else permissionLauncher.launch(Manifest.permission.BLUETOOTH_CONNECT)
+    }
+
+    // 离开设备页就把这条连接松开：它只是为了「连一次看看电量」，没必要一直占着 ——
+    // 空闲的 GATT 两边都在耗电，而且「已连接」会跨页留在界面上，让人以为链路还通着。
+    DisposableEffect(Unit) {
+        onDispose { vm.onLeaveScreen() }
+    }
 
     Column(
         Modifier
@@ -53,6 +97,16 @@ fun DeviceScreen() {
         Spacer(Modifier.height(14.dp))
         Text("设备", style = MaterialTheme.typography.titleLarge)
         Spacer(Modifier.height(16.dp))
+
+        if (!paired) {
+            NoticeBanner(
+                title = "还没有配对手环",
+                tone = NotifyAmber,
+                detail = "本地没存设备 MAC 和 AuthKey，心率页和表盘页都连不上手环。",
+                hint = "用仓库里的 just fetch 能从官方 App 日志里直接读出密钥。",
+            )
+            Spacer(Modifier.height(12.dp))
+        }
 
         // ---- 设备卡 ----
         Column(
@@ -73,13 +127,16 @@ fun DeviceScreen() {
                 BandGlyph()
                 Spacer(Modifier.width(14.dp))
                 Column(Modifier.weight(1f)) {
-                    Text(band.name, style = MaterialTheme.typography.titleLarge)
+                    Text(
+                        name ?: "未配对手环",
+                        style = MaterialTheme.typography.titleLarge,
+                    )
                     Spacer(Modifier.height(4.dp))
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         StatusDot(connected)
                         Spacer(Modifier.width(6.dp))
                         Text(
-                            if (connected) "已连接" else "未连接",
+                            linkLabel(connection),
                             style = MaterialTheme.typography.labelMedium,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
@@ -91,26 +148,27 @@ fun DeviceScreen() {
             HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.4f))
             Spacer(Modifier.height(6.dp))
 
-            KeyValueRow("MAC 地址", band.mac)
-            KeyValueRow(
-                "电量",
-                "${band.batteryPercent}%",
-                valueColor = if (band.batteryPercent < 20) PulseRed else NotifyAmber,
-            )
-            KeyValueRow("固件版本", band.firmware)
+            KeyValueRow("MAC 地址", mac ?: "未配置")
             KeyValueRow(
                 "配对密钥",
-                if (band.authKeyConfigured) "已配置" else "未配置",
-                valueColor = if (band.authKeyConfigured) {
-                    MaterialTheme.colorScheme.primary
-                } else {
-                    PulseRed
-                },
+                Pairing.maskAuthKey(authKey),
+                valueColor = if (paired) Mint else PulseRed,
+            )
+            KeyValueRow(
+                "电量",
+                // 只在真的连上时显示：断着的时候手环没上报，留着上一次的数字会骗人。
+                if (connected) battery?.let { "$it%" } ?: "读取中…" else "—",
             )
 
             Spacer(Modifier.height(16.dp))
             Button(
-                onClick = { connected = !connected },
+                onClick = {
+                    when {
+                        !paired -> onPair()
+                        connected -> vm.disconnect()
+                        else -> connect()
+                    }
+                },
                 modifier = Modifier.fillMaxWidth(),
                 shape = RoundedCornerShape(14.dp),
                 colors = if (connected) {
@@ -125,8 +183,39 @@ fun DeviceScreen() {
                     )
                 },
             ) {
-                Text(if (connected) "断开连接" else "连接手环")
+                Text(
+                    when {
+                        !paired -> "去配对"
+                        connected -> "断开连接"
+                        else -> "连接手环"
+                    },
+                )
             }
+        }
+
+        // ---- 连接失败：说清出了什么事 + 怎么办 ----
+        val current = error
+        if (current != null) {
+            Spacer(Modifier.height(12.dp))
+            NoticeBanner(
+                title = current.title,
+                tone = PulseRed,
+                detail = current.detail,
+                hint = current.hint,
+                action = if (current.canGrantPermission) {
+                    {
+                        TextButton(
+                            onClick = {
+                                permissionLauncher.launch(Manifest.permission.BLUETOOTH_CONNECT)
+                            },
+                        ) {
+                            Text("去授权", color = PulseRed)
+                        }
+                    }
+                } else {
+                    null
+                },
+            )
         }
 
         Spacer(Modifier.height(12.dp))
@@ -137,45 +226,123 @@ fun DeviceScreen() {
                 title = "开机自动连接",
                 subtitle = "打开应用时自动连上已配对手环",
                 checked = autoConnect,
-                onCheckedChange = { autoConnect = it },
+                onCheckedChange = { vm.setAutoConnect(it) },
             )
             HorizontalDivider(
                 Modifier.padding(vertical = 10.dp),
                 color = MaterialTheme.colorScheme.outline.copy(alpha = 0.35f),
             )
             ToggleRow(
-                title = "后台常驻",
-                subtitle = "保持连接以持续同步通知与心率",
-                checked = backgroundSync,
-                onCheckedChange = { backgroundSync = it },
+                title = "转发手机通知",
+                subtitle = "把手机收到的通知推到手环（需要通知使用权）",
+                checked = forwardNotifications,
+                onCheckedChange = { vm.setForwardNotifications(it) },
+            )
+            HorizontalDivider(
+                Modifier.padding(vertical = 10.dp),
+                color = MaterialTheme.colorScheme.outline.copy(alpha = 0.35f),
+            )
+            Text(
+                "这条连接只为「连一次看看电量」，离开本页会自动断开。",
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         }
 
         Spacer(Modifier.height(12.dp))
 
-        // ---- 危险操作 ----
+        // ---- 配对 ----
         SectionCard(title = "配对", accent = PulseRed) {
             Text(
-                "忘记了密钥或换了新手机时，需要重新获取 AuthKey 并配对。",
+                if (paired) {
+                    "换了新手机，或者密钥填错了，都从这里改。密钥绑的是小米账号 + 手环，" +
+                        "换机后原样填回来就行，不必重新取。"
+                } else {
+                    "填入手环的 MAC 与 AuthKey 即可开始使用。"
+                },
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
             Spacer(Modifier.height(12.dp))
             Button(
-                onClick = { },
+                onClick = onPair,
                 modifier = Modifier.fillMaxWidth(),
                 shape = RoundedCornerShape(14.dp),
                 colors = ButtonDefaults.buttonColors(
-                    containerColor = PulseRed.copy(alpha = 0.14f),
-                    contentColor = PulseRed,
+                    containerColor = if (paired) {
+                        MaterialTheme.colorScheme.surfaceVariant
+                    } else {
+                        MaterialTheme.colorScheme.primary
+                    },
+                    contentColor = if (paired) {
+                        MaterialTheme.colorScheme.onSurface
+                    } else {
+                        MaterialTheme.colorScheme.onPrimary
+                    },
                 ),
             ) {
-                Text("重新配对")
+                Text(if (paired) "重新配对" else "填 MAC 与 AuthKey")
+            }
+
+            if (paired) {
+                Spacer(Modifier.height(10.dp))
+                Button(
+                    onClick = { confirmForget = true },
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(14.dp),
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = PulseRed.copy(alpha = 0.14f),
+                        contentColor = PulseRed,
+                    ),
+                ) {
+                    Text("忘记此设备")
+                }
             }
         }
 
         Spacer(Modifier.height(24.dp))
     }
+
+    if (confirmForget) {
+        AlertDialog(
+            onDismissRequest = { confirmForget = false },
+            title = { Text("忘记这台手环？") },
+            text = {
+                Text(
+                    "会删掉本机存的 MAC 和 AuthKey。手环本身不受影响，测量记录也会保留；" +
+                        "下次要用得重新配对。",
+                )
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        confirmForget = false
+                        scope.launch { vm.forgetDevice() }
+                    },
+                ) {
+                    Text("忘记", color = PulseRed)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { confirmForget = false }) { Text("取消") }
+            },
+        )
+    }
+}
+
+/** 连接状态 → 给人看的一句话。 */
+private fun linkLabel(state: ConnectionState): String = when (state) {
+    is ConnectionState.Connected,
+    is ConnectionState.Authenticated,
+    -> "已连接"
+
+    is ConnectionState.Connecting,
+    is ConnectionState.Discovering,
+    -> "正在连接…"
+
+    is ConnectionState.Failed -> "连接失败"
+
+    ConnectionState.Disconnected -> "未连接"
 }
 
 /** 一个简单的手环图标（纯 Compose 画，不引图标资源）。 */
