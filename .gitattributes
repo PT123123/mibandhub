@@ -1,0 +1,12 @@
+# 统一 LF 行尾。
+# 本仓库的脚本要在 Termux(Android/Linux) 上跑，Windows 的 autocrlf 若把它
+# checkout 成 CRLF，bash 会报 `set: pipefail: invalid option name` 之类的
+# 诡异错误（\r 被当成选项名的一部分），且编译期完全不报，只有执行到才炸。
+* text=auto eol=lf
+
+justfile    text eol=lf
+*.sh        text eol=lf
+*.py        text eol=lf
+*.md        text eol=lf
+.gitattributes text eol=lf
+.gitignore  text eol=lf
