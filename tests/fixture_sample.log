@@ -1,0 +1,17 @@
+09-11 13:20:01.001 12345 12345 I XiaomiFit: [BleManager] onScanResult rssi=-61
+09-11 13:20:01.240 12345 12345 I XiaomiFit: bindDevice macAddress=AA:BB:CC:DD:EE:FF name=Mi Band 9
+09-11 13:20:01.301 12345 12345 D XiaomiFit: deviceAdditionalInfo mac=AA:BB:CC:DD:EE:FF productId=0x0156
+09-11 13:20:02.004 12345 12345 W XiaomiFit: bondInfo token=00000000000000000000000000000000 encryptKey=00000000000000000000000000000000
+09-11 13:20:02.118 12345 12345 I XiaomiFit: BondStateReceiver: encryptKey=4f3a9c1e7b2d8056ae31c9f04d6b7e28
+09-11 13:20:03.900 12345 12345 I XiaomiFit: secondDevice macAddress=11:22:33:44:55:66
+09-11 13:20:04.115 12345 12345 D XiaomiFit: sourceInfo={"mac":"11:22:33:44:55:66","additionalInfo":"{\"auth_key\":\"a1b2c3d4e5f60718293a4b5c6d7e8f90\"}"}
+09-11 13:20:05.220 12345 12345 I XiaomiFit: legacyAuth authKey=deadbeefcafebabe0123456789abcdef
+09-11 13:20:05.221 12345 12345 I XiaomiFit: legacyAuth authKey=deadbeefcafebabe0123456789abcdef
+09-11 13:20:06.500 12345 12345 I XiaomiFit: notAKey encryptKey=hello world, this is not a key
+09-11 13:20:07.010 12345 12345 I XiaomiFit: tooShort encryptKey=abcdef
+
+# --- 以下为实测格式（Redmi Note 12T Pro / 小米运动健康 3.48.3 / XiaomiFit.device.log）---
+# 最强线索：密钥与 MAC 在**同一行**，且 App 启动即写，**无需**触发「导出日志」
+09-11 15:44:48.001 15447 15447 I DeviceModel_15447_15447: DeviceManagerRemoteImpl initDeviceModel() called with: device = DeviceInfo(device=Device(did='huami.aabbccddeeff', productId=0, model='hmpace.bracelet.v5', name='小米手环5   ', extraValues=null, identifier='huami.aabbccddeeff', alias='', status=1, detail=Detail(mac=A1:B2:C3:D4:E5:F6, sn=aabbccddeeff)), sn=aabbccddeeff, mac=A1:B2:C3:D4:E5:F6, did='huami.aabbccddeeff', model='hmpace.bracelet.v5', name='小米手环5   ', nodeID=, huamiAuthKey=c0ffee1234567890abcdef0123456789, productId=0
+# 小写字段名变体：验证 re.IGNORECASE（历史 bug 就是大小写敏感导致的）
+09-11 15:44:49.001 15447 15447 I XiaomiFit: jsonStyle {"huamiauthkey":"1234567890abcdef1234567890abcdef"}

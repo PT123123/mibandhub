@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">手环管家</string>
+    <string name="notification_listener_label">手环管家 · 通知转发</string>
+
+    <!-- 底部导航 -->
+    <string name="nav_home">首页</string>
+    <string name="nav_heart">心率</string>
+    <string name="nav_sleep">睡眠</string>
+    <string name="nav_notify">通知</string>
+    <string name="nav_device">设备</string>
+</resources>

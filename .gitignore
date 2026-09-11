@@ -1,0 +1,32 @@
+__pycache__/
+*.pyc
+
+# 构建产物（just build 生成）
+dist/
+# 下载缓存（tools/setup_phone.sh 缓存的 APK，20+MB，别进库）
+.cache/
+.picked.log
+picked.log
+# 千万别把日志和密钥提交进版本库
+*.device.log
+*.android.log
+authkey.txt
+authkeys.txt
+authkeys.json
+*.authkey
+
+# ---- Android 工程（手环管理 App）----
+.gradle/
+local.properties
+.kotlin/
+build/
+app/build/
+captures/
+.cxx/
+*.apk
+*.aab
+*.iml
+.idea/
+
+# 会话工作目录（与 flowtary / capswriter 保持一致：不进库）
+.workbuddy/
