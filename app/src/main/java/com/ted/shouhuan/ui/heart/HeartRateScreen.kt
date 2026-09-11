@@ -27,6 +27,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -41,6 +42,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.ted.shouhuan.data.DemoData
+import com.ted.shouhuan.ui.components.KeyValueRow
 import com.ted.shouhuan.ui.components.MetricTile
 import com.ted.shouhuan.ui.components.NoticeBanner
 import com.ted.shouhuan.ui.components.SectionCard
@@ -49,6 +51,9 @@ import com.ted.shouhuan.ui.components.StatusDot
 import com.ted.shouhuan.ui.theme.NotifyAmber
 import com.ted.shouhuan.ui.theme.PulseRed
 import com.ted.shouhuan.ui.theme.StepBlue
+import com.ted.shouhuan.util.formatClockTime
+import com.ted.shouhuan.util.formatDateTime
+import com.ted.shouhuan.util.formatSeconds
 
 /**
  * 心率页：真正的测量流程都交给 [HeartRateViewModel]，
@@ -66,6 +71,8 @@ fun HeartRateScreen(vm: HeartRateViewModel) {
     val lastBpm by vm.lastBpm.collectAsStateWithLifecycle()
     val configured by vm.configured.collectAsStateWithLifecycle()
     val connection by vm.connectionState.collectAsStateWithLifecycle()
+    val lastResult by vm.lastResult.collectAsStateWithLifecycle()
+    val history by vm.history.collectAsStateWithLifecycle()
 
     val permissionLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.RequestPermission(),
@@ -120,7 +127,7 @@ fun HeartRateScreen(vm: HeartRateViewModel) {
                     Spacer(Modifier.width(7.dp))
                 }
                 Text(
-                    statusLabel(phase, elapsed),
+                    statusLabel(phase, elapsed, lastResult?.finishedAtMillis),
                     style = MaterialTheme.typography.labelMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -204,6 +211,62 @@ fun HeartRateScreen(vm: HeartRateViewModel) {
             }
         }
 
+        // ---- 上次测量的明细：什么时候测的、等了多久 ----
+        // 大数字只给一个「多少 BPM」，剩下的上下文放这儿，省得用户回头猜。
+        lastResult?.let { result ->
+            Spacer(Modifier.height(12.dp))
+            SectionCard(title = "测量明细", accent = PulseRed) {
+                KeyValueRow("读数", "${result.bpm} BPM", valueColor = PulseRed)
+                KeyValueRow("测量时刻", formatDateTime(result.finishedAtMillis))
+                KeyValueRow("耗时", formatSeconds(result.durationSec))
+            }
+        }
+
+        // ---- 测量记录：从第二次起才是一条「记录」，一次的时候上面那张卡就够了 ----
+        if (history.size >= 2) {
+            Spacer(Modifier.height(12.dp))
+            SectionCard(title = "测量记录（最近 ${history.size} 次）", accent = StepBlue) {
+                history.forEachIndexed { index, record ->
+                    if (index > 0) {
+                        HorizontalDivider(
+                            Modifier.padding(vertical = 9.dp),
+                            color = MaterialTheme.colorScheme.outline.copy(alpha = 0.35f),
+                        )
+                    }
+                    Row(
+                        Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Text(
+                            formatClockTime(record.finishedAtMillis),
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                        Row(verticalAlignment = Alignment.Bottom) {
+                            Text(
+                                "${record.bpm}",
+                                style = MaterialTheme.typography.titleLarge,
+                                color = PulseRed,
+                            )
+                            Spacer(Modifier.width(3.dp))
+                            Text(
+                                "BPM",
+                                style = MaterialTheme.typography.labelMedium,
+                                color = PulseRed,
+                                modifier = Modifier.padding(bottom = 3.dp),
+                            )
+                        }
+                        Text(
+                            "耗时 ${formatSeconds(record.durationSec)}",
+                            style = MaterialTheme.typography.labelMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                }
+            }
+        }
+
         Spacer(Modifier.height(12.dp))
 
         // ---- 今日曲线（仍是演示数据，等历史同步接上再换）----
@@ -273,19 +336,26 @@ private fun isBusy(phase: MeasurePhase): Boolean = when (phase) {
 
 /** 大数字该显示什么。测量中一律「--」，免得拿着上次的旧读数骗人。 */
 private fun displayValue(phase: MeasurePhase, lastBpm: Int?): String = when (phase) {
-    is MeasurePhase.Success -> phase.bpm.toString()
+    is MeasurePhase.Success -> phase.result.bpm.toString()
     MeasurePhase.Connecting, MeasurePhase.Authenticating, MeasurePhase.Measuring -> "--"
     is MeasurePhase.Failure, MeasurePhase.Idle -> lastBpm?.toString() ?: "--"
 }
 
 /** 顶部那行小字。带上秒数，用户才知道程序在动。 */
-private fun statusLabel(phase: MeasurePhase, elapsedSec: Int): String {
+private fun statusLabel(
+    phase: MeasurePhase,
+    elapsedSec: Int,
+    lastFinishedAtMillis: Long?,
+): String {
     val base = when (phase) {
         MeasurePhase.Connecting -> "正在连接手环…"
         MeasurePhase.Authenticating -> "正在认证手环…"
         MeasurePhase.Measuring -> "正在测量…"
         is MeasurePhase.Failure -> "测量未完成"
-        else -> "当前心率"
+        // 没在测的时候大数字是上一次的读数 —— 写「当前心率」会让人以为是实时的
+        else -> lastFinishedAtMillis
+            ?.let { "上次测量 ${formatClockTime(it)}" }
+            ?: "当前心率"
     }
     return if (isBusy(phase) && elapsedSec > 0) "$base ${elapsedSec}s" else base
 }
