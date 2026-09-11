@@ -100,7 +100,7 @@ App 连手环只需要两样东西：**手环的 MAC** 和 **AuthKey**（32 位�
 
       实验台：`app/src/debug/java/com/ted/shouhuan/debug/ActivityLab.kt`。
 - [ ] 通知转发到手表
-- [x] 表盘下发 —— **功能已实现，但页面顶上标着「实验性」**。
+- [x] 表盘下发 —— **已真机验证（2026-09-12）：内置表盘下发后手环成功换上。**
       上游没有可抄的实现：Gadgetbridge 对 Mi Band 5 不支持表盘安装/切换
       （`MiBand5Coordinator` 继承的 `supportsAppsManagement` 默认 false，
       整个 huami 目录下只有 Zepp OS 设备才有 `PREF_WATCHFACE`）。
@@ -119,6 +119,17 @@ App 连手环只需要两样东西：**手环的 MAC** 和 **AuthKey**（32 位�
       表盘是否真的生效还没确认 —— 这正是页面上标「实验性」的原因。
       包体格式来自官方 App 的缓存：`files/WatchFace/data.zip`，
       里面是 160 张 `face_data_<风格>_<布局>_<序号>.png`。
+
+      页面现在带**三张内置表盘**（`app/src/main/assets/watchfaces/`）：
+      社区表盘 Digital Codex（gryffyn 作，CC BY-NC-SA 4.0，来自
+      amazfitwatchfaces #5183），加两张用 watchface-js 自制的极简表盘（CC0）。
+      它们是真正的华米 `.bin` 容器（UIHH 文件头）。用真 `.bin` 复测后收尾
+      仍是 `10 20 00` —— 2026-09-12 对照 Gadgetbridge master（现已支持
+      Mi Band 5 表盘安装）逐字节比对，找到两处协议差异并修复：
+      ① 表盘上传前缺一条「选表盘槽」命令（`39 00 00 ff ff ff <表盘ID>`，
+      写到 `00000003-…` 配置特征）；② 收尾校验应是 `04 <crc16 u16le>` 而
+      不是裸 `04`。修正后真机下发内置表盘：手环回 `10 04 01`，表盘成功换上。
+      细节见 `docs/watchface.md` §2.1。
 
       **下发必须限速**（`BandSession.PACKET_INTERVAL_NANOS`，6 ms/包 ≈ 166 包/秒）：
       手环的接收缓冲有限，而每秒能灌多少取决于当时协商的 BLE 连接间隔。
