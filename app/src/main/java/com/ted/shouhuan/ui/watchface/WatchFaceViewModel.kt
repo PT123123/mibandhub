@@ -14,6 +14,8 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.ted.shouhuan.ble.ConnectionState
 import com.ted.shouhuan.data.BandPrefs
+import com.ted.shouhuan.data.BuiltInWatchFace
+import com.ted.shouhuan.data.BuiltInWatchFaces
 import com.ted.shouhuan.proto.BandSession
 import com.ted.shouhuan.proto.WatchFace
 import com.ted.shouhuan.proto.WatchFaceOutcome
@@ -34,6 +36,9 @@ data class WatchFaceFileInfo(
     val name: String,
     val sizeBytes: Int,
     val crc32: Int,
+    /** 来源与授权 —— 选内置表盘时有值，界面原样展示（社区表盘是别人的作品）。 */
+    val author: String? = null,
+    val license: String? = null,
 )
 
 /** 一次下发走到哪一步了。 */
@@ -60,10 +65,10 @@ sealed interface WatchFacePhase {
 /**
  * 表盘页的状态机。
  *
- * 这条链路是**实验性**的：协议只实测到「数据被完整接收」，
- * 最后一步（手环是否真的应用了表盘）还没确认。所以状态里专门有
- * [WatchFacePhase.Unconfirmed] 这一档，不硬拗成成功或失败 ——
- * 界面照实说明「包送达了、生效没确认」，用户才不会一头雾水。
+ * 这条链路 2026-09-12 起真机验证通过（协议对齐 Gadgetbridge 后内置表盘
+ * 下发成功换上）。状态里仍保留 [WatchFacePhase.Unconfirmed] 这一档：
+ * 数据被完整接收但收尾应答不符合预期时（比如推了格式不对的文件），
+ * 照实说明而不是硬拗成成功或失败。
  */
 @SuppressLint("MissingPermission")
 class WatchFaceViewModel(app: Application) : AndroidViewModel(app) {
@@ -84,6 +89,10 @@ class WatchFaceViewModel(app: Application) : AndroidViewModel(app) {
 
     private val _file = MutableStateFlow<WatchFaceFileInfo?>(null)
     val file: StateFlow<WatchFaceFileInfo?> = _file.asStateFlow()
+
+    /** 当前选中的内置表盘（走文件选择器时清空）—— 界面据此高亮卡片。 */
+    private val _selectedBuiltInId = MutableStateFlow<String?>(null)
+    val selectedBuiltInId: StateFlow<String?> = _selectedBuiltInId.asStateFlow()
 
     /** 协议日志 —— 实验性功能，出问题时这些原始字节就是唯一线索。 */
     private val _logs = MutableStateFlow<List<String>>(emptyList())
@@ -117,6 +126,43 @@ class WatchFaceViewModel(app: Application) : AndroidViewModel(app) {
     // 对外动作
     // ------------------------------------------------------------------
 
+    /** 用户点了一张内置表盘。 */
+    fun selectBuiltIn(face: BuiltInWatchFace) {
+        if (running?.isActive == true) return
+        viewModelScope.launch {
+            val result = withContext(Dispatchers.IO) {
+                runCatching { BuiltInWatchFaces.readPayload(getApplication(), face) }
+            }
+            result.fold(
+                onSuccess = { bytes ->
+                    val problem = validate(bytes)
+                    if (problem != null) {
+                        _phase.value = problem
+                        return@fold
+                    }
+                    payload = bytes
+                    _selectedBuiltInId.value = face.id
+                    _file.value = WatchFaceFileInfo(
+                        name = face.name,
+                        sizeBytes = bytes.size,
+                        crc32 = WatchFace.crc32Of(bytes),
+                        author = face.author,
+                        license = face.license,
+                    )
+                    _phase.value = WatchFacePhase.Idle
+                    session.log("已选中内置表盘：${face.name}（${bytes.size} 字节）")
+                },
+                onFailure = { t ->
+                    _phase.value = WatchFacePhase.Failure(
+                        title = "读不了内置表盘",
+                        detail = t.message ?: t.javaClass.simpleName,
+                        hint = "assets 里的表盘包缺失或损坏 —— 换个构建产物试试。",
+                    )
+                },
+            )
+        }
+    }
+
     /** 用户从系统文件选择器挑了一个包。 */
     fun selectFile(uri: Uri) {
         if (running?.isActive == true) return
@@ -124,7 +170,7 @@ class WatchFaceViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch {
             val result = withContext(Dispatchers.IO) {
                 runCatching {
-                    val name = queryDisplayName(app, uri) ?: "watchface.zip"
+                    val name = queryDisplayName(app, uri) ?: "watchface.bin"
                     val bytes = app.contentResolver.openInputStream(uri)?.use { it.readBytes() }
                         ?: error("系统返回的文件流打不开")
                     name to bytes
@@ -138,6 +184,7 @@ class WatchFaceViewModel(app: Application) : AndroidViewModel(app) {
                         return@fold
                     }
                     payload = bytes
+                    _selectedBuiltInId.value = null
                     _file.value = WatchFaceFileInfo(name, bytes.size, WatchFace.crc32Of(bytes))
                     _phase.value = WatchFacePhase.Idle
                     session.log("已选中：$name（${bytes.size} 字节）")
@@ -160,8 +207,8 @@ class WatchFaceViewModel(app: Application) : AndroidViewModel(app) {
         if (data == null) {
             _phase.value = WatchFacePhase.Failure(
                 title = "还没选表盘包",
-                detail = "先从文件里挑一个表盘包。",
-                hint = "官方 App 会把用过的表盘缓存在手机里，也可以直接挑它。",
+                detail = "先点一张内置表盘，或从文件里挑一个 .bin 表盘包。",
+                hint = "社区表盘站（如 amazfitwatchfaces.com）的 Mi Band 5 表盘就是 .bin 文件。",
             )
             return
         }
@@ -312,14 +359,27 @@ class WatchFaceViewModel(app: Application) : AndroidViewModel(app) {
             detail = "读出来 0 字节。",
         )
 
+        isZip(bytes) -> WatchFacePhase.Failure(
+            title = "这是 zip 压缩包，不是表盘",
+            detail = "文件头是 PK.. —— Mi Band 5 的表盘是 .bin 容器（UIHH 文件头）。" +
+                "之前实测用的「小米运动健康缓存 data.zip」就是这种 zip：里面是商城预览图，" +
+                "推上去手环不认（docs/watchface.md §3）。",
+            hint = "从社区表盘站下载 .bin 文件，或直接用上面的内置表盘。",
+        )
+
         bytes.size > WatchFace.MAX_PAYLOAD_BYTES -> WatchFacePhase.Failure(
             title = "表盘包太大",
             detail = "文件 ${bytes.size} 字节，上限 ${WatchFace.MAX_PAYLOAD_BYTES} 字节。",
-            hint = "官方自定义表盘约 240 KB —— 确认挑的不是别的压缩包。",
+            hint = "Mi Band 5 按 615 KB 卡 —— 确认挑的不是别的文件。",
         )
 
         else -> null
     }
+
+    /** zip 本地文件头 `PK\x03\x04`。 */
+    private fun isZip(bytes: ByteArray): Boolean =
+        bytes.size >= 4 && bytes[0] == 0x50.toByte() && bytes[1] == 0x4B.toByte() &&
+            bytes[2] == 0x03.toByte() && bytes[3] == 0x04.toByte()
 
     private fun queryDisplayName(app: Application, uri: Uri): String? = runCatching {
         app.contentResolver
