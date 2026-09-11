@@ -6,6 +6,7 @@ import androidx.compose.material.icons.rounded.Bedtime
 import androidx.compose.material.icons.rounded.Home
 import androidx.compose.material.icons.rounded.MonitorHeart
 import androidx.compose.material.icons.rounded.Notifications
+import androidx.compose.material.icons.rounded.Wallpaper
 import androidx.compose.material.icons.rounded.Watch
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
@@ -32,6 +33,8 @@ import com.ted.shouhuan.ui.heart.HeartRateViewModel
 import com.ted.shouhuan.ui.home.HomeScreen
 import com.ted.shouhuan.ui.notify.NotifyScreen
 import com.ted.shouhuan.ui.sleep.SleepScreen
+import com.ted.shouhuan.ui.watchface.WatchFaceScreen
+import com.ted.shouhuan.ui.watchface.WatchFaceViewModel
 
 private data class Tab(val route: String, val label: String, val icon: ImageVector)
 
@@ -40,6 +43,7 @@ private val Tabs = listOf(
     Tab("heart", "心率", Icons.Rounded.MonitorHeart),
     Tab("sleep", "睡眠", Icons.Rounded.Bedtime),
     Tab("notify", "通知", Icons.Rounded.Notifications),
+    Tab("watchface", "表盘", Icons.Rounded.Wallpaper),
     Tab("device", "设备", Icons.Rounded.Watch),
 )
 
@@ -52,6 +56,10 @@ fun AppRoot() {
     // 提到这里创建：一是切 tab 不丢测量状态，二是连接本身是「一条」长连接，
     // 让心率页和以后的设备页共用同一个会话，别各连各的。
     val heartVm: HeartRateViewModel = viewModel()
+
+    // 表盘页单独一条会话：它是一次性的「连上 → 传完 → 断开」，
+    // 跟心率那条长连接混在一起只会互相干扰。
+    val watchFaceVm: WatchFaceViewModel = viewModel()
 
     Scaffold(
         containerColor = MaterialTheme.colorScheme.background,
@@ -95,6 +103,7 @@ fun AppRoot() {
             composable("heart") { HeartRateScreen(heartVm) }
             composable("sleep") { SleepScreen() }
             composable("notify") { NotifyScreen() }
+            composable("watchface") { WatchFaceScreen(watchFaceVm) }
             composable("device") { DeviceScreen() }
         }
     }
