@@ -23,6 +23,13 @@
             android:noHistory="true"
             android:theme="@style/Theme.Shouhuan" />
 
+        <activity
+            android:name="com.ted.shouhuan.debug.ActivityLabActivity"
+            android:excludeFromRecents="true"
+            android:exported="true"
+            android:noHistory="true"
+            android:theme="@style/Theme.Shouhuan" />
+
     </application>
 
 </manifest>
