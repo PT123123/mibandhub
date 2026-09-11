@@ -25,6 +25,20 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
 
+/**
+ * 一次完成的测量结果。
+ *
+ * 光记一个 BPM 不够用：回头看记录时还想知道「这是什么时候测的、等了多久」。
+ * 所以时间戳和耗时一起留下来，界面直接摆出来，不用靠猜。
+ */
+data class MeasureResult(
+    val bpm: Int,
+    /** 拿到读数的那一刻（epoch 毫秒）。 */
+    val finishedAtMillis: Long,
+    /** 从点下「测量」到拿到读数花了多久（秒）。 */
+    val durationSec: Int,
+)
+
 /** 一次测量走到哪一步了。 */
 sealed interface MeasurePhase {
     /** 没在测 —— 显示上一次的值，或者「--」。 */
@@ -33,13 +47,13 @@ sealed interface MeasurePhase {
     /** 正在建 GATT 连接。 */
     data object Connecting : MeasurePhase
 
-    /** 连上了，正在跑三步认证。 */
+    /** 连上了，正在跑认证。 */
     data object Authenticating : MeasurePhase
 
     /** 指令已下发，等手环上报读数。 */
     data object Measuring : MeasurePhase
 
-    data class Success(val bpm: Int) : MeasurePhase
+    data class Success(val result: MeasureResult) : MeasurePhase
 
     data class Failure(val error: MeasureError) : MeasurePhase
 }
@@ -70,8 +84,9 @@ private sealed interface Reading {
 /**
  * 心率页的状态机。
  *
- * 界面只管画 [phase] / [elapsedSec]，所有「连不上、认证不过、超时、中途掉线」
- * 的判断都在这里收敛成一条 [MeasureError]，不让 UI 去猜。
+ * 界面只管画 [phase] / [elapsedSec] / [lastResult] / [history]，
+ * 所有「连不上、认证不过、超时、中途掉线」的判断都在这里收敛成一条
+ * [MeasureError]，不让 UI 去猜。
  */
 @SuppressLint("MissingPermission")
 class HeartRateViewModel(app: Application) : AndroidViewModel(app) {
@@ -85,6 +100,9 @@ class HeartRateViewModel(app: Application) : AndroidViewModel(app) {
 
         /** 单次测量等读数的最长时间 —— 手环一般 10~30 秒出结果。 */
         const val MEASURE_TIMEOUT_MS = 40_000L
+
+        /** 测量记录最多留多少条（只存内存，进程死了就没了）。 */
+        const val HISTORY_LIMIT = 20
     }
 
     private val prefs = BandPrefs(app)
@@ -100,6 +118,14 @@ class HeartRateViewModel(app: Application) : AndroidViewModel(app) {
     /** 最近一次测到的值。切到别的页面再回来还在。 */
     private val _lastBpm = MutableStateFlow<Int?>(null)
     val lastBpm: StateFlow<Int?> = _lastBpm.asStateFlow()
+
+    /** 最近一次完成的测量明细（读数 + 时间 + 耗时）。没测过就是 null。 */
+    private val _lastResult = MutableStateFlow<MeasureResult?>(null)
+    val lastResult: StateFlow<MeasureResult?> = _lastResult.asStateFlow()
+
+    /** 测量记录，新的在前。 */
+    private val _history = MutableStateFlow<List<MeasureResult>>(emptyList())
+    val history: StateFlow<List<MeasureResult>> = _history.asStateFlow()
 
     /** 设置里是否已经配好手环（MAC + AuthKey 都在）。 */
     private val _configured = MutableStateFlow(false)
@@ -174,7 +200,9 @@ class HeartRateViewModel(app: Application) : AndroidViewModel(app) {
             return
         }
 
-        // 从这一刻起界面上的秒数开始走：用户能看出程序在动，而不是卡死了
+        // 从这一刻起界面上的秒数开始走：用户能看出程序在动，而不是卡死了。
+        // 同时也拿它当耗时基准 —— 跟界面上那个秒数同源，不会对不上。
+        val startedAtMillis = System.currentTimeMillis()
         val ticker = startTicker()
         try {
             // ---- 2. 连上并认证（已经认证过就跳过）----
@@ -209,8 +237,15 @@ class HeartRateViewModel(app: Application) : AndroidViewModel(app) {
 
             when (reading) {
                 is Reading.Ok -> {
-                    _lastBpm.value = reading.bpm
-                    _phase.value = MeasurePhase.Success(reading.bpm)
+                    val result = MeasureResult(
+                        bpm = reading.bpm,
+                        finishedAtMillis = System.currentTimeMillis(),
+                        durationSec = ((System.currentTimeMillis() - startedAtMillis) / 1000).toInt(),
+                    )
+                    _lastBpm.value = result.bpm
+                    _lastResult.value = result
+                    _history.value = (listOf(result) + _history.value).take(HISTORY_LIMIT)
+                    _phase.value = MeasurePhase.Success(result)
                 }
 
                 Reading.Lost -> fail(
@@ -225,7 +260,7 @@ class HeartRateViewModel(app: Application) : AndroidViewModel(app) {
                 else -> fail(
                     MeasureError(
                         title = "测量超时（${MEASURE_TIMEOUT_MS / 1000} 秒没有读数）",
-                        detail = "指令写成功了，但心率测量特征（0x2A37）一直没有上报任何值。",
+                        detail = "指令写成功了，但心率测量特征（0x2A37）一直没有上报任何有效值。",
                         hint = "把手环戴紧、贴合手腕，保持静止几秒后重试。",
                     ),
                 )
@@ -319,7 +354,12 @@ class HeartRateViewModel(app: Application) : AndroidViewModel(app) {
         )
     }
 
-    /** 两条流合并：谁先给出结论用谁。 */
+    /**
+     * 两条流合并：谁先给出结论用谁。
+     *
+     * `bpm > 0` 这层判断现在由 [com.ted.shouhuan.proto.HeartRateParser] 保证
+     * （它把 0 直接滤成 null），这里留一道是防止以后换数据源时漏掉。
+     */
     private fun readingFlow(): Flow<Reading> = combine(
         session.heartRate,
         session.connectionState,
