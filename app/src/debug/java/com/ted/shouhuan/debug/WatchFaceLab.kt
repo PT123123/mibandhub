@@ -317,8 +317,11 @@ object WatchFaceLab {
      * 字面路径 `/sdcard/Android/data/<包名>/files/x.zip` 在 Android 11+ 上**打不开**：
      * `/sdcard` 是 FUSE 视图，应用直连自己那个目录的绝对路径会被拒，
      * 但用 `getExternalFilesDir()` 拿到的同一份文件是通的。所以打不开就按文件名回落。
+     *
+     * 公开出来是给 `stage=real` 用的 —— 那条路要跑生产代码（BandSession），
+     * 但同样得先把文件路径解析对。
      */
-    private fun resolveFile(context: Context, given: File): File? {
+    fun resolveFile(context: Context, given: File): File? {
         if (given.isFile) return given
         val dir = appExtDir(context) ?: return null
         return File(dir, given.name).takeIf { it.isFile }
