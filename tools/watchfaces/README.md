@@ -4,6 +4,10 @@
 就是用 [make_faces.py](make_faces.py) 生成的。社区那张（Digital Codex）
 来自 amazfitwatchfaces，不在此流程内。
 
+在线市场（`market/`）的批量生成用 [make_market.py](make_market.py)：
+2 布局 × 4 配色 = 8 张，打包后自动补丁唯一表盘 ID（UIHH 头 offset 18..21）
+并写 `market/index.json`。
+
 ## 依赖
 
 - Python 3 + Pillow（画素材）

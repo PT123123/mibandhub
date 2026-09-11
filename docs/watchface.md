@@ -164,14 +164,31 @@ please reduce size! Current size:1848kb.
 > **为什么可以「替换大法」**：官方 App 靠 **`.bin` 文件名**识别表盘，不看内容
 > （所以社区才有这套 —— 换掉文件、沿用原名，再同步一次）。
 
+### 5.3 在线市场（已落地）
+
+表盘页有「在线市场」入口：App 从本仓库 `market/` 目录拉目录清单
+（GitHub raw：`raw.githubusercontent.com/PT123123/mibandhub/main/market/index.json`），
+浏览带预览图的表盘、按需下载到 `filesDir/market/<id>/`，下载完自动进入
+表盘页「我的表盘」库，点选即走同一条下发链路。
+
+- **目录格式**：`{version, updated, faces:[{id,name,author,license,file,
+  preview,sizeBytes,crc32,note}]}`；`crc32` 用于下载后校验（对不上即弃）。
+- **内容纪律**：只收本仓库自制（CC0）—— 与 §5.1 同一条授权底线，不抓第三方站。
+- **生成**：`tools/watchfaces/make_market.py` 批量产出（2 布局 × 4 配色 = 8 张），
+  打包后把 UIHH 头第 18..21 字节补丁成唯一表盘 ID（`0x4D4B00xx`），避免市场
+  表盘在手环侧互相覆盖。ID 补丁后的包要先真机验证一张再批量信任。
+- **实现**：`data/MarketRepository.kt`（HttpURLConnection + org.json，零新依赖）、
+  `data/WatchfaceLibrary.kt`（内置 + 已下载合并视图）、`ui/market/`（市场页）。
+
 ## 6. 后续计划
 
 1. ~~真机复测修正后的流程~~ ✅ 已完成（2026-09-12，见 §2.1）
-2. 再做 P1-B「表盘库管理」：导入 / 命名 / 分组 / 预览 / 一键下发
-3. 「App 内建表盘生成器 / 编辑器」归 P2（`tools/watchfaces/` 的生成脚本已是雏形）
-4. 待确认的小事：615 KB 是否手环硬限（§4）；三张内置表盘的表盘 ID 里两张
-   自制共用同一个默认 ID（watchface-js 默认值），都装会互相覆盖 —— 要不要
-   给每张配独立 ID，做库管理时一并考虑
+2. **市场真机验证**：拉目录 → 下载 → 安装一张 patched-ID 表盘（确认 ID 补丁被手环接受）
+3. 再做 P1-B「表盘库管理」：导入 / 命名 / 分组 / 预览 / 一键下发
+4. 「App 内建表盘生成器 / 编辑器」归 P2（`tools/watchfaces/` 的生成脚本已是雏形）
+5. 待确认的小事：615 KB 是否手环硬限（§4）；两张内置自制表盘共用默认表盘 ID
+   （watchface-js 默认值），都装会互相覆盖 —— 市场侧已用唯一 ID 解决，内置的
+   要不要也补丁，做库管理时一并考虑
 
 ---
 
