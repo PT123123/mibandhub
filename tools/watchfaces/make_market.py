@@ -262,14 +262,6 @@ def layout_huge(a, bg_col, big_col, small_col, dim):
     return imgs, bg, prev, spec, "时间 / 日期 / 电量（无步数）"
 
 
-LAYOUTS = {
-    "digital": layout_digital,
-    "terminal": layout_terminal,
-    "center": layout_center,
-    "huge": layout_huge,
-}
-LAYOUT_LABEL = {"digital": "数码", "terminal": "终端", "center": "极简", "huge": "大字"}
-
 # 配色表：key / 中文名 / 强调色 / 背景 / 大数字 / 小数字 / 弱化色
 COLORS = [
     ("ice",      "冰蓝", (90, 200, 255),  (10, 13, 20), (238, 246, 252), (150, 175, 195), (70, 100, 125)),
@@ -280,6 +272,11 @@ COLORS = [
     ("graphite", "石墨", (184, 196, 208), (16, 19, 24), (225, 230, 238), (165, 175, 188), (105, 115, 128)),
     ("sakura",   "樱粉", (245, 168, 192), (20, 13, 17), (248, 232, 238), (210, 168, 184), (140, 95, 112)),
     ("grape",    "葡紫", (177, 140, 255), (15, 12, 20), (240, 234, 250), (180, 165, 215), (115, 98, 150)),
+    ("gold",     "暗金", (232, 193, 90),  (20, 17, 10), (245, 235, 210), (200, 180, 140), (135, 115, 80)),
+    ("sky",      "天青", (111, 195, 255), (10, 16, 24), (232, 242, 250), (150, 185, 215), (70, 105, 140)),
+    ("coral",    "珊瑚", (255, 127, 102), (23, 15, 13), (252, 238, 232), (215, 160, 145), (145, 90, 78)),
+    ("lavender", "薰衣草", (195, 166, 255), (18, 15, 26), (242, 236, 252), (190, 175, 220), (120, 105, 155)),
+    ("wine",     "酒红", (224, 72, 90),   (22, 10, 14), (248, 230, 235), (210, 145, 158), (140, 70, 85)),
 ]
 
 
@@ -301,6 +298,186 @@ def write_face_folder(folder: str, images: list[Image.Image], bg: Image.Image,
         json.dump(spec, fp, indent=2, ensure_ascii=False)
 
 
+def layout_split(a, bg_col, big_col, small_col, dim):
+    """分栏：左侧时间，右侧信息列（电量 / 日期 / 步数）。"""
+    big = digit_strip(font("consolab.ttf", 68), (38, 56), big_col)
+    small = digit_strip(font("seguisb.ttf", 40), (20, 30), small_col)
+    imgs = big + small + battery_icons()
+
+    bg = background_base(bg_col, dim, 100)
+    d = ImageDraw.Draw(bg)
+    d.rectangle((84, 24, 86, 282), fill=dim + (130,))       # 竖分隔线
+    d.ellipse((96, 176, 102, 182), fill=a + (255,))          # 日期分隔点
+
+    prev = composite(bg, [
+        (big[2], 6, 64), (big[1], 46, 64),
+        (big[0], 6, 128), (big[7], 46, 128),
+        (imgs[20 + 7], 90, 52),
+        (small[8], 84, 84), (small[4], 104, 84),
+        (small[0], 84, 140), (small[9], 104, 140),
+        (small[1], 84, 184), (small[2], 104, 184),
+        (small[3], 104, 232),
+    ])
+    spec = {
+        "Time": {
+            "Hours": {"Tens": place(6, 64, 0), "Ones": place(46, 64, 0)},
+            "Minutes": {"Tens": place(6, 128, 0), "Ones": place(46, 128, 0)},
+            "DrawingOrder": False,
+        },
+        "Activity": {"Steps": {"Number": number((84, 232), (124, 262), 10, "CenterRight")}, "UnknownV7": 0},
+        "Date": {"MonthAndDayAndYear": {"Separate": {
+            "Month": number((84, 140), (124, 170), 10),
+            "Day": number((84, 184), (124, 214), 10),
+        }, "TwoDigitsMonth": True, "TwoDigitsDay": True}},
+        "Battery": {
+            "BatteryText": {"Number": number((84, 84), (124, 114), 10, "CenterRight")},
+            "BatteryIcon": place(90, 52, 20, 9),
+        },
+    }
+    return imgs, bg, prev, spec, "时间 / 电量 / 日期 / 步数（分栏布局）"
+
+
+def layout_steps(a, bg_col, big_col, small_col, dim):
+    """步数主角：步数用强调色大数字居中，时间小字在顶。"""
+    hero = digit_strip(font("ariblk.ttf", 52), (24, 36), a)   # 步数条（强调色，index 0）
+    small = digit_strip(font("ariblk.ttf", 44), (20, 30), big_col)  # 时间条（index 10）
+    imgs = hero + small + battery_icons()
+
+    bg = background_base(bg_col, dim, 100)
+    d = ImageDraw.Draw(bg)
+    d.rectangle((20, 132, 106, 134), fill=a + (220,))
+    d.ellipse((61, 52, 67, 58), fill=a + (255,))             # 时:分 冒号点
+
+    prev = composite(bg, [
+        (small[2], 20, 40), (small[1], 42, 40),
+        (small[0], 70, 40), (small[7], 92, 40),
+        (hero[8], 20, 140), (hero[4], 44, 140), (hero[6], 68, 140), (hero[2], 92, 140),
+        (small[0], 14, 246), (small[9], 36, 246),
+        (small[1], 64, 246), (small[2], 86, 246),
+        (imgs[20 + 6], 98, 8),
+    ])
+    spec = {
+        "Time": {
+            "Hours": {"Tens": place(20, 40, 10), "Ones": place(42, 40, 10)},
+            "Minutes": {"Tens": place(70, 40, 10), "Ones": place(92, 40, 10)},
+            "DrawingOrder": False,
+        },
+        "Activity": {"Steps": {"Number": number((2, 140), (124, 204), 0, "Center")}, "UnknownV7": 0},
+        "Date": {"MonthAndDayAndYear": {"Separate": {
+            "Month": number((14, 246), (54, 280), 10),
+            "Day": number((64, 246), (104, 280), 10),
+        }, "TwoDigitsMonth": True, "TwoDigitsDay": True}},
+        "Battery": {
+            "BatteryText": {"Number": number((60, 8), (98, 38), 10, "CenterRight")},
+            "BatteryIcon": place(98, 8, 20, 9),
+        },
+    }
+    return imgs, bg, prev, spec, "时间 / 步数主角 / 日期 / 电量（无星期）"
+
+
+def layout_datehero(a, bg_col, big_col, small_col, dim):
+    """日历主角：大日期两行居中，时间小字在顶，星期+电量在底。没有步数。"""
+    big = digit_strip(font("ariblk.ttf", 106), (44, 84), big_col)
+    small = digit_strip(font("seguisb.ttf", 40), (20, 30), small_col)
+    week = weekday_strip(font("consola.ttf", 18), (34, 16), dim)
+    imgs = big + small + battery_icons() + week
+
+    bg = background_base(bg_col, dim, 90)
+    d = ImageDraw.Draw(bg)
+    d.rectangle((14, 147, 102, 149), fill=a + (220,))        # 月/日分隔线
+
+    prev = composite(bg, [
+        (small[2], 20, 20), (small[1], 42, 20),
+        (small[0], 70, 20), (small[7], 92, 20),
+        (big[0], 14, 60), (big[9], 58, 60),
+        (big[1], 14, 150), (big[2], 58, 150),
+        (week[2], 88, 240),
+        (imgs[20 + 7], 58, 264),
+        (small[8], 84, 262), (small[4], 106, 262),
+    ])
+    spec = {
+        "Time": {
+            "Hours": {"Tens": place(20, 20, 10), "Ones": place(42, 20, 10)},
+            "Minutes": {"Tens": place(70, 20, 10), "Ones": place(92, 20, 10)},
+            "DrawingOrder": False,
+        },
+        "Date": {
+            "MonthAndDayAndYear": {"Separate": {
+                "Month": number((14, 60), (102, 144), 0),
+                "Day": number((14, 150), (102, 234), 0),
+            }, "TwoDigitsMonth": True, "TwoDigitsDay": True},
+            "ENWeekDays": place(88, 240, 29, 7),
+        },
+        "Battery": {
+            "BatteryText": {"Number": number((84, 262), (122, 292), 10, "CenterRight")},
+            "BatteryIcon": place(58, 264, 20, 9),
+        },
+    }
+    return imgs, bg, prev, spec, "时间 / 大日期 / 星期 / 电量（无步数）"
+
+
+def layout_rounded(a, bg_col, big_col, small_col, dim):
+    """圆润：Bahnschrift 窄体数字 + 星期行 + 四角圆点点缀。"""
+    big = digit_strip(font("bahnschrift.ttf", 100), (48, 84), big_col)
+    small = digit_strip(font("bahnschrift.ttf", 44), (22, 34), small_col)
+    week = weekday_strip(font("consola.ttf", 18), (34, 16), dim)
+    imgs = big + small + battery_icons() + week
+
+    bg = background_base(bg_col, dim, 100)
+    d = ImageDraw.Draw(bg)
+    for cx, cy in ((8, 8), (118, 8), (8, 286), (118, 286)):
+        d.ellipse((cx - 2, cy - 2, cx + 2, cy + 2), fill=a + (255,))
+    d.ellipse((61, 230, 67, 236), fill=a + (255,))
+    step_icon(d, (12, 260, 30, 284), dim + (200,))
+
+    prev = composite(bg, [
+        (week[5], 6, 6),
+        (big[1], 6, 36), (big[0], 62, 36),
+        (big[3], 6, 132), (big[8], 62, 132),
+        (small[0], 16, 218), (small[9], 38, 218),
+        (small[1], 74, 218), (small[2], 96, 218),
+        (render_glyph("4", font("bahnschrift.ttf", 44), (22, 34), small_col), 36, 256),
+        (imgs[20 + 7], 58, 10),
+        (small[8], 86, 6), (small[4], 108, 6),
+    ])
+    spec = {
+        "Time": {
+            "Hours": {"Tens": place(6, 36, 0), "Ones": place(62, 36, 0)},
+            "Minutes": {"Tens": place(6, 132, 0), "Ones": place(62, 132, 0)},
+            "DrawingOrder": False,
+        },
+        "Activity": {"Steps": {"Number": number((36, 256), (114, 290), 10)}, "UnknownV7": 0},
+        "Date": {
+            "MonthAndDayAndYear": {"Separate": {
+                "Month": number((16, 218), (60, 252), 10),
+                "Day": number((74, 218), (118, 252), 10),
+            }, "TwoDigitsMonth": True, "TwoDigitsDay": True},
+            "ENWeekDays": place(6, 6, 29, 7),
+        },
+        "Battery": {
+            "BatteryText": {"Number": number((84, 6), (122, 40), 10, "CenterRight")},
+            "BatteryIcon": place(58, 10, 20, 9),
+        },
+    }
+    return imgs, bg, prev, spec, "时间 / 日期 / 星期 / 步数 / 电量"
+
+
+LAYOUTS = {
+    "digital": layout_digital,
+    "terminal": layout_terminal,
+    "center": layout_center,
+    "huge": layout_huge,
+    "split": layout_split,
+    "steps": layout_steps,
+    "datehero": layout_datehero,
+    "rounded": layout_rounded,
+}
+LAYOUT_LABEL = {
+    "digital": "数码", "terminal": "终端", "center": "极简", "huge": "大字",
+    "split": "分栏", "steps": "步数", "datehero": "日历", "rounded": "圆润",
+}
+
+
 def run_wfjs(args: str) -> None:
     r = subprocess.run(f'npx wfjs {args}', shell=True, cwd=NPM_DIR,
                        capture_output=True, text=True)
@@ -318,7 +495,8 @@ def main() -> None:
 
     entries = []
     seq = 0
-    for layout in ["digital", "terminal", "center", "huge"]:
+    for layout in ["digital", "terminal", "center", "huge",
+                   "split", "steps", "datehero", "rounded"]:
         for ckey, cname, accent, bg_col, big, small, dim in COLORS:
             seq += 1
             fid = f"mk{seq:02d}"
