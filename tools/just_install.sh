@@ -37,42 +37,42 @@ dry() {
 # 这一段是踩出来的：同一台机器，终端里 adb devices 好好的，从这个脚本里查
 # 却可能一个字都吐不出来（连表头都没有）—— 终端 profile 动过 PATH/环境变量、
 # 或者机器上装了多个 platform-tools 时会发生。所以：
-#   1) 先用 PATH 里的 adb 查；连「List of devices attached」表头都打不出来
-#      （说明这个 adb 压根没工作，而不是真的没插设备）就自动重试一次
+#   1) 先用 PATH 里的 adb 查；查不到任何 device 就等 2 秒重试一次
 #      （server 冷启动后的第一次查询经常是空的）；
-#   2) 还不行就回退到标准 SDK 路径的 adb；
+#   2) 还是没有就逐个试标准 SDK 路径的 adb，谁列得出设备用谁 ——
+#      实测机器上有 /usr/local/bin/adb 和 SDK 的 adb 两个版本时，
+#      它们会互相杀 server，谁后查谁说了算；
 #   3) 选定后 export ADB=…，tools/android_install.sh 认这个变量。
 
 ADB_BIN="$(command -v adb 2>/dev/null || true)"
 ADB_RAW=""
 
-adb_works() {  # $1 = raw 输出，有表头才算这个 adb 真的在干活
-  printf '%s\n' "$1" | grep -q "List of devices attached"
+adb_query() {  # $1 = adb 路径；输出存进 ADB_RAW
+  ADB_RAW="$("$1" devices 2>&1 | tr -d '\r' || true)"
 }
 
 adb_pick() {
   [ -n "$ADB_BIN" ] || return 0
-  ADB_RAW="$("$ADB_BIN" devices 2>&1 | tr -d '\r' || true)"
-  if ! adb_works "$ADB_RAW"; then
+  adb_query "$ADB_BIN"
+  if ! adb_serials | grep -q .; then
     sleep 2
-    ADB_RAW="$("$ADB_BIN" devices 2>&1 | tr -d '\r' || true)"
+    adb_query "$ADB_BIN"
   fi
-  if ! adb_works "$ADB_RAW"; then
+  if ! adb_serials | grep -q .; then
     for alt in "$LOCALAPPDATA/Android/Sdk/platform-tools/adb.exe" \
                "$HOME/AppData/Local/Android/Sdk/platform-tools/adb.exe"; do
       [ -n "$alt" ] || continue
       alt="$(cygpath -u "$alt" 2>/dev/null || printf '%s' "$alt")"
       [ -x "$alt" ] || continue
       [ "$alt" = "$ADB_BIN" ] && continue
-      alt_raw="$("$alt" devices 2>&1 | tr -d '\r' || true)"
-      if adb_works "$alt_raw"; then
+      adb_query "$alt"
+      if adb_serials | grep -q .; then
         ADB_BIN="$alt"
-        ADB_RAW="$alt_raw"
-        echo "    （PATH 里的 adb 不工作，改用 $ADB_BIN）"
+        echo "    （换用 $ADB_BIN）"
         break
       fi
     done
-    ADB_RAW="$("$ADB_BIN" devices 2>&1 | tr -d '\r' || true)"
+    adb_query "$ADB_BIN"
   fi
   export ADB="$ADB_BIN"
 }
