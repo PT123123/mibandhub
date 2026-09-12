@@ -393,6 +393,16 @@ class MarketViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    /**
+     * 读一张已下载表盘的包体 —— 市场卡片「安装」直接下发用。
+     * 没下过/读不到返回 null，由界面提示。
+     */
+    suspend fun faceBytes(entry: MarketEntry): ByteArray? = withContext(Dispatchers.IO) {
+        runCatching {
+            repo.storedFace(entry.id)?.binFile?.takeIf { it.isFile }?.readBytes()
+        }.getOrNull()
+    }
+
     private fun setProgress(id: String, percent: Int) {
         _state.update { it.copy(progress = it.progress + (id to percent)) }
     }

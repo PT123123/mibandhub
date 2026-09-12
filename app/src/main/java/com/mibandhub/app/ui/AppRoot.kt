@@ -136,9 +136,11 @@ fun AppRoot() {
                 )
             }
             // 市场页不是 tab，从表盘页推上来（和配对页同一个模式）。
+            // watchFaceVm 一起传：卡片上的「安装」直接走表盘那条下发流程。
             composable("market") {
                 MarketScreen(
                     vm = marketVm,
+                    installVm = watchFaceVm,
                     onBack = { nav.popBackStack() },
                     onOpenBrowser = { nav.navigate("market-browser") { launchSingleTop = true } },
                 )

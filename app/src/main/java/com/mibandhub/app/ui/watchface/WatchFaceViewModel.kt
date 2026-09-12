@@ -235,6 +235,22 @@ class WatchFaceViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    /**
+     * 市场页「安装」入口：绕过「先选中再下发」，拿一份包体直接走完整安装流程。
+     * 包体会写进 [payload]/[_file]，下发中的进度和结果在表盘页（和市场卡片上）都能看到。
+     */
+    fun installBytes(name: String, bytes: ByteArray) {
+        if (running?.isActive == true) return
+        validate(bytes)?.let {
+            _phase.value = it
+            return
+        }
+        payload = bytes
+        _selectedLibraryId.value = null
+        _file.value = WatchFaceFileInfo(name, bytes.size, WatchFace.crc32Of(bytes))
+        start()
+    }
+
     /** 开始下发。 */
     fun start() {
         if (running?.isActive == true) return
