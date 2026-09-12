@@ -40,6 +40,11 @@ data class MarketEntry(
      * 快照目录的条目没有 —— 站点列表页才有这些数字。
      */
     val stats: String? = null,
+    /**
+     * 功能标签（[OnlineTag.param] 值域）。在线条目不填 —— 标签筛选走站点服务端；
+     * 快照目录条目在解析时从 note 推导（回落模式下本地过滤用）。
+     */
+    val tags: Set<String> = emptySet(),
 )
 
 /** 热门榜的统计口径（站点的 sortby 参数；不传 = 按下载量排）。 */
@@ -47,6 +52,71 @@ enum class OnlineMetric(val label: String, val param: String?) {
     DOWNLOADS("下载量", null),
     VIEWS("浏览量", "views"),
     FAVORITES("收藏数", "fav"),
+}
+
+/** 浏览模式：站点的三条目录页。搜索词 / 功能标签激活时覆盖这里的取值。 */
+enum class BrowseMode(val label: String) {
+    FRESH("最新"),
+    TOP("热门"),
+    UPDATED("最近更新"),
+}
+
+/**
+ * 功能标签筛选，对应站点筛选面板里那组可多选的 tag 按钮。
+ *
+ * 多选时逗号拼接进 `tags=` 查询参数，站点按交集（AND）过滤 —— 实测
+ * tags=moon,aod（6 张 ∩ 1 张）返回 0 张，若为并集不可能为 0；任一模式
+ * （/fresh /top /updated）都认这个参数，还能与 lang/paid 组合。
+ * 词表从详情页 Tags 和面板按钮里挑的功能性标签（每个都实测有结果）；
+ * 不收 PSG、metal gear solid 这类内容向标签。
+ */
+enum class OnlineTag(val label: String, val param: String) {
+    DIGITAL("数字", "digital"),
+    ANALOG("指针", "analog"),
+    MINIMAL("极简", "minimal"),
+    WEATHER("天气", "weather"),
+    BATTERY("电量", "battery"),
+    DATE("日期", "date"),
+    WEEKDAY("星期", "weekday"),
+    MONTH("月份", "month"),
+    STEPS("步数", "steps"),
+    HEART_RATE("心率", "heartrate"),
+    CALORIES("卡路里", "calories"),
+    DISTANCE("距离", "distance"),
+    FLOORS("楼层", "floors"),
+    SECONDS("秒针", "seconds"),
+    BLUETOOTH("蓝牙", "bluetooth"),
+    ALARM("闹钟", "alarm"),
+    LOCK("锁屏", "lock"),
+    DND("勿扰", "dnd"),
+    MOON("月相", "moon"),
+    AOD("息屏显示", "aod"),
+    ANIMATED("动画", "animated"),
+    RETRO("复古", "retro"),
+}
+
+/** 语言筛选（站点的 lang 参数，取值即站点筛选面板那张下拉表的值域）。单选。 */
+enum class OnlineLang(val label: String, val param: String) {
+    ANY("不限语言", ""),
+    MULTILINGUAL("多语言", "multilingual"),
+    ZH("中文", "zh"),
+    EN("英文", "en"),
+    JA("日文", "ja"),
+    KO("韩文", "ko"),
+    RU("俄文", "ru"),
+    DE("德文", "de"),
+    FR("法文", "fr"),
+    ES("西班牙文", "es"),
+    PT("葡萄牙文", "pt"),
+    IT("意大利文", "it"),
+    TR("土耳其文", "tr"),
+}
+
+/** 价格筛选（站点的 paid 参数，面板下拉里免费/付费的落点）。单选。 */
+enum class OnlinePaid(val label: String, val param: String?) {
+    ANY("免费/付费", null),
+    FREE("免费", "0"),
+    PAID("付费", "1"),
 }
 
 /**
@@ -209,6 +279,7 @@ class MarketRepository private constructor(context: Context) {
                     // 单条坏了跳过，别让一张烂数据拖垮整个目录
                     try {
                         val o = faces.getJSONObject(i)
+                        val note = o.optString("note").takeIf { it.isNotEmpty() }
                         MarketEntry(
                             id = o.getString("id"),
                             name = o.getString("name"),
@@ -218,8 +289,9 @@ class MarketRepository private constructor(context: Context) {
                             preview = o.getString("preview"),
                             sizeBytes = o.optInt("sizeBytes", 0),
                             crc32 = o.optString("crc32").toLongOrNull(16) ?: -1L,
-                            note = o.optString("note").takeIf { it.isNotEmpty() },
+                            note = note,
                             page = o.optString("page").takeIf { it.isNotEmpty() },
+                            tags = tagsFromNote(note),
                         )
                     } catch (e: JSONException) {
                         null
@@ -236,6 +308,30 @@ class MarketRepository private constructor(context: Context) {
         }
         throw lastError ?: IOException("目录源全部不可达")
     }
+
+    /**
+     * 快照目录条目没有标签字段，从 note（make_market.py 写的组件说明，
+     * 如「时间 / 日期 / 步数 / 电量」）推导 —— 回落模式下本地标签过滤用。
+     * 站点快照条目（az*）的 note 没有组件词面，推导出来是空集。
+     */
+    private fun tagsFromNote(note: String?): Set<String> {
+        if (note.isNullOrBlank()) return emptySet()
+        val tags = LinkedHashSet<String>()
+        for ((needle, tag) in NOTE_TAG_WORDS) {
+            if (note.contains(needle)) tags += tag.param
+        }
+        return tags
+    }
+
+    private val NOTE_TAG_WORDS = listOf(
+        "时间" to OnlineTag.DIGITAL,
+        "日期" to OnlineTag.DATE,
+        "星期" to OnlineTag.WEEKDAY,
+        "步数" to OnlineTag.STEPS,
+        "电量" to OnlineTag.BATTERY,
+        "心率" to OnlineTag.HEART_RATE,
+        "天气" to OnlineTag.WEATHER,
+    )
 
     /**
      * 目录清单地址 → 「相对路径怎么拼」的解析函数。
@@ -286,18 +382,26 @@ class MarketRepository private constructor(context: Context) {
      * 所以这里带一次重试；空响应和「解析不到卡片」都按失败处理，
      * 交给调用方回落快照目录，绝不能让界面摆出一个莫名的空市场。
      *
-     * @param fresh true = 最新上传（/fresh）；false = 热门榜（/top，按 [metric] × [period] 排）
-     * @param query 非空 = 站内搜索，其余参数全部忽略
+     * @param mode 浏览模式：最新上传 / 热门榜 / 最近更新
+     * @param query 非空 = 站内搜索，其余筛选参数全部忽略
+     * @param tags 功能标签多选（空集 = 不过滤），逗号拼接进 tags= 参数
+     * @param lang 语言过滤，ANY = 不传参；搜索模式下不生效
+     * @param paid 免费/付费过滤；搜索模式下不生效
+     * @param verifiedOnly 只看站点认证的表盘（verified=1）；搜索模式下不生效
      */
     @Throws(IOException::class)
     fun fetchOnlinePage(
         page: Int,
-        fresh: Boolean,
+        mode: BrowseMode = BrowseMode.FRESH,
         metric: OnlineMetric = OnlineMetric.DOWNLOADS,
         period: OnlinePeriod = OnlinePeriod.ALL_TIME,
         query: String? = null,
+        tags: Set<OnlineTag> = emptySet(),
+        lang: OnlineLang = OnlineLang.ANY,
+        paid: OnlinePaid = OnlinePaid.ANY,
+        verifiedOnly: Boolean = false,
     ): OnlinePage {
-        val url = onlineListUrl(page, fresh, metric, period, query)
+        val url = onlineListUrl(page, mode, metric, period, query, tags, lang, paid, verifiedOnly)
         var lastError: IOException? = null
         repeat(2) { attempt ->
             if (attempt > 0) runCatching { Thread.sleep(1_200) }
@@ -322,30 +426,45 @@ class MarketRepository private constructor(context: Context) {
         throw lastError ?: IOException("目录拉取失败")
     }
 
-    /** 组一页目录的地址。分页格式实测：目录 /p/N，搜索 ?page=N。 */
+    /**
+     * 组一页目录的地址。分页格式实测：目录 /p/N。
+     * 功能标签 / 语言 / 价格 / 认证都是查询参数（站点面板提交的同一套），
+     * 三条目录路径都认；多选标签按站点 JS 的做法逗号拼接（[OnlineTag] 注释）。
+     */
     private fun onlineListUrl(
         page: Int,
-        fresh: Boolean,
+        mode: BrowseMode,
         metric: OnlineMetric,
         period: OnlinePeriod,
         query: String?,
+        tags: Set<OnlineTag>,
+        lang: OnlineLang,
+        paid: OnlinePaid,
+        verifiedOnly: Boolean,
     ): String {
         if (!query.isNullOrBlank()) {
             val q = URLEncoder.encode(query.trim(), "UTF-8")
             return "$SITE_BASE/search/$DEVICE_SLUG/text/$q" + if (page > 1) "?page=$page" else ""
         }
-        return if (fresh) {
-            "$SITE_BASE/$DEVICE_SLUG/fresh" + if (page > 1) "/p/$page" else ""
-        } else {
+        val params = mutableListOf<String>()
+        if (tags.isNotEmpty()) params += "tags=" + tags.joinToString(",") { it.param }
+        if (lang != OnlineLang.ANY) params += "lang=${lang.param}"
+        paid.param?.let { params += "paid=$it" }
+        if (verifiedOnly) params += "verified=1"
+        if (mode == BrowseMode.TOP) {
             // top 页不带显式 topof 会返回空列表（站点默认窗口对着一个空的「本月」），
             // 所以这里永远把时间窗口带上
-            val params = mutableListOf<String>()
             metric.param?.let { params += "sortby=$it" }
             params += "topof=${period.param}"
-            "$SITE_BASE/$DEVICE_SLUG/top" +
-                (if (page > 1) "/p/$page" else "") +
-                "?" + params.joinToString("&")
         }
+        val path = when (mode) {
+            BrowseMode.FRESH -> "$SITE_BASE/$DEVICE_SLUG/fresh"
+            BrowseMode.UPDATED -> "$SITE_BASE/$DEVICE_SLUG/updated"
+            BrowseMode.TOP -> "$SITE_BASE/$DEVICE_SLUG/top"
+        }
+        val suffix = (if (page > 1) "/p/$page" else "") +
+            (if (params.isEmpty()) "" else "?" + params.joinToString("&"))
+        return path + suffix
     }
 
     /** 把目录页 HTML 拆成表盘条目；解析不出的卡片直接跳过，不拖累整页。 */

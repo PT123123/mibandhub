@@ -1,6 +1,7 @@
 package com.ted.shouhuan.ui.sleep
 
 import androidx.activity.compose.rememberLauncherForActivityResult
+import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.animateContentSize
@@ -34,6 +35,7 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.graphics.Color
@@ -81,28 +83,36 @@ fun SleepScreen(vm: SleepViewModel) {
     // null = 最新一晚；点了柱子之后才是具体某天
     var selectedEpochDay by remember { mutableStateOf<Long?>(null) }
 
-    // ---- 导出：小数据进剪贴板，大数据走系统文件选择器 ----
-    var exportHint by remember { mutableStateOf<String?>(null) }
+    // ---- 导出：走系统「保存文件」对话框，反馈用 Toast（不受折叠区影响）----
+    // 之前小数据直接进剪贴板、提示条塞在折叠区深处，点完看起来「毫无反应」；
+    // 现在「导出」一律落成文件，选择器打不开的 ROM 退回剪贴板兜底
+    val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val exportLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.CreateDocument("text/csv"),
     ) { uri ->
         if (uri != null) {
             scope.launch {
-                exportHint = if (vm.exportToFile(uri)) {
-                    "已写入文件（${vm.nightCount()} 晚）"
-                } else {
-                    "写入文件失败，换个位置再试一次"
-                }
+                val ok = vm.exportToFile(uri)
+                Toast.makeText(
+                    context,
+                    if (ok) "已导出 ${vm.nightCount()} 晚睡眠记录" else "写入文件失败，换个位置再试一次",
+                    Toast.LENGTH_LONG,
+                ).show()
             }
         }
     }
     val onExport: () -> Unit = {
-        if (vm.exportToClipboard()) {
-            exportHint = "已复制 ${vm.nightCount()} 晚到剪贴板"
-        } else {
-            // 剪贴板放不下 —— 让用户挑个位置写成 CSV 文件
+        try {
             exportLauncher.launch(vm.suggestedFileName())
+        } catch (e: Exception) {
+            // 个别 ROM 没有 SAF 文档选择器 —— 退回剪贴板，至少数据出得去
+            val msg = if (vm.exportToClipboard()) {
+                "系统文件选择器不可用，已复制 ${vm.nightCount()} 晚到剪贴板"
+            } else {
+                "导出失败：文件选择器打不开，剪贴板也放不下"
+            }
+            Toast.makeText(context, msg, Toast.LENGTH_LONG).show()
         }
     }
 
@@ -184,7 +194,6 @@ fun SleepScreen(vm: SleepViewModel) {
         DetailedDataSection(
             nights = nights,
             rangeIndex = rangeIndex,
-            exportHint = exportHint,
             onExport = onExport,
         )
 
@@ -378,7 +387,6 @@ private fun ChartLabels(ascending: List<SleepNightRecord>, selectedIndex: Int) {
 private fun DetailedDataSection(
     nights: List<SleepNightRecord>,
     rangeIndex: Int,
-    exportHint: String?,
     onExport: () -> Unit,
 ) {
     val days = RANGE_OPTIONS[rangeIndex]
@@ -445,15 +453,6 @@ private fun DetailedDataSection(
         rangeNights.lastOrNull()?.let {
             KeyValueRow("最早记录", formatEpochDay(it.epochDay))
         }
-        if (exportHint != null) {
-            Spacer(Modifier.height(8.dp))
-            Text(
-                exportHint,
-                style = MaterialTheme.typography.labelMedium,
-                color = SleepIndigo,
-            )
-        }
-
         Spacer(Modifier.height(14.dp))
         HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.35f))
         Spacer(Modifier.height(14.dp))

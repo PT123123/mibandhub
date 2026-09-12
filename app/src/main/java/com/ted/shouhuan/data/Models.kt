@@ -8,15 +8,6 @@ data class HeartRatePoint(val minuteOfDay: Int, val bpm: Int)
 
 data class SleepStageShare(val stage: SleepStage, val minutes: Int)
 
-data class SleepNight(
-    val dateLabel: String,
-    val bedTime: String,
-    val wakeTime: String,
-    val totalMinutes: Int,
-    val score: Int,
-    val shares: List<SleepStageShare>,
-)
-
 /**
  * 一晚睡眠的可持久化形态（[BandPrefs] 存储，不设条数上限）。
  *

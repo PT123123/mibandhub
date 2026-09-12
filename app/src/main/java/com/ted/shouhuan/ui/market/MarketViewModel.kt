@@ -6,11 +6,15 @@ import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import com.ted.shouhuan.data.BrowseMode
 import com.ted.shouhuan.data.MarketEntry
 import com.ted.shouhuan.data.MarketRepository
+import com.ted.shouhuan.data.OnlineLang
 import com.ted.shouhuan.data.OnlineMetric
 import com.ted.shouhuan.data.OnlinePage
+import com.ted.shouhuan.data.OnlinePaid
 import com.ted.shouhuan.data.OnlinePeriod
+import com.ted.shouhuan.data.OnlineTag
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -43,11 +47,21 @@ data class MarketUiState(
     val degraded: Boolean = false,
     /** 回落的原因（给用户看的：是 403 还是空响应），degraded 时显示在目录行。 */
     val degradedMessage: String? = null,
-    /** 当前浏览模式：最新上传 / 热门榜（口径 × 时间窗）/ 站内搜索。 */
-    val fresh: Boolean = true,
+    /** 当前浏览模式：最新上传 / 热门榜（口径 × 时间窗）/ 最近更新。 */
+    val mode: BrowseMode = BrowseMode.FRESH,
     val metric: OnlineMetric = OnlineMetric.DOWNLOADS,
     val period: OnlinePeriod = OnlinePeriod.ALL_TIME,
+    /** 功能标签多选（空集 = 不限）。在线模式下走站点 tags= 参数（交集语义）。 */
+    val tags: Set<OnlineTag> = emptySet(),
+    /** 语言筛选。ANY = 不传参。 */
+    val lang: OnlineLang = OnlineLang.ANY,
+    /** 免费/付费。ANY = 不传参。 */
+    val paid: OnlinePaid = OnlinePaid.ANY,
+    /** 只看站点认证（verified=1）。 */
+    val verifiedOnly: Boolean = false,
     val query: String? = null,
+    /** 只看已下载：本地过滤，任何模式（含回落快照）下都可用。 */
+    val onlyDownloaded: Boolean = false,
     /** id → 已下载（在本地 filesDir 里有本体）。 */
     val downloadedIds: Set<String> = emptySet(),
     /** id → 下载进度（只有下载中的才有条目）。 */
@@ -59,6 +73,19 @@ data class MarketUiState(
     /** 预览图正在加载中的 id 集合（防重复发起）。 */
     val previewLoading: Set<String> = emptySet(),
 )
+
+/**
+ * 界面真正要展示的列表：本地过滤（只看已下载）+ 回落模式下的标签过滤，
+ * 套在拉取结果上。在线模式的标签/语言/价格/搜索都由站点服务端完成，这里不重复做。
+ */
+fun MarketUiState.visibleEntries(): List<MarketEntry> {
+    val tagParams = tags.map { it.param }.toSet()
+    return entries.filter { entry ->
+        (!onlyDownloaded || entry.id in downloadedIds) &&
+            // 站点多选标签是交集语义，本地过滤保持一致
+            (!degraded || tagParams.isEmpty() || entry.tags.containsAll(tagParams))
+    }
+}
 
 /**
  * 表盘市场的状态机：在线源（amazfitwatchfaces.com）拉目录 → 并行预取预览图 →
@@ -92,19 +119,28 @@ class MarketViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     /**
-     * 按当前排序/搜索条件重新拉第一页。
+     * 按当前模式/筛选条件重新拉第一页。
      * 在线源不可达时回落自建快照目录（[loadSnapshotFallback]），不直接报错。
      */
     fun refresh() {
         if (_state.value.loading) return
-        val fresh = _state.value.fresh
-        val metric = _state.value.metric
-        val period = _state.value.period
-        val query = _state.value.query
+        val s = _state.value
         _state.update { it.copy(loading = true, error = null) }
         viewModelScope.launch {
             val result = withContext(Dispatchers.IO) {
-                runCatching { repo.fetchOnlinePage(1, fresh, metric, period, query) }
+                runCatching {
+                    repo.fetchOnlinePage(
+                        page = 1,
+                        mode = s.mode,
+                        metric = s.metric,
+                        period = s.period,
+                        query = s.query,
+                        tags = s.tags,
+                        lang = s.lang,
+                        paid = s.paid,
+                        verifiedOnly = s.verifiedOnly,
+                    )
+                }
             }
             result.fold(
                 onSuccess = { page -> applyOnlinePage(page, reset = true) },
@@ -113,10 +149,10 @@ class MarketViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    /** 切「最新 / 热门」。搜索词一并清掉 —— 两个模式互斥。 */
-    fun setFresh(fresh: Boolean) {
-        if (_state.value.fresh == fresh && _state.value.query == null) return
-        _state.update { it.copy(fresh = fresh, query = null) }
+    /** 切浏览模式。标签/语言等筛选跨模式保留（站点参数在三条目录路径上都生效）。 */
+    fun setMode(mode: BrowseMode) {
+        if (_state.value.mode == mode) return
+        _state.update { it.copy(mode = mode, query = null) }
         refresh()
     }
 
@@ -132,11 +168,57 @@ class MarketViewModel(app: Application) : AndroidViewModel(app) {
         refresh()
     }
 
+    /** 勾选/取消一个功能标签（多选，站点按交集过滤）。搜索词一并清掉（搜索覆盖标签）。 */
+    fun toggleTag(tag: OnlineTag) {
+        if (_state.value.query != null) {
+            _state.update { it.copy(query = null, tags = setOf(tag)) }
+        } else {
+            val next = _state.value.tags.let { if (tag in it) it - tag else it + tag }
+            if (next == _state.value.tags) return
+            _state.update { it.copy(tags = next) }
+        }
+        // 回落快照目录时标签走本地过滤（见 visibleEntries），不用重拉
+        if (!_state.value.degraded) refresh()
+    }
+
+    /** 清掉全部标签。 */
+    fun clearTags() {
+        if (_state.value.tags.isEmpty()) return
+        _state.update { it.copy(tags = emptySet()) }
+        if (!_state.value.degraded) refresh()
+    }
+
+    /** 选语言；ANY = 不限。 */
+    fun setLang(lang: OnlineLang) {
+        if (_state.value.lang == lang) return
+        _state.update { it.copy(lang = lang) }
+        refresh()
+    }
+
+    /** 免费/付费；ANY = 不限。 */
+    fun setPaid(paid: OnlinePaid) {
+        if (_state.value.paid == paid) return
+        _state.update { it.copy(paid = paid) }
+        refresh()
+    }
+
+    /** 只看站点认证（verified=1）。 */
+    fun setVerifiedOnly(enabled: Boolean) {
+        if (_state.value.verifiedOnly == enabled) return
+        _state.update { it.copy(verifiedOnly = enabled) }
+        refresh()
+    }
+
+    /** 只看已下载：纯本地过滤，不重新拉目录。 */
+    fun setOnlyDownloaded(enabled: Boolean) {
+        _state.update { it.copy(onlyDownloaded = enabled) }
+    }
+
     /** 提交搜索词；空串 = 退出搜索。 */
     fun submitSearch(raw: String) {
         val query = raw.trim().takeIf { it.isNotEmpty() }
         if (_state.value.query == query) return
-        _state.update { it.copy(query = query) }
+        _state.update { it.copy(query = query, tags = emptySet()) }
         refresh()
     }
 
@@ -144,15 +226,23 @@ class MarketViewModel(app: Application) : AndroidViewModel(app) {
     fun loadMore() {
         val current = _state.value
         if (current.loading || current.loadingMore || !current.hasMore) return
-        val fresh = current.fresh
-        val metric = current.metric
-        val period = current.period
-        val query = current.query
         val nextPage = current.loadedPages + 1
         _state.update { it.copy(loadingMore = true) }
         viewModelScope.launch {
             val result = withContext(Dispatchers.IO) {
-                runCatching { repo.fetchOnlinePage(nextPage, fresh, metric, period, query) }
+                runCatching {
+                    repo.fetchOnlinePage(
+                        page = nextPage,
+                        mode = current.mode,
+                        metric = current.metric,
+                        period = current.period,
+                        query = current.query,
+                        tags = current.tags,
+                        lang = current.lang,
+                        paid = current.paid,
+                        verifiedOnly = current.verifiedOnly,
+                    )
+                }
             }
             result.fold(
                 onSuccess = { page -> applyOnlinePage(page, reset = false) },

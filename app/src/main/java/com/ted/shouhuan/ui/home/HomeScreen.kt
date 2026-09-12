@@ -18,14 +18,15 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
-import com.ted.shouhuan.data.DemoData
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.compose.runtime.getValue
+import com.ted.shouhuan.data.SleepNightRecord
 import com.ted.shouhuan.ui.components.KeyValueRow
 import com.ted.shouhuan.ui.components.MetricTile
 import com.ted.shouhuan.ui.components.SectionCard
@@ -39,13 +40,18 @@ import com.ted.shouhuan.ui.theme.NotifyAmber
 import com.ted.shouhuan.ui.theme.PulseRed
 import com.ted.shouhuan.ui.theme.SleepIndigo
 import com.ted.shouhuan.ui.theme.StepBlue
+import com.ted.shouhuan.util.formatClockTime
 import com.ted.shouhuan.util.formatDuration
+import com.ted.shouhuan.util.minuteOfDayToClock
 
+/**
+ * 首页：设备状态、心率、步数、睡眠一屏总览。
+ * 全部走 [HomeViewModel] 的共享会话与本地存储 —— 和设备页、心率页、通知栏同源，
+ * 不再有「首页一个数、别处另一个数」的两张皮。
+ */
 @Composable
-fun HomeScreen() {
-    val status = DemoData.bandStatus()
-    val day = remember { DemoData.heartRateDay() }
-    val sleep = DemoData.lastNight()
+fun HomeScreen(vm: HomeViewModel) {
+    val state by vm.state.collectAsStateWithLifecycle()
 
     Column(
         Modifier
@@ -65,16 +71,16 @@ fun HomeScreen() {
                 Text("手环管家", style = MaterialTheme.typography.titleLarge)
                 Spacer(Modifier.height(4.dp))
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    StatusDot(status.connected)
+                    StatusDot(state.connected)
                     Spacer(Modifier.width(6.dp))
                     Text(
-                        text = if (status.connected) "${status.name} · 已连接" else "未连接",
+                        text = if (state.connected) "${state.deviceName ?: "手环"} · 已连接" else "未连接",
                         style = MaterialTheme.typography.labelMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 }
             }
-            BatteryChip(status.batteryPercent)
+            BatteryChip(state.battery)
         }
 
         Spacer(Modifier.height(18.dp))
@@ -103,7 +109,7 @@ fun HomeScreen() {
                 Spacer(Modifier.height(10.dp))
                 Row(verticalAlignment = Alignment.Bottom) {
                     Text(
-                        "${DemoData.latestBpm()}",
+                        state.bpm?.toString() ?: "--",
                         style = MaterialTheme.typography.displayLarge,
                         color = PulseRed,
                     )
@@ -115,14 +121,23 @@ fun HomeScreen() {
                         modifier = Modifier.padding(bottom = 10.dp),
                     )
                 }
-                Spacer(Modifier.height(14.dp))
-                Sparkline(
-                    values = day.map { it.bpm.toFloat() },
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(64.dp),
-                    color = PulseRed,
+                Spacer(Modifier.height(6.dp))
+                Text(
+                    state.lastMeasuredAt?.let { "上次测量 · ${formatClockTime(it)}" } ?: "还没有测量记录",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
+                Spacer(Modifier.height(14.dp))
+                // 近几次测量的趋势；只有一两次时画不出趋势，干脆不画
+                if (state.bpmTrend.size >= 2) {
+                    Sparkline(
+                        values = state.bpmTrend.map { it.toFloat() },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(64.dp),
+                        color = PulseRed,
+                    )
+                }
             }
         }
 
@@ -132,30 +147,34 @@ fun HomeScreen() {
         Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
             SectionCard(Modifier.weight(1f), title = "今日步数", accent = StepBlue) {
                 MetricTile(
-                    value = "%,d".format(DemoData.steps()),
+                    value = state.steps?.let { "%,d".format(it) } ?: "--",
                     unit = "步",
-                    label = "目标 %,d".format(DemoData.stepsGoal()),
+                    label = "目标 %,d".format(vm.stepsGoal.value),
                     accent = StepBlue,
                     modifier = Modifier.fillMaxWidth(),
                 )
                 Spacer(Modifier.height(10.dp))
                 ProgressBar(
-                    progress = DemoData.steps().toFloat() / DemoData.stepsGoal(),
+                    progress = (state.steps ?: 0).toFloat() / vm.stepsGoal.value,
                     color = StepBlue,
                 )
             }
             SectionCard(Modifier.weight(1f), title = "设备电量", accent = NotifyAmber) {
+                val battery = state.battery
                 MetricTile(
-                    value = "${status.batteryPercent}",
+                    value = battery?.toString() ?: "--",
                     unit = "%",
-                    label = if (status.batteryPercent < 20) "该充电了" else "约可用 9 天",
+                    label = when (battery) {
+                        null -> "连接手环后可见"
+                        else -> if (battery < 20) "该充电了" else "约可用 9 天"
+                    },
                     accent = NotifyAmber,
                     modifier = Modifier.fillMaxWidth(),
                 )
                 Spacer(Modifier.height(10.dp))
                 ProgressBar(
-                    progress = status.batteryPercent / 100f,
-                    color = if (status.batteryPercent < 20) PulseRed else NotifyAmber,
+                    progress = (battery ?: 0) / 100f,
+                    color = if ((battery ?: 100) < 20) PulseRed else NotifyAmber,
                 )
             }
         }
@@ -163,48 +182,17 @@ fun HomeScreen() {
         Spacer(Modifier.height(12.dp))
 
         // ---- 昨夜睡眠 ----
+        val night = state.lastNight
         SectionCard(title = "昨夜睡眠", accent = SleepIndigo) {
-            Row(
-                Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.Bottom,
-            ) {
+            if (night == null) {
                 Text(
-                    formatDuration(sleep.totalMinutes),
-                    style = MaterialTheme.typography.titleLarge,
+                    "暂无睡眠记录",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(vertical = 18.dp),
                 )
-                Column(horizontalAlignment = Alignment.End) {
-                    Text(
-                        "${sleep.score}",
-                        style = MaterialTheme.typography.titleLarge,
-                        color = SleepIndigo,
-                    )
-                    Text(
-                        "睡眠得分",
-                        style = MaterialTheme.typography.labelMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
-            }
-
-            Spacer(Modifier.height(14.dp))
-            SleepStageBar(
-                segments = sleep.shares.map { SleepStageSegment(it.stage, it.minutes) },
-                modifier = Modifier.fillMaxWidth(),
-            )
-            Spacer(Modifier.height(12.dp))
-
-            KeyValueRow("入睡 / 醒来", "${sleep.bedTime} — ${sleep.wakeTime}")
-
-            Spacer(Modifier.height(2.dp))
-            Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
-                sleep.shares.forEach { share ->
-                    StageLegend(
-                        color = share.stage.displayColor(),
-                        label = share.stage.label(),
-                        minutes = share.minutes,
-                    )
-                }
+            } else {
+                NightSummary(night, stagesOf = { vm.stagesOf(it) })
             }
         }
 
@@ -213,8 +201,64 @@ fun HomeScreen() {
 }
 
 @Composable
-private fun BatteryChip(percent: Int) {
+private fun NightSummary(
+    night: SleepNightRecord,
+    stagesOf: (SleepNightRecord) -> List<com.ted.shouhuan.data.SleepStageShare>,
+) {
+    val shares = stagesOf(night)
+    Column {
+        Row(
+            Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.Bottom,
+        ) {
+            Text(
+                formatDuration(night.totalMinutes),
+                style = MaterialTheme.typography.titleLarge,
+            )
+            Column(horizontalAlignment = Alignment.End) {
+                Text(
+                    "${night.score}",
+                    style = MaterialTheme.typography.titleLarge,
+                    color = SleepIndigo,
+                )
+                Text(
+                    "睡眠得分",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
+
+        Spacer(Modifier.height(14.dp))
+        SleepStageBar(
+            segments = shares.map { SleepStageSegment(it.stage, it.minutes) },
+            modifier = Modifier.fillMaxWidth(),
+        )
+        Spacer(Modifier.height(12.dp))
+
+        KeyValueRow(
+            "入睡 / 醒来",
+            "${minuteOfDayToClock(night.bedMinutes)} — ${minuteOfDayToClock(night.wakeMinutes)}",
+        )
+
+        Spacer(Modifier.height(2.dp))
+        Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
+            shares.forEach { share ->
+                StageLegend(
+                    color = share.stage.displayColor(),
+                    label = share.stage.label(),
+                    minutes = share.minutes,
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun BatteryChip(percent: Int?) {
     val color = when {
+        percent == null -> MaterialTheme.colorScheme.onSurfaceVariant
         percent < 20 -> PulseRed
         percent < 40 -> NotifyAmber
         else -> MaterialTheme.colorScheme.primary
@@ -226,41 +270,43 @@ private fun BatteryChip(percent: Int) {
             .padding(horizontal = 12.dp, vertical = 6.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Box(
-            Modifier
-                .width(18.dp)
-                .height(9.dp)
-                .clip(RoundedCornerShape(2.dp))
-                .background(Color.Transparent),
-        ) {
-            Row(Modifier.fillMaxSize()) {
-                Box(
-                    Modifier
-                        .fillMaxHeight()
-                        .width(15.dp)
-                        .clip(RoundedCornerShape(2.dp))
-                        .background(color.copy(alpha = 0.25f)),
-                )
-                Spacer(Modifier.width(1.dp))
-                Box(
-                    Modifier
-                        .fillMaxHeight()
-                        .width(2.dp)
-                        .clip(RoundedCornerShape(1.dp))
-                        .background(color.copy(alpha = 0.25f)),
-                )
-            }
+        if (percent != null) {
             Box(
                 Modifier
-                    .fillMaxHeight()
-                    .fillMaxWidth(percent / 100f.coerceAtLeast(0.08f))
+                    .width(18.dp)
+                    .height(9.dp)
                     .clip(RoundedCornerShape(2.dp))
-                    .background(color),
-            )
+                    .background(Color.Transparent),
+            ) {
+                Row(Modifier.fillMaxSize()) {
+                    Box(
+                        Modifier
+                            .fillMaxHeight()
+                            .width(15.dp)
+                            .clip(RoundedCornerShape(2.dp))
+                            .background(color.copy(alpha = 0.25f)),
+                    )
+                    Spacer(Modifier.width(1.dp))
+                    Box(
+                        Modifier
+                            .fillMaxHeight()
+                            .width(2.dp)
+                            .clip(RoundedCornerShape(1.dp))
+                            .background(color.copy(alpha = 0.25f)),
+                    )
+                }
+                Box(
+                    Modifier
+                        .fillMaxHeight()
+                        .fillMaxWidth(percent / 100f.coerceAtLeast(0.08f))
+                        .clip(RoundedCornerShape(2.dp))
+                        .background(color),
+                )
+            }
+            Spacer(Modifier.width(6.dp))
         }
-        Spacer(Modifier.width(6.dp))
         Text(
-            "$percent%",
+            percent?.let { "$it%" } ?: "--",
             style = MaterialTheme.typography.labelMedium,
             color = color,
         )

@@ -21,8 +21,9 @@ import kotlinx.coroutines.withContext
 /**
  * 睡眠页的状态。
  *
- * 数据只有一份来源：本地存储（[BandPrefs.sleepHistory]）。首次进入会先播种
- * 演示数据把界面撑起来；协议层的睡眠同步接通后写同一个存储，这里不用改。
+ * 数据只有一份来源：本地存储（[BandPrefs.sleepHistory]），由手环同步写入
+ * （DeviceViewModel → importSleepNights）。这里不生成任何演示数据；
+ * 早期版本播种过的假记录在首次进入本页时静默清掉。
  */
 class SleepViewModel(app: Application) : AndroidViewModel(app) {
 
@@ -33,7 +34,7 @@ class SleepViewModel(app: Application) : AndroidViewModel(app) {
         .stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
 
     init {
-        viewModelScope.launch { prefs.ensureSleepSeeded() }
+        viewModelScope.launch { prefs.removeDemoSleep() }
     }
 
     // ------------------------------------------------------------------

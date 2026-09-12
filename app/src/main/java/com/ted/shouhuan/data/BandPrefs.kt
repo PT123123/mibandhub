@@ -8,8 +8,6 @@ import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
-import java.time.LocalDate
-import kotlin.random.Random
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
 
@@ -34,6 +32,9 @@ class BandPrefs(private val context: Context) {
 
         // ---- 睡眠历史 ----
         val SLEEP_HISTORY = stringPreferencesKey("sleep_history")
+
+        /** 手环同步来的真实睡眠是否已经落过盘 —— 决定演示种子还能不能播种。 */
+        val SLEEP_REAL_SYNCED = booleanPreferencesKey("sleep_real_synced")
 
         // ---- 通知详细设置 ----
         val DND_ENABLED = booleanPreferencesKey("dnd_enabled")
@@ -110,10 +111,8 @@ class BandPrefs(private val context: Context) {
     // ------------------------------------------------------------------
     // 睡眠历史
     //
-    // 协议层的睡眠同步还没接通，先用按日期确定性生成的演示数据把界面撑起来
-    //（和 DemoData 的约定一致）。存进 DataStore 而不是每次现算，是为了让
-    // 「点击某一天 / 筛选范围 / 每晚明细」这套交互先跑在真实存储上 ——
-    // 接真实数据源时只需要 replaceSleepHistory()，界面一行不用改。
+    // 唯一来源是手环同步（DeviceViewModel → [importSleepNights]），
+    // 应用自己不生成任何演示数据。
     //
     // 不设条数上限：一年 365 行 × ~40 字节，几十年的量也占不满 DataStore。
     // ------------------------------------------------------------------
@@ -123,17 +122,33 @@ class BandPrefs(private val context: Context) {
         context.bandDataStore.data.map { decodeSleepHistory(it[Keys.SLEEP_HISTORY]) }
 
     /**
-     * 首次启动时播种演示睡眠史（近 180 天）。
+     * 清掉历史版本播种过的演示睡眠数据。
      *
-     * 生成是确定性的：种子 = epochDay，同一天无论重跑多少次结果一致；
-     * 但只在键不存在时写一次，之后用户界面上的任何展示都来自存储。
+     * 早期版本在首次启动时会写近 180 天的演示记录；没有 [SLEEP_REAL_SYNCED]
+     * 标记的存储里只剩这些假数据 —— 升级后静默删除一次，真数据照常不受影响。
      */
-    suspend fun ensureSleepSeeded() {
+    suspend fun removeDemoSleep() {
         context.bandDataStore.edit { prefs ->
-            if (prefs[Keys.SLEEP_HISTORY] == null) {
-                prefs[Keys.SLEEP_HISTORY] = encodeSleepHistory(seedDemoSleep())
+            if (prefs[Keys.SLEEP_REAL_SYNCED] != true) {
+                prefs.remove(Keys.SLEEP_HISTORY)
             }
         }
+    }
+
+    /**
+     * 导入手环同步来的真实睡眠。
+     *
+     * 第一次导入时把演示种子整份清掉 —— 真实数据一到假数据必须走，
+     * 不然界面真假混在一起没法看；之后的导入按天合并（[replaceSleepNight]）。
+     */
+    suspend fun importSleepNights(nights: List<SleepNightRecord>) {
+        context.bandDataStore.edit { prefs ->
+            if (prefs[Keys.SLEEP_REAL_SYNCED] != true) {
+                prefs.remove(Keys.SLEEP_HISTORY)
+                prefs[Keys.SLEEP_REAL_SYNCED] = true
+            }
+        }
+        nights.forEach { replaceSleepNight(it) }
     }
 
     /** 写入/覆盖一晚记录（真实同步接通后用；同一天重复写按覆盖处理）。 */
@@ -146,39 +161,9 @@ class BandPrefs(private val context: Context) {
         }
     }
 
-    /** 清空睡眠史（接真实数据源前清理演示数据用）。 */
+    /** 清空睡眠史。 */
     suspend fun clearSleepHistory() {
         context.bandDataStore.edit { it.remove(Keys.SLEEP_HISTORY) }
-    }
-
-    /** 近 180 天的演示睡眠。数值都在真机数据的合理区间内，周末睡得晚一些。 */
-    private fun seedDemoSleep(): List<SleepNightRecord> {
-        val today = LocalDate.now().toEpochDay()
-        return (0 until 180).map { back ->
-            val epochDay = today - back
-            val rng = Random(epochDay * 31 + 7)
-            val weekend = LocalDate.ofEpochDay(epochDay).dayOfWeek.value in listOf(6, 7)
-            // 入睡：工作日 23:00 上下，周五/周六晚推后 ~50 分钟
-            var bed = (23 * 60 + rng.nextInt(-35, 50)).let { if (weekend) it + 50 else it }
-            if (rng.nextInt(10) == 0) bed += 60 // 偶尔熬夜
-            val total = 385 + rng.nextInt(0, 120) - (if (rng.nextInt(9) == 0) rng.nextInt(40, 90) else 0)
-            val awake = 6 + rng.nextInt(0, 22)
-            val deep = (total * (0.21 + rng.nextDouble(0.0, 0.07))).toInt()
-            val rem = (total * (0.18 + rng.nextDouble(0.0, 0.07))).toInt()
-            val light = total - deep - rem
-            val score = (62 + (total - 380) / 2.2 + rng.nextDouble(-6.0, 6.0)).toInt().coerceIn(52, 97)
-            SleepNightRecord(
-                epochDay = epochDay,
-                totalMinutes = total,
-                score = score,
-                bedMinutes = ((bed % 1440) + 1440) % 1440,
-                wakeMinutes = ((bed + total + awake) % 1440).toInt(),
-                deepMinutes = deep,
-                lightMinutes = light,
-                remMinutes = rem,
-                awakeMinutes = awake,
-            )
-        }.sortedByDescending { it.epochDay }
     }
 
     private fun encodeSleepHistory(list: List<SleepNightRecord>): String =
