@@ -45,6 +45,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
@@ -57,17 +58,22 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.ted.shouhuan.data.BrowseMode
 import com.ted.shouhuan.data.MarketEntry
+import com.ted.shouhuan.data.OnlineLang
 import com.ted.shouhuan.data.OnlineMetric
+import com.ted.shouhuan.data.OnlinePaid
 import com.ted.shouhuan.data.OnlinePeriod
+import com.ted.shouhuan.data.OnlineTag
 import com.ted.shouhuan.ui.components.NoticeBanner
 import com.ted.shouhuan.ui.theme.Mint
 import com.ted.shouhuan.ui.theme.PulseRed
 import com.ted.shouhuan.ui.theme.StepBlue
 
 /**
- * 表盘市场：在线源（amazfitwatchfaces.com）按 最新/热门/搜索 浏览，预览图随卡片加载，
- * 下载到本地。在线源不可达时回落自建快照目录。下载完的表盘出现在表盘页「我的表盘」里。
+ * 表盘市场：在线源（amazfitwatchfaces.com）按 最新/热门/最近更新/搜索/组件标签/语言
+ * 浏览，预览图随卡片加载，下载到本地。在线源不可达时回落自建快照目录
+ * （标签退化为本地过滤）。下载完的表盘出现在表盘页「我的表盘」里。
  */
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
@@ -79,6 +85,8 @@ fun MarketScreen(
     val state by vm.state.collectAsStateWithLifecycle()
     var searchActive by remember { mutableStateOf(false) }
     var searchInput by remember { mutableStateOf("") }
+    // 进阶筛选（标签 / 语言 / 只看已下载）默认收起，常用入口是模式行
+    var filtersExpanded by rememberSaveable { mutableStateOf(false) }
 
     Column(
         Modifier
@@ -150,27 +158,15 @@ fun MarketScreen(
                 color = PulseRed,
             )
         } else if (state.entries.isNotEmpty()) {
+            val shown = state.visibleEntries()
+            val filteredNote = if (shown.size != state.entries.size) " · 符合 ${shown.size}" else ""
             Text(
-                "来源 amazfitwatchfaces.com · ${state.entries.size} 张 · " +
+                "来源 amazfitwatchfaces.com · ${state.entries.size} 张$filteredNote · " +
                     "预览 ${state.previews.size}/${state.entries.size}",
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         }
-        Spacer(Modifier.height(8.dp))
-
-        MarketFilterChips(
-            state = state,
-            onFresh = { vm.setFresh(true) },
-            onTop = { vm.setFresh(false) },
-            onMetric = { vm.setMetric(it) },
-            onPeriod = { vm.setPeriod(it) },
-            onClearSearch = {
-                searchActive = false
-                searchInput = ""
-                vm.submitSearch("")
-            },
-        )
         Spacer(Modifier.height(8.dp))
 
         when {
@@ -222,7 +218,45 @@ fun MarketScreen(
                     verticalArrangement = Arrangement.spacedBy(10.dp),
                     modifier = Modifier.fillMaxSize(),
                 ) {
-                    items(state.entries, key = { it.id }) { entry ->
+                    // 筛选区是网格的通栏首项，跟卡片共用同一个滚动容器 ——
+                    // 它要是固定在页头，展开后的十几行 chip 会把网格压到没有可滚空间，
+                    // 表现就是「点了筛选就滑不动」
+                    item(key = "filters", span = { GridItemSpan(3) }) {
+                        MarketFilterChips(
+                            state = state,
+                            filtersExpanded = filtersExpanded,
+                            onToggleFilters = { filtersExpanded = !filtersExpanded },
+                            onMode = { vm.setMode(it) },
+                            onMetric = { vm.setMetric(it) },
+                            onPeriod = { vm.setPeriod(it) },
+                            onToggleTag = { vm.toggleTag(it) },
+                            onClearTags = { vm.clearTags() },
+                            onLang = { vm.setLang(it) },
+                            onPaid = { vm.setPaid(it) },
+                            onVerifiedOnly = { vm.setVerifiedOnly(it) },
+                            onOnlyDownloaded = { vm.setOnlyDownloaded(it) },
+                            onClearSearch = {
+                                searchActive = false
+                                searchInput = ""
+                                vm.submitSearch("")
+                            },
+                        )
+                    }
+                    val shown = state.visibleEntries()
+                    if (shown.isEmpty()) {
+                        item(key = "filtered-empty", span = { GridItemSpan(3) }) {
+                            Text(
+                                "没有符合筛选条件的表盘",
+                                style = MaterialTheme.typography.labelMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                textAlign = TextAlign.Center,
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(vertical = 40.dp),
+                            )
+                        }
+                    }
+                    items(shown, key = { it.id }) { entry ->
                         MarketCard(
                             entry = entry,
                             preview = state.previews[entry.id],
@@ -245,10 +279,10 @@ fun MarketScreen(
                                 CircularProgressIndicator(Modifier.width(20.dp), strokeWidth = 2.dp)
                             }
                         }
-                    } else if (!state.hasMore && state.entries.isNotEmpty() && !state.degraded) {
+                    } else if (!state.hasMore && shown.isNotEmpty() && !state.degraded) {
                         item(key = "no-more", span = { GridItemSpan(3) }) {
                             Text(
-                                "到底了 · 共 ${state.entries.size} 张",
+                                "到底了 · 共 ${shown.size} 张",
                                 style = MaterialTheme.typography.labelSmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                                 textAlign = TextAlign.Center,
@@ -264,31 +298,51 @@ fun MarketScreen(
     }
 }
 
-/** 排序/筛选 chips：最新|热门(+口径|时间窗)，搜索激活时显示当前搜索词。 */
+/**
+ * 筛选区。
+ *
+ * 第一行是模式（最新 / 热门 / 最近更新）和「筛选」开关；热门模式下追加
+ * 口径 × 时间窗两行。展开「筛选」后是：
+ *   · 功能标签 —— **多选**（与站点一致，选中几个就交集几个）
+ *   · 价格（免费/付费）+ 只看认证 —— 站点 paid/verified 参数
+ *   · 语言 —— 站点 lang 参数
+ *   · 只看已下载 —— 本地过滤
+ * 搜索激活时覆盖其余筛选（与站点行为一致），界面把被覆盖的行藏起来。
+ */
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun MarketFilterChips(
     state: MarketUiState,
-    onFresh: () -> Unit,
-    onTop: () -> Unit,
+    filtersExpanded: Boolean,
+    onToggleFilters: () -> Unit,
+    onMode: (BrowseMode) -> Unit,
     onMetric: (OnlineMetric) -> Unit,
     onPeriod: (OnlinePeriod) -> Unit,
+    onToggleTag: (OnlineTag) -> Unit,
+    onClearTags: () -> Unit,
+    onLang: (OnlineLang) -> Unit,
+    onPaid: (OnlinePaid) -> Unit,
+    onVerifiedOnly: (Boolean) -> Unit,
+    onOnlyDownloaded: (Boolean) -> Unit,
     onClearSearch: () -> Unit,
 ) {
     val searching = state.query != null
+    val activeFilters =
+        (if (state.tags.isNotEmpty()) 1 else 0) +
+            (if (state.lang != OnlineLang.ANY) 1 else 0) +
+            (if (state.paid != OnlinePaid.ANY) 1 else 0) +
+            (if (state.verifiedOnly) 1 else 0) +
+            (if (state.onlyDownloaded) 1 else 0)
     FlowRow(
         horizontalArrangement = Arrangement.spacedBy(8.dp),
     ) {
-        FilterChip(
-            selected = !searching && state.fresh,
-            onClick = onFresh,
-            label = { Text("最新") },
-        )
-        FilterChip(
-            selected = !searching && !state.fresh,
-            onClick = onTop,
-            label = { Text("热门") },
-        )
+        BrowseMode.entries.forEach { mode ->
+            FilterChip(
+                selected = !searching && state.mode == mode,
+                onClick = { onMode(mode) },
+                label = { Text(mode.label) },
+            )
+        }
         if (searching) {
             FilterChip(
                 selected = true,
@@ -299,8 +353,18 @@ private fun MarketFilterChips(
                 },
             )
         }
-        // 口径/时间窗只属于热门榜
-        if (!searching && !state.fresh) {
+        FilterChip(
+            selected = filtersExpanded,
+            onClick = onToggleFilters,
+            label = { Text(if (activeFilters > 0) "筛选 · $activeFilters" else "筛选") },
+        )
+    }
+    // 口径/时间窗只属于热门榜
+    if (!searching && state.mode == BrowseMode.TOP) {
+        Spacer(Modifier.height(6.dp))
+        FlowRow(
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
             OnlineMetric.entries.forEach { metric ->
                 FilterChip(
                     selected = state.metric == metric,
@@ -309,8 +373,6 @@ private fun MarketFilterChips(
                 )
             }
         }
-    }
-    if (!searching && !state.fresh) {
         Spacer(Modifier.height(6.dp))
         FlowRow(
             horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -322,6 +384,81 @@ private fun MarketFilterChips(
                     label = { Text(period.label) },
                 )
             }
+        }
+    }
+    if (filtersExpanded && !searching) {
+        Spacer(Modifier.height(6.dp))
+        Text(
+            "组件标签（可多选，同时满足）",
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Spacer(Modifier.height(4.dp))
+        FlowRow(
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            FilterChip(
+                selected = state.tags.isEmpty(),
+                onClick = onClearTags,
+                label = { Text("全部") },
+            )
+            OnlineTag.entries.forEach { tag ->
+                FilterChip(
+                    selected = tag in state.tags,
+                    onClick = { onToggleTag(tag) },
+                    label = { Text(tag.label) },
+                )
+            }
+        }
+        // 价格 / 语言是站点参数，回落快照目录后无从谈起
+        if (!state.degraded) {
+            Spacer(Modifier.height(6.dp))
+            FlowRow(
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                OnlinePaid.entries.forEach { paid ->
+                    FilterChip(
+                        selected = state.paid == paid,
+                        onClick = { onPaid(paid) },
+                        label = { Text(paid.label) },
+                    )
+                }
+                FilterChip(
+                    selected = state.verifiedOnly,
+                    onClick = { onVerifiedOnly(!state.verifiedOnly) },
+                    label = { Text("只看认证") },
+                )
+            }
+            Spacer(Modifier.height(6.dp))
+            FlowRow(
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                OnlineLang.entries.forEach { lang ->
+                    FilterChip(
+                        selected = state.lang == lang,
+                        onClick = { onLang(lang) },
+                        label = { Text(lang.label) },
+                    )
+                }
+            }
+        }
+        Spacer(Modifier.height(6.dp))
+        FlowRow(
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            FilterChip(
+                selected = state.onlyDownloaded,
+                onClick = { onOnlyDownloaded(!state.onlyDownloaded) },
+                label = { Text("只看已下载") },
+            )
+        }
+        if (state.degraded && state.tags.isNotEmpty()) {
+            Spacer(Modifier.height(4.dp))
+            Text(
+                "快照目录只有自制表盘带组件标签，其余条目被隐藏",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
         }
     }
 }

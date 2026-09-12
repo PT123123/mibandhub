@@ -33,20 +33,6 @@ object DemoData {
 
     fun stepsGoal(): Int = 8000
 
-    fun lastNight(): SleepNight = SleepNight(
-        dateLabel = "9月10日 周三",
-        bedTime = "23:41",
-        wakeTime = "06:53",
-        totalMinutes = 432,
-        score = 82,
-        shares = listOf(
-            SleepStageShare(SleepStage.AWAKE, 12),
-            SleepStageShare(SleepStage.REM, 52),
-            SleepStageShare(SleepStage.LIGHT, 272),
-            SleepStageShare(SleepStage.DEEP, 108),
-        ),
-    )
-
     fun bandStatus(): BandStatus = BandStatus(
         name = "小米手环5",
         mac = "AA:BB:CC:DD:EE:FF",

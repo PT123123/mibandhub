@@ -12,7 +12,8 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.ted.shouhuan.ble.ConnectionState
 import com.ted.shouhuan.data.BandPrefs
-import com.ted.shouhuan.proto.BandSession
+import com.ted.shouhuan.service.BandSessionProvider
+import com.ted.shouhuan.service.HeartMeasureController
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -40,6 +41,18 @@ data class DeviceError(
     val canGrantPermission: Boolean = false,
 )
 
+/** 睡眠同步走到哪一步了。 */
+sealed interface SleepSyncPhase {
+    data object Idle : SleepSyncPhase
+
+    /** received/expected 是样本字节数（近 7 天约 8 万字节）。 */
+    data class Syncing(val received: Int, val expected: Int) : SleepSyncPhase
+
+    data class Done(val nights: Int, val sampleMinutes: Int) : SleepSyncPhase
+
+    data class Failed(val message: String) : SleepSyncPhase
+}
+
 /**
  * 已存下来的配对信息，用来给配对页做初值。
  *
@@ -57,10 +70,12 @@ data class PairingSeed(
  *
  * 这一页管两件事：
  *   1. **配对信息**（名称 / MAC / AuthKey）—— 读写全在 [BandPrefs]，界面只是搬运工；
- *   2. **手动连一次看看**（连接 → 认证 → 读电量），成功与否都给一句能照做的失败原因。
+ *   2. **手动连一次**（连接 → 认证 → 读电量），成功与否都给一句能照做的失败原因。
  *
- * 连接是**按需**的：离开设备页时会主动断开（[onLeaveScreen]）—— 设备页的连接只为
- * 「连一次看看电量」，没必要一直攥着。心率页 / 表盘页各自按需连接，不需要这里替它们预热。
+ * 连接走**进程级共享会话**（[BandSessionProvider]）：这里点「连接」，通知栏的
+ * 状态卡和首页跟着一起变 —— 它们看的就是同一条会话。连上之后也不主动断：
+ * 常驻通知本来就要显示在线状态，而且心率页再测量时可以免重连直接用。
+ * 「断开」只在用户明确点按钮时发生。
  */
 @SuppressLint("MissingPermission")
 class DeviceViewModel(app: Application) : AndroidViewModel(app) {
@@ -71,7 +86,7 @@ class DeviceViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     private val prefs = BandPrefs(app)
-    private val session = BandSession(app, viewModelScope)
+    private val session = BandSessionProvider.get(app)
 
     // ---- 配对信息（本地存储是唯一来源，界面不另存一份）----
     val mac: StateFlow<String?> =
@@ -116,7 +131,11 @@ class DeviceViewModel(app: Application) : AndroidViewModel(app) {
     private val _error = MutableStateFlow<DeviceError?>(null)
     val error: StateFlow<DeviceError?> = _error.asStateFlow()
 
+    private val _sleepSync = MutableStateFlow<SleepSyncPhase>(SleepSyncPhase.Idle)
+    val sleepSync: StateFlow<SleepSyncPhase> = _sleepSync.asStateFlow()
+
     private var linking: Job? = null
+    private var syncing: Job? = null
 
     // ------------------------------------------------------------------
     // 对外动作
@@ -148,22 +167,11 @@ class DeviceViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    /** 点「断开连接」。 */
+    /** 点「断开连接」。只由用户明确触发 —— 离开页面不断开（通知栏要如实显示在线状态）。 */
     fun disconnect() {
         linking?.cancel()
         linking = null
         session.disconnect()
-    }
-
-    /**
-     * 离开设备页时调用。
-     *
-     * 设备页的连接只是为了「连一次看看电量」，没必要一直攥着：一条空闲的 GATT
-     * 两边的电都在掉，而且它会以「已连接」的样子留到别的页面上，
-     * 让人以为那条链路还在用。心率页 / 表盘页各自按需连接，不需要这里替它们预热。
-     */
-    fun onLeaveScreen() {
-        disconnect()
     }
 
     /** 界面申请运行时权限后回填结果。 */
@@ -207,9 +215,54 @@ class DeviceViewModel(app: Application) : AndroidViewModel(app) {
         _error.value = null
     }
 
+    /**
+     * 从手环同步近 7 天的活动明细，解析成睡眠夜写进本地。
+     * 没连着就先走一遍连接流程；测心率进行中不让动（共用一条 GATT，互相干扰）。
+     */
+    fun syncSleep() {
+        if (syncing?.isActive == true) return
+        val controller = HeartMeasureController.get(getApplication())
+        if (controller.busy) {
+            _sleepSync.value = SleepSyncPhase.Failed("心率测量进行中，等它跑完再同步")
+            return
+        }
+        _sleepSync.value = SleepSyncPhase.Syncing(0, 0)
+        syncing = viewModelScope.launch {
+            try {
+                if (!session.authenticated.value) {
+                    val mac = prefs.mac.first()
+                    val key = prefs.authKey.first()
+                    if (mac.isNullOrBlank() || key.isNullOrBlank()) {
+                        _sleepSync.value = SleepSyncPhase.Failed("还没配对手环")
+                        return@launch
+                    }
+                    preflight()?.let {
+                        _sleepSync.value = SleepSyncPhase.Failed("${it.title}。${it.detail}")
+                        return@launch
+                    }
+                    val ok = withTimeoutOrNull(CONNECT_TIMEOUT_MS) {
+                        session.connectAndAuthenticate(mac, key)
+                    } ?: false
+                    if (!ok) {
+                        _sleepSync.value = SleepSyncPhase.Failed("连接失败，先在上方手动连一次看原因")
+                        return@launch
+                    }
+                }
+                val result = session.syncActivity(sinceDays = 7) { p ->
+                    _sleepSync.value = SleepSyncPhase.Syncing(p.receivedBytes, p.expectedBytes)
+                }
+                prefs.importSleepNights(result.nights)
+                _sleepSync.value = SleepSyncPhase.Done(result.nights.size, result.sampleMinutes)
+            } catch (e: Exception) {
+                _sleepSync.value = SleepSyncPhase.Failed(e.message ?: e.javaClass.simpleName)
+            }
+        }
+    }
+
     override fun onCleared() {
+        // 会话是进程级的（BandSessionProvider），这里绝不能替它断开 ——
+        // Activity 被回收不等于用户要断连，通知栏还指着它显示状态。
         linking?.cancel()
-        session.disconnect()
         super.onCleared()
     }
 
