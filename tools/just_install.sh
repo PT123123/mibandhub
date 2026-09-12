@@ -32,9 +32,20 @@ dry() {
   fi
 }
 
-# 已授权的 adb 设备 serial（一行一台；Windows 上 adb 输出带 \r，先剥掉）
+# 已授权的 adb 设备 serial（一行一台；Windows 上 adb 输出带 \r，先剥掉）。
+# 结果存进全局 ADB_RAW（报错时要打原始输出），serial 列表走 stdout。
+#
+# 空结果自动重试一次：adb server 冷启动（或被另一个版本的 adb 客户端杀掉
+# 重启 —— 机器上装了多个 platform-tools 时很常见）之后的第一次查询，
+# 设备列表经常是空的，设备要过一两秒才重新挂上来。
+ADB_RAW=""
 adb_serials() {
-  adb devices 2>/dev/null | tr -d '\r' | awk 'NR>1 && $2=="device" {print $1}'
+  ADB_RAW="$(adb devices 2>&1 | tr -d '\r' || true)"
+  if ! printf '%s\n' "$ADB_RAW" | awk 'NR>1' | grep -q "device"; then
+    sleep 2
+    ADB_RAW="$(adb devices 2>&1 | tr -d '\r' || true)"
+  fi
+  printf '%s\n' "$ADB_RAW" | awk 'NR>1 && $2=="device" {print $1}'
 }
 
 # 屏幕对角线（英寸）—— characteristics 不可信时（小米手机报 nosdcard）拿它兜底
@@ -118,7 +129,14 @@ fi
 if [ "$mode" = "phone" ]; then
   command -v adb >/dev/null 2>&1 || { echo "错误：找不到 adb，装不了手机" >&2; exit 1; }
   serials="$(adb_serials)"
-  [ -n "$serials" ] || { echo "错误：没有已授权的 adb 设备（adb devices 里 state 得是 device）" >&2; exit 1; }
+  if [ -z "$serials" ]; then
+    echo "错误：adb 里查不到处于 device 状态的设备。adb 的原始输出：" >&2
+    printf '%s\n' "$ADB_RAW" | sed 's/^/    /' >&2
+    echo "上面要是空的，或者有 daemon / version 之类的字样：多半是这台机器装了" >&2
+    echo "多个 adb（不同版本会互相杀 server），重跑一次一般就好；也可以直接" >&2
+    echo "指定 serial 绕过探测：just install apk <serial>" >&2
+    exit 1
+  fi
   serial=""
   # 输入走 fd 3：循环体里的 adb shell 会转发/吃掉本地 stdin，
   # 走 fd0 的话设备列表读一行就断了
