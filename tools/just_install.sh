@@ -32,31 +32,67 @@ dry() {
   fi
 }
 
-# 已授权的 adb 设备 serial（一行一台；Windows 上 adb 输出带 \r，先剥掉）。
-# 结果存进全局 ADB_RAW（报错时要打原始输出），serial 列表走 stdout。
+# ---------------------------------------------------------------- adb 的选择
 #
-# 空结果自动重试一次：adb server 冷启动（或被另一个版本的 adb 客户端杀掉
-# 重启 —— 机器上装了多个 platform-tools 时很常见）之后的第一次查询，
-# 设备列表经常是空的，设备要过一两秒才重新挂上来。
+# 这一段是踩出来的：同一台机器，终端里 adb devices 好好的，从这个脚本里查
+# 却可能一个字都吐不出来（连表头都没有）—— 终端 profile 动过 PATH/环境变量、
+# 或者机器上装了多个 platform-tools 时会发生。所以：
+#   1) 先用 PATH 里的 adb 查；连「List of devices attached」表头都打不出来
+#      （说明这个 adb 压根没工作，而不是真的没插设备）就自动重试一次
+#      （server 冷启动后的第一次查询经常是空的）；
+#   2) 还不行就回退到标准 SDK 路径的 adb；
+#   3) 选定后 export ADB=…，tools/android_install.sh 认这个变量。
+
+ADB_BIN="$(command -v adb 2>/dev/null || true)"
 ADB_RAW=""
-adb_serials() {
-  ADB_RAW="$(adb devices 2>&1 | tr -d '\r' || true)"
-  if ! printf '%s\n' "$ADB_RAW" | awk 'NR>1' | grep -q "device"; then
+
+adb_works() {  # $1 = raw 输出，有表头才算这个 adb 真的在干活
+  printf '%s\n' "$1" | grep -q "List of devices attached"
+}
+
+adb_pick() {
+  [ -n "$ADB_BIN" ] || return 0
+  ADB_RAW="$("$ADB_BIN" devices 2>&1 | tr -d '\r' || true)"
+  if ! adb_works "$ADB_RAW"; then
     sleep 2
-    ADB_RAW="$(adb devices 2>&1 | tr -d '\r' || true)"
+    ADB_RAW="$("$ADB_BIN" devices 2>&1 | tr -d '\r' || true)"
   fi
+  if ! adb_works "$ADB_RAW"; then
+    for alt in "$LOCALAPPDATA/Android/Sdk/platform-tools/adb.exe" \
+               "$HOME/AppData/Local/Android/Sdk/platform-tools/adb.exe"; do
+      [ -n "$alt" ] || continue
+      alt="$(cygpath -u "$alt" 2>/dev/null || printf '%s' "$alt")"
+      [ -x "$alt" ] || continue
+      [ "$alt" = "$ADB_BIN" ] && continue
+      alt_raw="$("$alt" devices 2>&1 | tr -d '\r' || true)"
+      if adb_works "$alt_raw"; then
+        ADB_BIN="$alt"
+        ADB_RAW="$alt_raw"
+        echo "    （PATH 里的 adb 不工作，改用 $ADB_BIN）"
+        break
+      fi
+    done
+    ADB_RAW="$("$ADB_BIN" devices 2>&1 | tr -d '\r' || true)"
+  fi
+  export ADB="$ADB_BIN"
+}
+
+# 从 ADB_RAW 里取已授权设备的 serial（一行一台）
+adb_serials() {
   printf '%s\n' "$ADB_RAW" | awk 'NR>1 && $2=="device" {print $1}'
 }
+
+# ---------------------------------------------------------------- 手机识别
 
 # 屏幕对角线（英寸）—— characteristics 不可信时（小米手机报 nosdcard）拿它兜底
 screen_inches() {
   # serial 先存局部变量：下面的 set -- 会把 $1 覆盖成屏宽，
   # 再用 $1 查 density 就成了 `adb -s 1080 ...`（查无此设备，悄悄返回空）
   local serial="$1" w h dpi
-  set -- $(adb -s "$serial" shell wm size </dev/null 2>/dev/null | tr -d '\r' | awk '/size/{print $3}' | tail -1 | tr 'x' ' ')
+  set -- $("$ADB_BIN" -s "$serial" shell wm size </dev/null 2>/dev/null | tr -d '\r' | awk '/size/{print $3}' | tail -1 | tr 'x' ' ')
   [ $# -eq 2 ] || { echo 0; return; }
   w=$1; h=$2
-  dpi="$(adb -s "$serial" shell wm density </dev/null 2>/dev/null | tr -d '\r' | awk '/density/{print $3}' | tail -1)"
+  dpi="$("$ADB_BIN" -s "$serial" shell wm density </dev/null 2>/dev/null | tr -d '\r' | awk '/density/{print $3}' | tail -1)"
   case "$dpi" in ''|*[!0-9]*) echo 0; return ;; esac
   awk -v w="$w" -v h="$h" -v d="$dpi" 'BEGIN { printf "%.1f", sqrt((w/d)^2 + (h/d)^2) }'
 }
@@ -67,7 +103,7 @@ screen_inches() {
 #   3) 都没有 → 看屏幕对角线，7 寸以下算手机
 is_phone() {
   local chars inches
-  chars="$(adb -s "$1" shell getprop ro.build.characteristics </dev/null 2>/dev/null | tr -d '\r')"
+  chars="$("$ADB_BIN" -s "$1" shell getprop ro.build.characteristics </dev/null 2>/dev/null | tr -d '\r')"
   case ",$chars," in
     *,tablet,*|*,watch,*|*,television,*) return 1 ;;
     *,phone,*) return 0 ;;
@@ -85,6 +121,7 @@ esac
 if [ "$mode" = "auto" ]; then
   mode=""
   if command -v adb >/dev/null 2>&1; then
+    adb_pick
     serials="$(adb_serials)"
     if [ -n "$serials" ]; then
       count="$(printf '%s\n' "$serials" | grep -c . || true)"
@@ -128,13 +165,14 @@ fi
 # ---------------- 指定 phone：多台设备里认出手机，跳过平板 ----------------
 if [ "$mode" = "phone" ]; then
   command -v adb >/dev/null 2>&1 || { echo "错误：找不到 adb，装不了手机" >&2; exit 1; }
+  adb_pick
   serials="$(adb_serials)"
   if [ -z "$serials" ]; then
-    echo "错误：adb 里查不到处于 device 状态的设备。adb 的原始输出：" >&2
+    echo "错误：adb 里查不到处于 device 状态的设备。用的 adb：$ADB_BIN" >&2
+    echo "adb 的原始输出：" >&2
     printf '%s\n' "$ADB_RAW" | sed 's/^/    /' >&2
-    echo "上面要是空的，或者有 daemon / version 之类的字样：多半是这台机器装了" >&2
-    echo "多个 adb（不同版本会互相杀 server），重跑一次一般就好；也可以直接" >&2
-    echo "指定 serial 绕过探测：just install apk <serial>" >&2
+    echo "排查建议：① 直接插拔一次手机；② 重跑一次（server 冷启动的第一次查询" >&2
+    echo "经常是空的）；③ 绕过探测：just install apk <serial>" >&2
     exit 1
   fi
   serial=""
@@ -142,8 +180,8 @@ if [ "$mode" = "phone" ]; then
   # 走 fd0 的话设备列表读一行就断了
   while read -r s <&3; do
     [ -n "$s" ] || continue
-    chars="$(adb -s "$s" shell getprop ro.build.characteristics </dev/null 2>/dev/null | tr -d '\r')"
-    model="$(adb -s "$s" shell getprop ro.product.model </dev/null 2>/dev/null | tr -d '\r')"
+    chars="$("$ADB_BIN" -s "$s" shell getprop ro.build.characteristics </dev/null 2>/dev/null | tr -d '\r')"
+    model="$("$ADB_BIN" -s "$s" shell getprop ro.product.model </dev/null 2>/dev/null | tr -d '\r')"
     if is_phone "$s"; then
       tag=" ← 手机"
       [ -z "$serial" ] && serial="$s"
