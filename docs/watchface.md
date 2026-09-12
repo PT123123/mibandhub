@@ -167,9 +167,11 @@ please reduce size! Current size:1848kb.
 ### 5.3 在线市场（已落地）
 
 表盘页有「在线市场」入口：App 从本仓库 `market/` 目录拉目录清单
-（GitHub raw：`raw.githubusercontent.com/PT123123/mibandhub/main/market/index.json`），
-浏览带预览图的表盘、按需下载到 `filesDir/market/<id>/`，下载完自动进入
-表盘页「我的表盘」库，点选即走同一条下发链路。
+（主源 jsDelivr CDN，备源 raw.githubusercontent.com，谁成谁算；
+`faces/`、`previews/` 跟着目录成功的那个源走），浏览带预览图的表盘、
+按需下载到 `filesDir/market/<id>/`，下载完自动进入表盘页「我的表盘」库，
+点选即走同一条下发链路。注意 jsDelivr 有 CDN 缓存：推完新目录要主动刷一次
+`https://purge.jsdelivr.net/gh/PT123123/mibandhub@main/market/index.json`。
 
 - **目录格式**：`{version, updated, faces:[{id,name,author,license,file,
   preview,sizeBytes,crc32,note}]}`；`crc32` 用于下载后校验（对不上即弃）。
