@@ -33,6 +33,7 @@ import com.mibandhub.app.ui.device.PairingScreen
 import com.mibandhub.app.ui.heart.HeartRateScreen
 import com.mibandhub.app.ui.heart.HeartRateViewModel
 import com.mibandhub.app.ui.home.HomeScreen
+import com.mibandhub.app.ui.home.HomeViewModel
 import com.mibandhub.app.ui.market.BrowserScreen
 import com.mibandhub.app.ui.market.MarketScreen
 import com.mibandhub.app.ui.market.MarketViewModel
@@ -83,6 +84,9 @@ fun AppRoot() {
     // 通知页：设置全部落在 BandPrefs，VM 就是「改设置 = 落盘」的薄封装
     val notifyVm: NotifyViewModel = viewModel()
 
+    // 首页：全部数据来自共享会话与存储，提到这里切 tab 不重算
+    val homeVm: HomeViewModel = viewModel()
+
     Scaffold(
         containerColor = MaterialTheme.colorScheme.background,
         bottomBar = {
@@ -121,7 +125,7 @@ fun AppRoot() {
             startDestination = "home",
             modifier = Modifier.padding(inner),
         ) {
-            composable("home") { HomeScreen() }
+            composable("home") { HomeScreen(homeVm) }
             composable("heart") { HeartRateScreen(heartVm) }
             composable("sleep") { SleepScreen(sleepVm) }
             composable("notify") { NotifyScreen(notifyVm) }
