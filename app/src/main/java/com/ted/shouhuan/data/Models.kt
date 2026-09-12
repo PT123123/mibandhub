@@ -17,6 +17,25 @@ data class SleepNight(
     val shares: List<SleepStageShare>,
 )
 
+/**
+ * 一晚睡眠的可持久化形态（[BandPrefs] 存储，不设条数上限）。
+ *
+ * epochDay 是醒来那天的 LocalDate.toEpochDay()；bed/wake 是「当天第几分钟」，
+ * 入睡那侧跨零点属正常（如 23:41），展示时直接按钟点格式化。
+ * totalMinutes 只含深睡+浅睡+REM，清醒分钟单独记 —— 和主流手环 App 的口径一致。
+ */
+data class SleepNightRecord(
+    val epochDay: Long,
+    val totalMinutes: Int,
+    val score: Int,
+    val bedMinutes: Int,
+    val wakeMinutes: Int,
+    val deepMinutes: Int,
+    val lightMinutes: Int,
+    val remMinutes: Int,
+    val awakeMinutes: Int,
+)
+
 /** 手环连接与电量状态。 */
 data class BandStatus(
     val name: String,

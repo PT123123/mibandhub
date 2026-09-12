@@ -2,9 +2,11 @@ package com.ted.shouhuan.ui.components
 
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
@@ -17,6 +19,7 @@ import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.StrokeJoin
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import com.ted.shouhuan.data.SleepStage
@@ -139,32 +142,59 @@ fun SleepStageBar(
 /** 图表用的极简数据结构，避免把界面逻辑渗进数据层。 */
 data class SleepStageSegment(val stage: SleepStage, val minutes: Int)
 
-/** 柱状图：近 N 天的睡眠时长。 */
+/**
+ * 柱状图：近 N 天的睡眠时长。
+ *
+ * 传 [onBarTap] 后整张图可点 —— 按 x 落点换算成第几根柱子，睡眠页靠它实现
+ * 「点任意一天看那一晚」。已选中时其余柱子压暗一点，选中项一眼可见。
+ */
 @Composable
 fun MiniBarChart(
     values: List<Float>,
     modifier: Modifier = Modifier,
     color: Color,
-    highlightIndex: Int = -1,
-    highlightColor: Color = color,
+    selectedIndex: Int = -1,
+    selectedColor: Color = color,
+    onBarTap: ((Int) -> Unit)? = null,
 ) {
     if (values.isEmpty()) {
         Box(modifier)
         return
     }
-    Canvas(modifier) {
-        val maxV = values.max().takeIf { it > 0f } ?: 1f
-        val gap = size.width * 0.02f
-        val barW = (size.width - gap * (values.size - 1)) / values.size
-        values.forEachIndexed { i, v ->
-            val h = (v / maxV) * size.height
-            val x = i * (barW + gap)
-            drawRoundRect(
-                color = if (i == highlightIndex) highlightColor else color,
-                topLeft = Offset(x, size.height - h),
-                size = androidx.compose.ui.geometry.Size(barW, h),
-                cornerRadius = androidx.compose.ui.geometry.CornerRadius(barW / 2.5f, barW / 2.5f),
-            )
+    Box(
+        modifier.then(
+            if (onBarTap != null) {
+                Modifier.pointerInput(values, onBarTap) {
+                    detectTapGestures { offset ->
+                        val w = size.width.toFloat()
+                        val gap = w * 0.02f
+                        val slot = (w - gap * (values.size - 1)) / values.size + gap
+                        val index = (offset.x / slot).toInt().coerceIn(0, values.size - 1)
+                        onBarTap(index)
+                    }
+                }
+            } else {
+                Modifier
+            },
+        ),
+    ) {
+        Canvas(Modifier.fillMaxSize()) {
+            val maxV = values.max().takeIf { it > 0f } ?: 1f
+            val gap = size.width * 0.02f
+            val barW = (size.width - gap * (values.size - 1)) / values.size
+            val hasSelection = selectedIndex in values.indices
+            values.forEachIndexed { i, v ->
+                val h = (v / maxV) * size.height
+                val x = i * (barW + gap)
+                val base = if (i == selectedIndex) selectedColor else color
+                val paint = if (hasSelection && i != selectedIndex) base.copy(alpha = 0.55f) else base
+                drawRoundRect(
+                    color = paint,
+                    topLeft = Offset(x, size.height - h),
+                    size = androidx.compose.ui.geometry.Size(barW, h),
+                    cornerRadius = androidx.compose.ui.geometry.CornerRadius(barW / 2.5f, barW / 2.5f),
+                )
+            }
         }
     }
 }
