@@ -7,6 +7,8 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.aspectRatio
@@ -16,49 +18,67 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.GridItemSpan
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
+import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
+import androidx.compose.material.icons.rounded.Close
+import androidx.compose.material.icons.rounded.Language
 import androidx.compose.material.icons.rounded.Refresh
+import androidx.compose.material.icons.rounded.Search
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.ImageBitmap
-import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.ted.shouhuan.data.MarketEntry
+import com.ted.shouhuan.data.OnlineMetric
+import com.ted.shouhuan.data.OnlinePeriod
 import com.ted.shouhuan.ui.components.NoticeBanner
 import com.ted.shouhuan.ui.theme.Mint
 import com.ted.shouhuan.ui.theme.PulseRed
 import com.ted.shouhuan.ui.theme.StepBlue
 
 /**
- * 表盘市场：从本仓库的 market/ 目录拉清单，浏览带预览的表盘，
- * 下载到本地。下载完的表盘出现在表盘页「我的表盘」里，选中即安装。
+ * 表盘市场：在线源（amazfitwatchfaces.com）按 最新/热门/搜索 浏览，预览图随卡片加载，
+ * 下载到本地。在线源不可达时回落自建快照目录。下载完的表盘出现在表盘页「我的表盘」里。
  */
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun MarketScreen(
     vm: MarketViewModel,
     onBack: () -> Unit,
+    onOpenBrowser: () -> Unit,
 ) {
     val state by vm.state.collectAsStateWithLifecycle()
+    var searchActive by remember { mutableStateOf(false) }
+    var searchInput by remember { mutableStateOf("") }
 
     Column(
         Modifier
@@ -76,9 +96,45 @@ fun MarketScreen(
                 CircularProgressIndicator(Modifier.width(20.dp), strokeWidth = 2.dp)
                 Spacer(Modifier.width(8.dp))
             }
+            IconButton(onClick = onOpenBrowser) {
+                Icon(Icons.Rounded.Language, contentDescription = "打开站点浏览器")
+            }
+            IconButton(
+                onClick = {
+                    searchActive = !searchActive
+                    if (!searchActive) {
+                        searchInput = ""
+                        vm.submitSearch("")
+                    }
+                },
+            ) {
+                Icon(
+                    if (searchActive) Icons.Rounded.Close else Icons.Rounded.Search,
+                    contentDescription = if (searchActive) "收起搜索" else "搜索",
+                )
+            }
             IconButton(onClick = { vm.refresh() }, enabled = !state.loading) {
                 Icon(Icons.Rounded.Refresh, contentDescription = "刷新")
             }
+        }
+        if (searchActive) {
+            OutlinedTextField(
+                value = searchInput,
+                onValueChange = { searchInput = it },
+                placeholder = { Text("在 amazfitwatchfaces 站内搜索…") },
+                singleLine = true,
+                trailingIcon = {
+                    if (searchInput.isNotEmpty()) {
+                        IconButton(onClick = { searchInput = ""; vm.submitSearch("") }) {
+                            Icon(Icons.Rounded.Close, contentDescription = "清空")
+                        }
+                    }
+                },
+                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
+                keyboardActions = KeyboardActions(onSearch = { vm.submitSearch(searchInput) }),
+                modifier = Modifier.fillMaxWidth(),
+            )
+            Spacer(Modifier.height(8.dp))
         }
         if (state.loading) {
             Text(
@@ -86,15 +142,36 @@ fun MarketScreen(
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
+        } else if (state.degraded) {
+            Text(
+                "在线源不可达（${state.degradedMessage ?: "未知原因"}），已切换到本地快照目录 · " +
+                    "点右上 🌐 直接逛站，或刷新重试",
+                style = MaterialTheme.typography.labelSmall,
+                color = PulseRed,
+            )
         } else if (state.entries.isNotEmpty()) {
             Text(
-                "更新于 ${state.updated} · ${state.entries.size} 张 · " +
-                    "来源 amazfitwatchfaces.com（免费）· 预览 ${state.previews.size}/${state.entries.size}",
+                "来源 amazfitwatchfaces.com · ${state.entries.size} 张 · " +
+                    "预览 ${state.previews.size}/${state.entries.size}",
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         }
-        Spacer(Modifier.height(12.dp))
+        Spacer(Modifier.height(8.dp))
+
+        MarketFilterChips(
+            state = state,
+            onFresh = { vm.setFresh(true) },
+            onTop = { vm.setFresh(false) },
+            onMetric = { vm.setMetric(it) },
+            onPeriod = { vm.setPeriod(it) },
+            onClearSearch = {
+                searchActive = false
+                searchInput = ""
+                vm.submitSearch("")
+            },
+        )
+        Spacer(Modifier.height(8.dp))
 
         when {
             // 目录还没拉到，但已下载的还能看/删 —— 这里只处理「整个目录没有」的情况
@@ -123,7 +200,23 @@ fun MarketScreen(
             }
 
             else -> {
+                val gridState = rememberLazyGridState()
+
+                // 滑到倒数第 8 张以内就翻下一页 —— 卡片小，等用户真滑到底再拉会顿
+                LaunchedEffect(gridState) {
+                    snapshotFlow { gridState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: -1 }
+                        .collect { lastVisible ->
+                            val s = vm.state.value
+                            if (s.hasMore && !s.loadingMore && !s.loading &&
+                                lastVisible >= s.entries.size - 8
+                            ) {
+                                vm.loadMore()
+                            }
+                        }
+                }
+
                 LazyVerticalGrid(
+                    state = gridState,
                     columns = GridCells.Fixed(3),
                     horizontalArrangement = Arrangement.spacedBy(10.dp),
                     verticalArrangement = Arrangement.spacedBy(10.dp),
@@ -133,6 +226,7 @@ fun MarketScreen(
                         MarketCard(
                             entry = entry,
                             preview = state.previews[entry.id],
+                            loading = entry.id in state.previewLoading,
                             downloadState = downloadStateOf(state, entry.id),
                             downloaded = entry.id in state.downloadedIds,
                             onDownload = { vm.download(entry) },
@@ -140,7 +234,93 @@ fun MarketScreen(
                             onVisible = { vm.ensurePreview(entry) },
                         )
                     }
+                    if (state.loadingMore) {
+                        item(key = "loading-more", span = { GridItemSpan(3) }) {
+                            Box(
+                                Modifier
+                                    .fillMaxWidth()
+                                    .padding(12.dp),
+                                contentAlignment = Alignment.Center,
+                            ) {
+                                CircularProgressIndicator(Modifier.width(20.dp), strokeWidth = 2.dp)
+                            }
+                        }
+                    } else if (!state.hasMore && state.entries.isNotEmpty() && !state.degraded) {
+                        item(key = "no-more", span = { GridItemSpan(3) }) {
+                            Text(
+                                "到底了 · 共 ${state.entries.size} 张",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                textAlign = TextAlign.Center,
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(12.dp),
+                            )
+                        }
+                    }
                 }
+            }
+        }
+    }
+}
+
+/** 排序/筛选 chips：最新|热门(+口径|时间窗)，搜索激活时显示当前搜索词。 */
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun MarketFilterChips(
+    state: MarketUiState,
+    onFresh: () -> Unit,
+    onTop: () -> Unit,
+    onMetric: (OnlineMetric) -> Unit,
+    onPeriod: (OnlinePeriod) -> Unit,
+    onClearSearch: () -> Unit,
+) {
+    val searching = state.query != null
+    FlowRow(
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        FilterChip(
+            selected = !searching && state.fresh,
+            onClick = onFresh,
+            label = { Text("最新") },
+        )
+        FilterChip(
+            selected = !searching && !state.fresh,
+            onClick = onTop,
+            label = { Text("热门") },
+        )
+        if (searching) {
+            FilterChip(
+                selected = true,
+                onClick = onClearSearch,
+                label = { Text("搜索：${state.query}") },
+                trailingIcon = {
+                    Icon(Icons.Rounded.Close, contentDescription = "清除搜索", Modifier.width(16.dp))
+                },
+            )
+        }
+        // 口径/时间窗只属于热门榜
+        if (!searching && !state.fresh) {
+            OnlineMetric.entries.forEach { metric ->
+                FilterChip(
+                    selected = state.metric == metric,
+                    onClick = { onMetric(metric) },
+                    label = { Text(metric.label) },
+                )
+            }
+        }
+    }
+    if (!searching && !state.fresh) {
+        Spacer(Modifier.height(6.dp))
+        FlowRow(
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            OnlinePeriod.entries.forEach { period ->
+                FilterChip(
+                    selected = state.period == period,
+                    onClick = { onPeriod(period) },
+                    label = { Text(period.label) },
+                )
             }
         }
     }
@@ -157,14 +337,16 @@ private fun downloadStateOf(state: MarketUiState, id: String): DownloadState = w
 private fun MarketCard(
     entry: MarketEntry,
     preview: ImageBitmap?,
+    loading: Boolean,
     downloadState: DownloadState,
     downloaded: Boolean,
     onDownload: () -> Unit,
     onDelete: () -> Unit,
     onVisible: () -> Unit,
 ) {
-    // 懒加载：卡片滑进画面才拉自己的预览图（有磁盘缓存，只拉一次）
-    androidx.compose.runtime.LaunchedEffect(entry.id) { onVisible() }
+    // 卡片进画面就请求自己的预览图。真正拉不拉由 VM 决定，
+    // 后台预取可能早就把它备好了，这里只是兜底。
+    LaunchedEffect(entry.id) { onVisible() }
     Column(
         Modifier
             .clip(RoundedCornerShape(12.dp))
@@ -193,11 +375,15 @@ private fun MarketCard(
                 imageModifier.background(MaterialTheme.colorScheme.surfaceVariant),
                 contentAlignment = Alignment.Center,
             ) {
-                Text(
-                    "预览加载中",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
+                if (loading) {
+                    CircularProgressIndicator(Modifier.width(18.dp), strokeWidth = 2.dp)
+                } else {
+                    Text(
+                        "无预览",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
             }
         }
         Spacer(Modifier.height(6.dp))
@@ -209,12 +395,13 @@ private fun MarketCard(
             textAlign = TextAlign.Center,
         )
         Text(
-            (if (entry.sizeBytes > 0) formatSize(entry.sizeBytes) else "—") +
-                " · ${entry.license.removeSuffix("-1.0")}",
+            // 在线条目给站点的人气数字；快照条目给大小 + 授权
+            entry.stats ?: subtitleForSnapshot(entry),
             style = MaterialTheme.typography.labelSmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             maxLines = 1,
             overflow = TextOverflow.Ellipsis,
+            textAlign = TextAlign.Center,
         )
         Spacer(Modifier.height(6.dp))
 
@@ -252,7 +439,7 @@ private fun MarketCard(
                     "失败：${downloadState.message}",
                     style = MaterialTheme.typography.labelSmall,
                     color = PulseRed,
-                    maxLines = 2,
+                    maxLines = 4,
                     overflow = TextOverflow.Ellipsis,
                     modifier = Modifier
                         .fillMaxWidth()
@@ -279,6 +466,13 @@ private fun MarketCard(
             }
         }
     }
+}
+
+/** 快照条目的副标题：「395 KB · CC0」。在线条目不走这里（它们有 stats）。 */
+private fun subtitleForSnapshot(entry: MarketEntry): String {
+    val size = if (entry.sizeBytes > 0) formatSize(entry.sizeBytes) else "—"
+    val license = entry.license.removeSuffix("-1.0")
+    return if (license.isEmpty()) size else "$size · $license"
 }
 
 /** 「395 KB」这种给人看的写法。 */

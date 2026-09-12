@@ -73,6 +73,13 @@ class BandSession(
     private val _battery = MutableStateFlow<Int?>(null)
     val battery: StateFlow<Int?> = _battery
 
+    /**
+     * 实时步数（当天累计）。认证连接后由手环主动推送（见 [enableRealtimeSteps]）；
+     * 掉线后保留最后一次的值 —— 和 [battery] 一个待遇，通知栏显示「最后已知」。
+     */
+    private val _steps = MutableStateFlow<Int?>(null)
+    val steps: StateFlow<Int?> = _steps
+
     private val _logs = MutableSharedFlow<String>(extraBufferCapacity = 256)
     val logs: SharedFlow<String> = _logs
 
@@ -111,6 +118,7 @@ class BandSession(
         _authenticated.value = true
         connection.enableNotify(Gatt.CHAR_HR_MEASUREMENT)
         refreshBattery()
+        enableRealtimeSteps()
         return true
     }
 
@@ -203,6 +211,10 @@ class BandSession(
                         parseBattery(msg.value)?.let { _battery.value = it }
                     }
 
+                    Gatt.CHAR_REALTIME_STEPS_HUAMI, Gatt.CHAR_REALTIME_STEPS -> {
+                        parseSteps(msg.value)?.let { _steps.value = it }
+                    }
+
                     // 认证是一来一回的字节对话，被拒时没原文根本分不清
                     // 是「key 不对」还是「解析错位」。
                     Gatt.CHAR_AUTH -> log(
@@ -259,11 +271,68 @@ class BandSession(
         _heartRate.value = null
     }
 
+    // ------------------------------------------------------------------
+    // 文字通知下发（MB3/4/5 走 chunked 通道，编码细节见 [Notify]）
+    // ------------------------------------------------------------------
+
+    /**
+     * 往手环发一条文字通知。要求会话已认证（没有就先走 connectAndAuthenticate）。
+     *
+     * 每个分块的写入结果都打日志 —— 通知链路的字节序列是照 Gadgetbridge 抄的，
+     * 还没在我们自己的真机流程里验证过，出了问题原始日志是唯一的排查起点。
+     *
+     * @return 全部分块写入成功为 true；任一分块失败立即中止（手环不会显示半条）。
+     */
+    suspend fun sendNotification(appName: String, title: String, body: String): Boolean {
+        if (!_authenticated.value) {
+            log("发送通知失败：会话未认证")
+            return false
+        }
+        if (!connection.hasCharacteristic(Gatt.CHAR_CHUNKED)) {
+            log("发送通知失败：手环没有 chunked 通道（00000020）")
+            return false
+        }
+        val chunks = Notify.chunk(Notify.buildPacket(appName, title, body))
+        log("发送通知 -> $appName / $title，payload 分 ${chunks.size} 包")
+        for ((index, chunk) in chunks.withIndex()) {
+            if (!connection.write(Gatt.CHAR_CHUNKED, chunk)) {
+                log("通知第 ${index + 1}/${chunks.size} 包写入失败，中止")
+                return false
+            }
+        }
+        log("通知发送完成（${chunks.size} 包全部写入）")
+        return true
+    }
+
     /** 读一次电量。 */
     suspend fun refreshBattery() {
         if (!connection.hasCharacteristic(Gatt.CHAR_BATTERY_INFO)) return
         val raw = connection.read(Gatt.CHAR_BATTERY_INFO) ?: return
         parseBattery(raw)?.let { _battery.value = it }
+    }
+
+    /**
+     * 订阅实时步数。
+     *
+     * Gadgetbridge 的做法（onEnableRealtimeSteps）：不用写任何控制点指令，
+     * 先 read 一次（手环收到读请求就把当前值推上来），再挂 notify 接住后续推送。
+     * MB3+ 走华米 7 号特征，老 MiBand 的 ff06 留作兼容。
+     */
+    private suspend fun enableRealtimeSteps() {
+        val uuid = when {
+            connection.hasCharacteristic(Gatt.CHAR_REALTIME_STEPS_HUAMI) -> Gatt.CHAR_REALTIME_STEPS_HUAMI
+            connection.hasCharacteristic(Gatt.CHAR_REALTIME_STEPS) -> Gatt.CHAR_REALTIME_STEPS
+            else -> {
+                log("没有实时步数特征，跳过订阅")
+                return
+            }
+        }
+        if (!connection.enableNotify(uuid)) {
+            log("订阅实时步数失败")
+            return
+        }
+        val raw = connection.read(uuid) ?: return
+        parseSteps(raw)?.let { _steps.value = it }
     }
 
     // ------------------------------------------------------------------
@@ -535,5 +604,22 @@ class BandSession(
         if (value.size < 2) return null
         val percent = value[1].toInt() and 0xFF
         return percent.takeIf { it in 0..100 }
+    }
+
+    /**
+     * 实时步数的字节布局照 Gadgetbridge 的 handleRealtimeSteps 抄的：
+     * 13 字节包，步数在 bytes[1..2]（uint16 小端）。其余长度一律视为未识别 ——
+     * 原样打进日志，等真机对过抓包再扩。
+     */
+    private fun parseSteps(value: ByteArray): Int? {
+        val steps = when (value.size) {
+            13 -> (value[1].toInt() and 0xFF) or ((value[2].toInt() and 0xFF) shl 8)
+            2 -> (value[0].toInt() and 0xFF) or ((value[1].toInt() and 0xFF) shl 8)
+            else -> null
+        }?.takeIf { it <= 500_000 }
+        if (steps == null) {
+            log("未识别的步数上报 <- " + value.joinToString(" ") { "%02x".format(it) })
+        }
+        return steps
     }
 }

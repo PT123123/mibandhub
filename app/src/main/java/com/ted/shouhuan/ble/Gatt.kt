@@ -41,10 +41,19 @@ object Gatt {
     val CHAR_AUTH = h("00000009")
     val CHAR_CONFIGURATION = h("00000003")
     val CHAR_BATTERY_INFO = h("00000006")
+
+    /**
+     * 实时步数（华米 7 号特征）。MB3/4/5 走它；[CHAR_REALTIME_STEPS]（ff06）
+     * 是初代 MiBand 的对应物，留着做兼容。启用方式见 BandSession.enableRealtimeSteps。
+     */
+    val CHAR_REALTIME_STEPS_HUAMI = h("00000007")
     val CHAR_USER_SETTINGS = h("00000008")
     val CHAR_DEVICE_EVENT = h("00000010")
 
-    /** 分块传输通道：拉活动数据（含睡眠）走这里。 */
+    /**
+     * 分块传输通道：拉活动数据（含睡眠）、往手环发文字通知都走这里
+     * （MB3/4/5 的通知 = chunked type 0，编码见 proto/Notify）。
+     */
     val CHAR_CHUNKED = h("00000020")
 
     // ---------------- 标准 GATT 心率服务（0x180D）----------------
