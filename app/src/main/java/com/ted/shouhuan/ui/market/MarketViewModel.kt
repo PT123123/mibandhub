@@ -17,6 +17,8 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
 
 /** 一张市场表盘的下载进度状态。 */
@@ -68,9 +70,12 @@ class MarketViewModel(app: Application) : AndroidViewModel(app) {
             }
             result.fold(
                 onSuccess = { catalog ->
-                    // 预览图并行拉，几张小图不值得串行等
+                    // 预览图并行拉，但限制并发（目录上百张时不能一拥而上打满连接池）
+                    val semaphore = Semaphore(6)
                     val previewJobs = catalog.faces.map { entry ->
-                        async(Dispatchers.IO) { entry to repo.fetchPreviewCached(entry) }
+                        async(Dispatchers.IO) {
+                            semaphore.withPermit { entry to repo.fetchPreviewCached(entry) }
+                        }
                     }.awaitAll()
                     val previews = previewJobs.mapNotNull { (entry, file) ->
                         file?.let { f -> decode(f)?.let { bmp -> entry.id to bmp } }
