@@ -59,6 +59,29 @@
             </intent-filter>
         </activity>
 
+        <!-- 健康连接的「数据用途说明」入口 —— 接入方必须声明，否则 SDK 建连时
+             直接 IllegalStateException（真机报过 incorrect health permission states）。
+             Android 13- 走下面的 rationale action；14+ 走 activity-alias 的
+             VIEW_PERMISSION_USAGE（permission 属性保证只有系统能拉起它）。 -->
+        <activity
+            android:name=".HealthRationaleActivity"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="androidx.health.ACTION_SHOW_PERMISSIONS_RATIONALE" />
+            </intent-filter>
+        </activity>
+
+        <activity-alias
+            android:name="ViewPermissionUsageActivity"
+            android:exported="true"
+            android:permission="android.permission.START_VIEW_PERMISSION_USAGE"
+            android:targetActivity=".HealthRationaleActivity">
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW_PERMISSION_USAGE" />
+                <category android:name="android.intent.category.HEALTH_PERMISSIONS" />
+            </intent-filter>
+        </activity-alias>
+
         <service
             android:name=".service.BandService"
             android:exported="false"
