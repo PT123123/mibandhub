@@ -34,6 +34,7 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.firstOrNull
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
 
 /**
  * 前台服务：一条常驻的状态通知 + START_STICKY。
@@ -58,6 +59,10 @@ class BandService : Service() {
 
     /** onStartCommand 会被反复调用（开屏、开机广播……），状态订阅只能挂一份。 */
     private var watching = false
+
+    /** 自动连接进行中 / 上次尝试的时间 —— onStartCommand 反复触发时不叠流程、不刷屏。 */
+    private var autoConnecting = false
+    private var lastAutoConnectAt = 0L
 
     /** 手环提醒相关的最新配置（广播回调里不能挂起读 DataStore，这里常备一份）。 */
     @Volatile
@@ -121,6 +126,9 @@ class BandService : Service() {
             watching = true
             watchState()
         }
+        // 每次被拉起（开应用、开机）都试一把自动连接 —— 打开应用就该看到
+        // 状态栏自己在刷新，而不是等用户去设备页点「连接手环」。
+        maybeAutoConnect()
         return START_STICKY
     }
 
@@ -164,6 +172,8 @@ class BandService : Service() {
                 if (session.connectionState.value == ConnectionState.Authenticated) {
                     runCatching { session.refreshBattery() }
                 }
+                // 没连上就顺手再试一次自动连接 —— 手环回到范围内 / 蓝牙重开后的自愈
+                maybeAutoConnect()
                 tick.value += 1
             }
         }
@@ -214,6 +224,55 @@ class BandService : Service() {
                 buildNotification(name, state, battery, steps, sleep)
             }.collect { notification ->
                 getSystemService(NotificationManager::class.java)?.notify(NOTIFICATION_ID, notification)
+            }
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // 自动连接
+    // ------------------------------------------------------------------
+
+    /**
+     * 按偏好自动连手环。满足全部条件才动手：
+     * 开了「自动连接」、配对信息齐、当前没连（也没在连）、不是用户自己断开的、
+     * 心率测量没在跑（共用一条 GATT，测量优先）。
+     */
+    private fun maybeAutoConnect() {
+        if (autoConnecting) return
+        val now = System.currentTimeMillis()
+        if (now - lastAutoConnectAt < AUTO_CONNECT_MIN_INTERVAL_MS) return
+        val state = session.connectionState.value
+        if (state is ConnectionState.Authenticated ||
+            state is ConnectionState.Connected ||
+            state is ConnectionState.Connecting ||
+            state is ConnectionState.Discovering
+        ) {
+            return
+        }
+        if (session.userDisconnected) return
+        if (HeartMeasureController.get(application).busy) return
+
+        lastAutoConnectAt = now
+        autoConnecting = true
+        scope.launch {
+            try {
+                val enabled = prefs.autoConnect.first()
+                if (!enabled) return@launch
+                val mac = prefs.mac.first()
+                val key = prefs.authKey.first()
+                if (mac.isNullOrBlank() || key.isNullOrBlank()) {
+                    Log.d(TAG, "自动连接跳过：还没配对手环")
+                    return@launch
+                }
+                Log.d(TAG, "自动连接：尝试连 $mac")
+                val ok = withTimeoutOrNull(AUTO_CONNECT_TIMEOUT_MS) {
+                    session.connectAndAuthenticate(mac, key)
+                } ?: false
+                Log.d(TAG, if (ok) "自动连接成功" else "自动连接未成功（等下一轮重试或手动连接）")
+            } catch (e: Exception) {
+                Log.w(TAG, "自动连接异常", e)
+            } finally {
+                autoConnecting = false
             }
         }
     }
@@ -371,6 +430,12 @@ class BandService : Service() {
         private const val BAND_APP_NAME = "手环管家"
         const val ACTION_STOP = "com.ted.shouhuan.action.STOP_KEEP_ALIVE"
         const val NOTIFICATION_ID = 1
+
+        /** 连接 + 认证的总兜底（底层每一步自己还有 15 秒超时）。 */
+        private const val AUTO_CONNECT_TIMEOUT_MS = 35_000L
+
+        /** 两次自动连接尝试的最小间隔：onStartCommand 反复触发时不至于连番轰炸。 */
+        private const val AUTO_CONNECT_MIN_INTERVAL_MS = 10_000L
 
         /** 统一的拉起入口：Activity 开屏和开机广播都走这里。 */
         fun start(context: Context) {
