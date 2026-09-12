@@ -33,10 +33,13 @@ import com.ted.shouhuan.ui.device.PairingScreen
 import com.ted.shouhuan.ui.heart.HeartRateScreen
 import com.ted.shouhuan.ui.heart.HeartRateViewModel
 import com.ted.shouhuan.ui.home.HomeScreen
+import com.ted.shouhuan.ui.market.BrowserScreen
 import com.ted.shouhuan.ui.market.MarketScreen
 import com.ted.shouhuan.ui.market.MarketViewModel
 import com.ted.shouhuan.ui.notify.NotifyScreen
+import com.ted.shouhuan.ui.notify.NotifyViewModel
 import com.ted.shouhuan.ui.sleep.SleepScreen
+import com.ted.shouhuan.ui.sleep.SleepViewModel
 import com.ted.shouhuan.ui.watchface.WatchFaceScreen
 import com.ted.shouhuan.ui.watchface.WatchFaceViewModel
 
@@ -59,6 +62,8 @@ fun AppRoot() {
 
     // 提到这里创建：一是切 tab 不丢测量状态，二是连接本身是「一条」长连接，
     // 让心率页和以后的设备页共用同一个会话，别各连各的。
+    // （更强的保证在 service/HeartMeasureController：会话和测量编排是进程级单例，
+    //   即使 Activity 被系统回收，测量也会继续跑完，结果落在存储里。）
     val heartVm: HeartRateViewModel = viewModel()
 
     // 表盘页单独一条会话：它是一次性的「连上 → 传完 → 断开」，
@@ -71,6 +76,12 @@ fun AppRoot() {
     // 设备页的状态提到这里：配对页和设备页要共用同一份配对信息，
     // 在配对页存完回到设备页，那页已经是新数据了，不需要手动刷新。
     val deviceVm: DeviceViewModel = viewModel()
+
+    // 睡眠页：历史在 DataStore 里，VM 负责首次播种与读取；提到这里切 tab 不丢筛选状态
+    val sleepVm: SleepViewModel = viewModel()
+
+    // 通知页：设置全部落在 BandPrefs，VM 就是「改设置 = 落盘」的薄封装
+    val notifyVm: NotifyViewModel = viewModel()
 
     Scaffold(
         containerColor = MaterialTheme.colorScheme.background,
@@ -112,8 +123,8 @@ fun AppRoot() {
         ) {
             composable("home") { HomeScreen() }
             composable("heart") { HeartRateScreen(heartVm) }
-            composable("sleep") { SleepScreen() }
-            composable("notify") { NotifyScreen() }
+            composable("sleep") { SleepScreen(sleepVm) }
+            composable("notify") { NotifyScreen(notifyVm) }
             composable("watchface") {
                 WatchFaceScreen(
                     vm = watchFaceVm,
@@ -122,7 +133,15 @@ fun AppRoot() {
             }
             // 市场页不是 tab，从表盘页推上来（和配对页同一个模式）。
             composable("market") {
-                MarketScreen(marketVm, onBack = { nav.popBackStack() })
+                MarketScreen(
+                    vm = marketVm,
+                    onBack = { nav.popBackStack() },
+                    onOpenBrowser = { nav.navigate("market-browser") { launchSingleTop = true } },
+                )
+            }
+            // 站点浏览器：从市场页推上来，直接逛 amazfitwatchfaces（WebView 能过反爬）。
+            composable("market-browser") {
+                BrowserScreen(onBack = { nav.popBackStack() })
             }
             composable("device") {
                 DeviceScreen(deviceVm, onPair = { nav.navigate("pairing") { launchSingleTop = true } })

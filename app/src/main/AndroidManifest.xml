@@ -59,6 +59,15 @@
             android:exported="false"
             android:foregroundServiceType="connectedDevice" />
 
+        <!-- 开机自启：把前台保活服务拉起来。BOOT_COMPLETED 是受保护广播，exported=true 安全。 -->
+        <receiver
+            android:name=".service.BootReceiver"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+            </intent-filter>
+        </receiver>
+
         <!-- 通知转发：读取手机通知并推到手环。需要用户在系统设置里授权。 -->
         <service
             android:name=".service.BandNotificationListener"

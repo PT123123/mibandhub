@@ -29,12 +29,6 @@ object DemoData {
 
     fun latestBpm(): Int = 72
 
-    fun restingBpm(): Int = 58
-
-    fun maxBpm(): Int = 128
-
-    fun avgBpm(): Int = 76
-
     fun steps(): Int = 6240
 
     fun stepsGoal(): Int = 8000
@@ -52,11 +46,6 @@ object DemoData {
             SleepStageShare(SleepStage.DEEP, 108),
         ),
     )
-
-    /** 近 7 晚总时长（分钟），最后一个是昨晚。 */
-    fun sleepWeek(): List<Float> = listOf(398f, 441f, 372f, 455f, 410f, 386f, 432f)
-
-    fun sleepWeekLabels(): List<String> = listOf("四", "五", "六", "日", "一", "二", "三")
 
     fun bandStatus(): BandStatus = BandStatus(
         name = "小米手环5",

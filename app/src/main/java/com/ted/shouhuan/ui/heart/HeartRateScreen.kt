@@ -3,12 +3,15 @@ package com.ted.shouhuan.ui.heart
 import android.Manifest
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.animateContentSize
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -25,23 +28,34 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.rounded.ExpandMore
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import com.ted.shouhuan.data.DemoData
+import com.ted.shouhuan.data.MeasureResult
+import com.ted.shouhuan.service.MeasureError
+import com.ted.shouhuan.service.MeasurePhase
+import com.ted.shouhuan.ui.components.CollapsibleSection
+import com.ted.shouhuan.ui.components.FilterChipRow
 import com.ted.shouhuan.ui.components.KeyValueRow
 import com.ted.shouhuan.ui.components.MetricTile
 import com.ted.shouhuan.ui.components.NoticeBanner
@@ -51,9 +65,16 @@ import com.ted.shouhuan.ui.components.StatusDot
 import com.ted.shouhuan.ui.theme.NotifyAmber
 import com.ted.shouhuan.ui.theme.PulseRed
 import com.ted.shouhuan.ui.theme.StepBlue
+import com.ted.shouhuan.util.epochDayOf
 import com.ted.shouhuan.util.formatClockTime
 import com.ted.shouhuan.util.formatDateTime
+import com.ted.shouhuan.util.formatEpochDayShort
 import com.ted.shouhuan.util.formatSeconds
+import kotlin.math.roundToInt
+
+/** 记录筛选范围：天数，-1 = 全部。 */
+private val RECORD_RANGES = listOf(7, 30, 90, -1)
+private val RECORD_RANGE_LABELS = listOf("近7天", "近30天", "近90天", "全部")
 
 /**
  * 心率页：真正的测量流程都交给 [HeartRateViewModel]，
@@ -65,7 +86,6 @@ import com.ted.shouhuan.util.formatSeconds
  */
 @Composable
 fun HeartRateScreen(vm: HeartRateViewModel) {
-    val day = remember { DemoData.heartRateDay() }
     val phase by vm.phase.collectAsStateWithLifecycle()
     val elapsed by vm.elapsedSec.collectAsStateWithLifecycle()
     val lastBpm by vm.lastBpm.collectAsStateWithLifecycle()
@@ -73,6 +93,11 @@ fun HeartRateScreen(vm: HeartRateViewModel) {
     val connection by vm.connectionState.collectAsStateWithLifecycle()
     val lastResult by vm.lastResult.collectAsStateWithLifecycle()
     val history by vm.history.collectAsStateWithLifecycle()
+
+    // 范围筛选 + 展开状态：切范围、点开某条记录都是纯界面状态
+    var rangeIndex by remember { mutableStateOf(0) }
+    var expandedRecordAt by remember { mutableStateOf<Long?>(null) }
+    var showClearConfirm by remember { mutableStateOf(false) }
 
     val permissionLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.RequestPermission(),
@@ -222,72 +247,78 @@ fun HeartRateScreen(vm: HeartRateViewModel) {
             }
         }
 
-        // ---- 测量记录：从第二次起才是一条「记录」，一次的时候上面那张卡就够了 ----
-        if (history.size >= 2) {
-            Spacer(Modifier.height(12.dp))
-            SectionCard(title = "测量记录（最近 ${history.size} 次）", accent = StepBlue) {
-                history.forEachIndexed { index, record ->
-                    if (index > 0) {
-                        HorizontalDivider(
-                            Modifier.padding(vertical = 9.dp),
-                            color = MaterialTheme.colorScheme.outline.copy(alpha = 0.35f),
-                        )
-                    }
-                    Row(
-                        Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        Text(
-                            formatClockTime(record.finishedAtMillis),
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                        Row(verticalAlignment = Alignment.Bottom) {
-                            Text(
-                                "${record.bpm}",
-                                style = MaterialTheme.typography.titleLarge,
-                                color = PulseRed,
-                            )
-                            Spacer(Modifier.width(3.dp))
-                            Text(
-                                "BPM",
-                                style = MaterialTheme.typography.labelMedium,
-                                color = PulseRed,
-                                modifier = Modifier.padding(bottom = 3.dp),
-                            )
-                        }
-                        Text(
-                            "耗时 ${formatSeconds(record.durationSec)}",
-                            style = MaterialTheme.typography.labelMedium,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                    }
+        val rangeDays = RECORD_RANGES[rangeIndex]
+        val filtered = remember(history, rangeDays) {
+            val cutoff = System.currentTimeMillis() - rangeDays * 86_400_000L
+            if (rangeDays < 0) history else history.filter { it.finishedAtMillis >= cutoff }
+        }
+        // 「与上一次的差值」相对完整历史算，不随范围筛选缩水。
+        // history 新的在前：一条记录的「上一次」是它时间上更早的那次 = 列表里更靠前的邻居；
+        // 最新的那条没有「上一次」，显示为「首次记录」。
+        val deltaByTimestamp = remember(history) {
+            history.mapIndexed { index, record ->
+                val previous = if (index > 0) history.getOrNull(index - 1) else null
+                record.finishedAtMillis to previous?.let { record.bpm - it.bpm }
+            }.toMap()
+        }
+
+        // ---- 读数趋势（真实记录，按测量次序从旧到新）----
+        Spacer(Modifier.height(12.dp))
+        SectionCard(title = "读数趋势", accent = PulseRed) {
+            val trend = remember(filtered) { filtered.map { it.bpm.toFloat() }.reversed() }
+            if (trend.size >= 2) {
+                Sparkline(
+                    values = trend,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(100.dp),
+                    color = PulseRed,
+                )
+                Spacer(Modifier.height(8.dp))
+                Row(
+                    Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                ) {
+                    Text(
+                        "最早一次",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Text(
+                        "共 ${trend.size} 次 · 最新在右",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
                 }
+            } else {
+                Text(
+                    "测满 2 次后，这里会出现读数走势。",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
             }
         }
 
+        // ---- 统计（真实记录）----
         Spacer(Modifier.height(12.dp))
-
-        // ---- 今日曲线（仍是演示数据，等历史同步接上再换）----
-        SectionCard(title = "今日曲线", accent = PulseRed) {
-            Sparkline(
-                values = day.map { it.bpm.toFloat() },
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(110.dp),
-                color = PulseRed,
-            )
-            Spacer(Modifier.height(8.dp))
-            Row(
-                Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-            ) {
-                listOf("00:00", "06:00", "12:00", "18:00", "24:00").forEach {
-                    Text(
-                        it,
-                        style = MaterialTheme.typography.labelMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+        SectionCard(title = "读数统计", accent = StepBlue) {
+            if (filtered.isEmpty()) {
+                Text(
+                    "该范围内还没有测量记录",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            } else {
+                val bpms = filtered.map { it.bpm }
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
+                    MetricTile("${bpms.average().roundToInt()}", "BPM", "平均", accent = StepBlue)
+                    MetricTile("${bpms.min()}", "BPM", "最低", accent = StepBlue)
+                    MetricTile(
+                        "${bpms.max()}",
+                        "BPM",
+                        "最高",
+                        accent = PulseRed,
+                        valueColor = PulseRed,
                     )
                 }
             }
@@ -295,33 +326,196 @@ fun HeartRateScreen(vm: HeartRateViewModel) {
 
         Spacer(Modifier.height(12.dp))
 
-        // ---- 统计 ----
-        SectionCard(title = "今日统计", accent = StepBlue) {
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
-                MetricTile("${DemoData.restingBpm()}", "BPM", "静息", accent = StepBlue)
-                MetricTile("${DemoData.avgBpm()}", "BPM", "平均", accent = StepBlue)
-                MetricTile(
-                    "${DemoData.maxBpm()}",
-                    "BPM",
-                    "最高",
-                    accent = PulseRed,
-                    valueColor = PulseRed,
+        // ---- 区间分布（真实记录）----
+        SectionCard(title = "区间分布", accent = PulseRed) {
+            if (filtered.isEmpty()) {
+                Text(
+                    "该范围内还没有测量记录",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
+            } else {
+                val bpms = filtered.map { it.bpm }
+                ZoneRow("过缓", "< 60", bpms.count { it < 60 }.toFloat() / bpms.size,
+                    MaterialTheme.colorScheme.onSurfaceVariant)
+                Spacer(Modifier.height(10.dp))
+                ZoneRow("正常", "60 – 100", bpms.count { it in 60..100 }.toFloat() / bpms.size,
+                    MaterialTheme.colorScheme.primary)
+                Spacer(Modifier.height(10.dp))
+                ZoneRow("偏高", "> 100", bpms.count { it > 100 }.toFloat() / bpms.size, PulseRed)
             }
         }
 
+        // ---- 全部测量记录（可收缩大项）：每一条都能展开看细节 ----
         Spacer(Modifier.height(12.dp))
+        CollapsibleSection(
+            title = "全部测量记录",
+            accent = StepBlue,
+            badge = "${filtered.size} 条",
+            initiallyExpanded = true,
+            headerTrailing = {
+                if (history.isNotEmpty()) {
+                    TextButton(onClick = { showClearConfirm = true }) {
+                        Text("清空", color = MaterialTheme.colorScheme.error)
+                    }
+                }
+            },
+        ) {
+            FilterChipRow(
+                options = RECORD_RANGE_LABELS,
+                selectedIndex = rangeIndex,
+                accent = PulseRed,
+                onSelect = {
+                    rangeIndex = it
+                    expandedRecordAt = null
+                },
+            )
+            Spacer(Modifier.height(10.dp))
 
-        // ---- 区间分布 ----
-        SectionCard(title = "区间分布", accent = PulseRed) {
-            ZoneRow("过缓", "< 60", 0.08f, MaterialTheme.colorScheme.onSurfaceVariant)
-            Spacer(Modifier.height(10.dp))
-            ZoneRow("正常", "60 – 100", 0.84f, MaterialTheme.colorScheme.primary)
-            Spacer(Modifier.height(10.dp))
-            ZoneRow("偏高", "> 100", 0.08f, PulseRed)
+            if (filtered.isEmpty()) {
+                Text(
+                    "还没有测量记录 —— 先测一次，这里会把每一条都留下来。",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            } else {
+                val dayGroups = remember(filtered) {
+                    filtered.groupBy { epochDayOf(it.finishedAtMillis) }
+                }
+                dayGroups.forEach { (epochDay, records) ->
+                    val dayAvg = records.map { it.bpm }.average().roundToInt()
+                    Row(
+                        Modifier
+                            .fillMaxWidth()
+                            .padding(top = 8.dp, bottom = 2.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                    ) {
+                        Text(
+                            formatEpochDayShort(epochDay),
+                            style = MaterialTheme.typography.labelMedium,
+                            color = MaterialTheme.colorScheme.onSurface,
+                        )
+                        Text(
+                            "${records.size} 次 · 均 $dayAvg",
+                            style = MaterialTheme.typography.labelMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                    records.forEachIndexed { index, record ->
+                        RecordRow(
+                            record = record,
+                            delta = deltaByTimestamp[record.finishedAtMillis],
+                            expanded = expandedRecordAt == record.finishedAtMillis,
+                            showDivider = index < records.lastIndex,
+                            onToggle = {
+                                expandedRecordAt =
+                                    if (expandedRecordAt == record.finishedAtMillis) {
+                                        null
+                                    } else {
+                                        record.finishedAtMillis
+                                    }
+                            },
+                        )
+                    }
+                    HorizontalDivider(
+                        Modifier.padding(vertical = 6.dp),
+                        color = MaterialTheme.colorScheme.outline.copy(alpha = 0.25f),
+                    )
+                }
+            }
         }
 
         Spacer(Modifier.height(24.dp))
+    }
+
+    if (showClearConfirm) {
+        AlertDialog(
+            onDismissRequest = { showClearConfirm = false },
+            title = { Text("清空全部测量记录？") },
+            text = { Text("共 ${history.size} 条，清空后无法恢复。设备配对信息不受影响。") },
+            confirmButton = {
+                TextButton(onClick = {
+                    vm.clearHistory()
+                    showClearConfirm = false
+                }) {
+                    Text("清空", color = MaterialTheme.colorScheme.error)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showClearConfirm = false }) {
+                    Text("取消")
+                }
+            },
+        )
+    }
+}
+
+/** 一条测量记录：收起时只有时间 + 读数，展开后把这一测的上下文全摆出来。 */
+@Composable
+private fun RecordRow(
+    record: MeasureResult,
+    delta: Int?,
+    expanded: Boolean,
+    showDivider: Boolean,
+    onToggle: () -> Unit,
+) {
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .animateContentSize()
+            .clickable(onClick = onToggle),
+    ) {
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .padding(vertical = 7.dp),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(
+                formatClockTime(record.finishedAtMillis),
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Row(verticalAlignment = Alignment.Bottom) {
+                Text(
+                    "${record.bpm}",
+                    style = MaterialTheme.typography.titleMedium,
+                    color = PulseRed,
+                )
+                Spacer(Modifier.width(3.dp))
+                Text(
+                    "BPM",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = PulseRed,
+                    modifier = Modifier.padding(bottom = 2.dp),
+                )
+            }
+            Icon(
+                Icons.Rounded.ExpandMore,
+                contentDescription = if (expanded) "收起" else "展开",
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.rotate(if (expanded) 180f else 0f),
+            )
+        }
+        AnimatedVisibility(visible = expanded) {
+            Column(Modifier.padding(bottom = 8.dp)) {
+                KeyValueRow("测量时刻", formatDateTime(record.finishedAtMillis))
+                KeyValueRow("耗时", formatSeconds(record.durationSec))
+                KeyValueRow(
+                    "与上一次",
+                    delta?.let { if (it >= 0) "+$it BPM" else "$it BPM" } ?: "首次记录",
+                    valueColor = when {
+                        delta == null -> MaterialTheme.colorScheme.onSurfaceVariant
+                        delta > 0 -> PulseRed
+                        else -> StepBlue
+                    },
+                )
+            }
+        }
+        if (showDivider && !expanded) {
+            HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.2f))
+        }
     }
 }
 
@@ -427,7 +621,7 @@ private fun ZoneRow(label: String, range: String, fraction: Float, color: Color)
             Box(
                 Modifier
                     .fillMaxHeight()
-                    .fillMaxWidth(fraction)
+                    .fillMaxWidth(fraction.coerceIn(0f, 1f))
                     .clip(RoundedCornerShape(3.dp))
                     .background(color),
             )

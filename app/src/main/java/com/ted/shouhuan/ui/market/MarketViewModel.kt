@@ -8,7 +8,9 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.ted.shouhuan.data.MarketEntry
 import com.ted.shouhuan.data.MarketRepository
-import java.io.File
+import com.ted.shouhuan.data.OnlineMetric
+import com.ted.shouhuan.data.OnlinePage
+import com.ted.shouhuan.data.OnlinePeriod
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -16,6 +18,8 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.asCoroutineDispatcher
+import java.util.concurrent.Executors
 
 /** 一张市场表盘的下载进度状态。 */
 sealed interface DownloadState {
@@ -31,6 +35,19 @@ data class MarketUiState(
     val error: String? = null,
     val updated: String = "",
     val entries: List<MarketEntry> = emptyList(),
+    /** 在线翻页：还有没有下一页 / 正在拉下一页 / 已拉到第几页。 */
+    val hasMore: Boolean = false,
+    val loadingMore: Boolean = false,
+    val loadedPages: Int = 1,
+    /** 在线源不可达，已回落到本地快照目录 —— 界面据此提示，且不再翻页。 */
+    val degraded: Boolean = false,
+    /** 回落的原因（给用户看的：是 403 还是空响应），degraded 时显示在目录行。 */
+    val degradedMessage: String? = null,
+    /** 当前浏览模式：最新上传 / 热门榜（口径 × 时间窗）/ 站内搜索。 */
+    val fresh: Boolean = true,
+    val metric: OnlineMetric = OnlineMetric.DOWNLOADS,
+    val period: OnlinePeriod = OnlinePeriod.ALL_TIME,
+    val query: String? = null,
     /** id → 已下载（在本地 filesDir 里有本体）。 */
     val downloadedIds: Set<String> = emptySet(),
     /** id → 下载进度（只有下载中的才有条目）。 */
@@ -44,12 +61,23 @@ data class MarketUiState(
 )
 
 /**
- * 表盘市场的状态机：拉目录 → 并行预取预览图 → 按需下载表盘包。
+ * 表盘市场的状态机：在线源（amazfitwatchfaces.com）拉目录 → 并行预取预览图 →
+ * 按需下载表盘包。在线源挂了回落自建快照目录，界面不至于全空。
  * 下载完成的表盘进 filesDir，表盘页的库会看到它们。
  */
 class MarketViewModel(app: Application) : AndroidViewModel(app) {
 
     private val repo = MarketRepository.get(app)
+
+    /**
+     * 预览图解码单独一条有上限的线程池（4 条）。
+     * 用默认的 Dispatchers.IO 不行 —— 它有 64 条线程，滑一格就是三张图同时解码，
+     * 每张 268×622 的位图 ≈ 666 KB，几十张并行会把内存和 IO 一起顶满，
+     * 表现就是「一直转圈、滑哪张都没图」。
+     */
+    private val decodePool =
+        Executors.newFixedThreadPool(4) { r -> Thread(r, "market-preview").apply { isDaemon = true } }
+            .asCoroutineDispatcher()
 
     private val _state = MutableStateFlow(MarketUiState())
     val state: StateFlow<MarketUiState> = _state.asStateFlow()
@@ -58,38 +86,158 @@ class MarketViewModel(app: Application) : AndroidViewModel(app) {
         refresh()
     }
 
-    /** 拉目录。预览图不再全量预取 —— 上百张预取又慢又浪费，卡片滑到再拉（[ensurePreview]）。 */
+    override fun onCleared() {
+        super.onCleared()
+        decodePool.close()
+    }
+
+    /**
+     * 按当前排序/搜索条件重新拉第一页。
+     * 在线源不可达时回落自建快照目录（[loadSnapshotFallback]），不直接报错。
+     */
     fun refresh() {
         if (_state.value.loading) return
+        val fresh = _state.value.fresh
+        val metric = _state.value.metric
+        val period = _state.value.period
+        val query = _state.value.query
         _state.update { it.copy(loading = true, error = null) }
         viewModelScope.launch {
             val result = withContext(Dispatchers.IO) {
-                runCatching { repo.fetchCatalog() }
+                runCatching { repo.fetchOnlinePage(1, fresh, metric, period, query) }
             }
+            result.fold(
+                onSuccess = { page -> applyOnlinePage(page, reset = true) },
+                onFailure = { t -> loadSnapshotFallback(t) },
+            )
+        }
+    }
+
+    /** 切「最新 / 热门」。搜索词一并清掉 —— 两个模式互斥。 */
+    fun setFresh(fresh: Boolean) {
+        if (_state.value.fresh == fresh && _state.value.query == null) return
+        _state.update { it.copy(fresh = fresh, query = null) }
+        refresh()
+    }
+
+    fun setMetric(metric: OnlineMetric) {
+        if (_state.value.metric == metric) return
+        _state.update { it.copy(metric = metric) }
+        refresh()
+    }
+
+    fun setPeriod(period: OnlinePeriod) {
+        if (_state.value.period == period) return
+        _state.update { it.copy(period = period) }
+        refresh()
+    }
+
+    /** 提交搜索词；空串 = 退出搜索。 */
+    fun submitSearch(raw: String) {
+        val query = raw.trim().takeIf { it.isNotEmpty() }
+        if (_state.value.query == query) return
+        _state.update { it.copy(query = query) }
+        refresh()
+    }
+
+    /** 滑到底部时拉下一页，追加进现有列表。 */
+    fun loadMore() {
+        val current = _state.value
+        if (current.loading || current.loadingMore || !current.hasMore) return
+        val fresh = current.fresh
+        val metric = current.metric
+        val period = current.period
+        val query = current.query
+        val nextPage = current.loadedPages + 1
+        _state.update { it.copy(loadingMore = true) }
+        viewModelScope.launch {
+            val result = withContext(Dispatchers.IO) {
+                runCatching { repo.fetchOnlinePage(nextPage, fresh, metric, period, query) }
+            }
+            result.fold(
+                onSuccess = { page -> applyOnlinePage(page, reset = false) },
+                onFailure = { _ ->
+                    // 翻页失败就当到底了，别让滚动监听反复重试
+                    _state.update { it.copy(loadingMore = false, hasMore = false) }
+                },
+            )
+        }
+    }
+
+    private fun applyOnlinePage(page: OnlinePage, reset: Boolean) {
+        _state.update { current ->
+            val merged = if (reset) {
+                page.entries
+            } else {
+                val known = current.entries.map { it.id }.toSet()
+                current.entries + page.entries.filter { it.id !in known }
+            }
+            current.copy(
+                loading = false,
+                loadingMore = false,
+                error = null,
+                degraded = false,
+                degradedMessage = null,
+                updated = "",
+                entries = merged,
+                loadedPages = if (reset) 1 else current.loadedPages + 1,
+                // 站点翻到空页就说明到底了；至少有一张才算还有下一页
+                hasMore = page.entries.isNotEmpty(),
+                downloadedIds = downloadedIds(),
+                // 换排序/翻页都重置预览缓存？不 —— 只有整体重拉才清，翻页保留已解码的
+                previews = if (reset) emptyMap() else current.previews,
+                previewLoading = if (reset) emptySet() else current.previewLoading,
+            )
+        }
+        if (reset) {
+            // 首屏可见的那几张同步解码，别让用户对着转圈等
+            val entries = _state.value.entries.take(INITIAL_DECODE_LIMIT)
+            val decoded = entries.mapNotNull { entry ->
+                repo.fetchPreviewCached(entry)?.let { bytes ->
+                    decode(bytes)?.let { bmp -> entry.id to bmp }
+                }
+            }.toMap()
+            _state.update { it.copy(previews = it.previews + decoded) }
+        }
+        // 整页慢慢预取：并发 4，不占界面；滑到哪张通常已经有料
+        repo.startPreviewPrefetch(page.entries)
+    }
+
+    /** 在线源不可达：回落自建快照目录，界面照常能浏览/下载/删除。 */
+    private fun loadSnapshotFallback(cause: Throwable) {
+        viewModelScope.launch {
+            val result = withContext(Dispatchers.IO) { runCatching { repo.fetchCatalog() } }
             result.fold(
                 onSuccess = { catalog ->
                     _state.update {
                         it.copy(
                             loading = false,
+                            loadingMore = false,
+                            degraded = true,
+                            degradedMessage = cause.message,
                             error = null,
                             updated = catalog.updated,
                             entries = catalog.faces,
+                            loadedPages = 1,
+                            hasMore = false,
                             downloadedIds = downloadedIds(),
-                            progress = emptyMap(),
-                            // 之前会话缓存的预览图直接解码复用
-                            previews = catalog.faces.mapNotNull { entry ->
-                                repo.peekPreviewCache(entry)?.let { f ->
-                                    decode(f)?.let { bmp -> entry.id to bmp }
+                            previews = catalog.faces.take(INITIAL_DECODE_LIMIT).mapNotNull { entry ->
+                                repo.fetchPreviewCached(entry)?.let { b ->
+                                    decode(b)?.let { bmp -> entry.id to bmp }
                                 }
                             }.toMap(),
                         )
                     }
+                    repo.startPreviewPrefetch(catalog.faces)
                 },
                 onFailure = { t ->
                     _state.update {
                         it.copy(
                             loading = false,
-                            error = t.message ?: t.javaClass.simpleName,
+                            loadingMore = false,
+                            degraded = false,
+                            degradedMessage = null,
+                            error = "在线目录拉取失败（${cause.message}），本地快照也不可用（${t.message}）",
                             downloadedIds = downloadedIds(),
                         )
                     }
@@ -98,13 +246,13 @@ class MarketViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    /** 卡片进入画面时调用：预览图没拉过就拉一次（磁盘缓存 + 内存缓存）。 */
+    /** 卡片进入画面时调用：预览图没拉过就拉一次（内存缓存 + 磁盘缓存）。 */
     fun ensurePreview(entry: MarketEntry) {
         val current = _state.value
         if (current.previews.containsKey(entry.id) || entry.id in current.previewLoading) return
         _state.update { it.copy(previewLoading = it.previewLoading + entry.id) }
         viewModelScope.launch {
-            val bmp = withContext(Dispatchers.IO) {
+            val bmp = withContext(decodePool) {
                 repo.fetchPreviewCached(entry)?.let { decode(it) }
             }
             _state.update {
@@ -162,6 +310,38 @@ class MarketViewModel(app: Application) : AndroidViewModel(app) {
     private fun downloadedIds(): Set<String> =
         repo.loadDownloaded().map { it.id }.toSet()
 
-    private fun decode(file: File): ImageBitmap? =
-        BitmapFactory.decodeFile(file.absolutePath)?.asImageBitmap()
+    /**
+     * 解码预览图。
+     *
+     * 两个要点：
+     * ① 按 2 的幂 inSampleSize 缩到 ~180px 宽 —— 卡片实际只有 110dp 宽，
+     *    源图 268×622 全尺寸解码是白烧内存；缩完一张 ≈ 60 KB。
+     * ② 动图（GIF）取首帧即可，[BitmapFactory] 默认就是这个行为，不需要额外处理，
+     *    但绝不能拿去整张内存缓存 —— 那是 149 × 全尺寸位图。
+     */
+    private fun decode(bytes: ByteArray): ImageBitmap? = runCatching {
+        val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
+        val opts = BitmapFactory.Options().apply {
+            inSampleSize = sampleSizeFor(bounds.outWidth, TARGET_PX)
+            inPreferredConfig = android.graphics.Bitmap.Config.RGB_565
+        }
+        BitmapFactory.decodeByteArray(bytes, 0, bytes.size, opts)?.asImageBitmap()
+    }.getOrNull()
+
+    /** 取 2 的幂，保证缩完不小于 [target] 像素宽（再小就该糊了）。 */
+    private fun sampleSizeFor(width: Int, target: Int): Int {
+        if (width <= 0 || width <= target) return 1
+        var sample = 1
+        while (width / (sample * 2) >= target) sample *= 2
+        return sample
+    }
+
+    private companion object {
+        /** 卡片宽 110dp 上下，取 180px 够 3x 屏用了。 */
+        const val TARGET_PX = 180
+
+        /** 进页面时同步解这几张（首屏可见区），其余交给后台预取。 */
+        const val INITIAL_DECODE_LIMIT = 12
+    }
 }
