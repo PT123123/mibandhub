@@ -5,7 +5,9 @@ import android.util.Log
 import com.ted.shouhuan.ble.BandConnection
 import com.ted.shouhuan.ble.ConnectionState
 import com.ted.shouhuan.ble.Gatt
+import com.ted.shouhuan.ble.Incoming
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.coroutineScope
@@ -16,11 +18,19 @@ import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import java.io.ByteArrayOutputStream
 import java.io.IOException
 import java.time.ZonedDateTime
 import java.util.UUID
+
+/**
+ * 「尽量多拉」的起点：手环只留最近 ~15-30 天的分钟样本，起点给到十年前，
+ * 手环有多少给多少（起始应答会告诉总数）。已 ack 过的数据手环自己删了，
+ * 所以实际传的永远是「上次同步以来」的新增。
+ */
+const val FULL_HISTORY_DAYS = 3650
 
 /**
  * 一次「手环会话」：连接 → 认证 → 可用。
@@ -73,6 +83,9 @@ class BandSession(
 
         /** 进度日志粒度（样本字节数）。 */
         private const val SAMPLE_LOG_EVERY_BYTES = 8_000
+
+        /** 序号跳变时整轮作废重来的上限（含第一次），防着极端固件反复断流时无限转。 */
+        private const val SYNC_MAX_ROUNDS = 3
     }
 
     private val connection = BandConnection(context)
@@ -450,31 +463,65 @@ class BandSession(
     /**
      * 从手环拉 [sinceDays] 天的活动明细并归并成睡眠夜。
      *
-     * 字节序列照 Gadgetbridge 的 AbstractFetchOperation 抄的，**还没在真机上
-     * 全流程验证过** —— 每一步都把原始字节打进日志，跑挂了靠日志定位：
+     * 字节序列照 Gadgetbridge 的 AbstractFetchOperation 抄的：
      *
      * ```
-     * ① 00000004 写 [0x01,0x01,时间8字节]     → 元数据应答 [0x10,0x01,状态,长度,起点]
+     * ① 00000004 写 [0x01,0x01,时间8字节]     → 元数据应答 [0x10,0x01,状态,采样数,起点]
      * ② 00000004 写 [0x02]                    → 00000005 开始推样本（序号+8字节/分钟）
      * ③ 00000004 收 [0x10,0x02,0x01]（数据齐） → 解析 + 归并成夜
      * ④ 00000004 写 [0x03] ack                → 手环收到才清本地，收不到就重复推
      * ```
+     *
+     * 收包的两条硬规矩（都是丢过数据才懂的）：
+     *   - 样本只从 [BandConnection.activityQueue] 这条无丢失队列取，且用
+     *     tryReceive + delay 轮询，不要挂在 receive/first 上等 —— 挂起被取消的瞬间
+     *     可能吞掉一条刚送达的消息，又是序号跳变；每次重新订阅 first 的间隙也一样。
+     *   - 实测 7 天 ≈ 286 包 ≈ 3 秒（MTU 244），超时常量按最坏情况给宽，别收紧。
+     *
+     * 序号跳变时整轮作废重来（最多 [SYNC_MAX_ROUNDS] 次）—— 手环还没收到 ack，
+     * 数据留在手环上，重发 ① 就能从头再要一遍。
      */
     suspend fun syncActivity(
         sinceDays: Int = 7,
         onProgress: (ActivitySyncProgress) -> Unit = {},
-    ): ActivitySyncResult = coroutineScope {
+    ): ActivitySyncResult = withContext(Dispatchers.IO) {
         check(_authenticated.value) { "会话未认证，先连接手环" }
         val hasFetch = connection.hasCharacteristic(Gatt.CHAR_ACTIVITY_FETCH)
         val hasData = connection.hasCharacteristic(Gatt.CHAR_ACTIVITY_SAMPLES)
         if (!hasFetch || !hasData) {
-            throw IOException("手环没有活动数据特征（00000004=${hasFetch}，00000005=$hasData）")
+            throw IOException("手环没有活动数据特征（00000004=$hasFetch，00000005=$hasData）")
         }
         if (!connection.enableNotify(Gatt.CHAR_ACTIVITY_FETCH)) {
             throw IOException("订阅活动元数据通道（00000004）失败")
         }
 
         val since = ZonedDateTime.now().minusDays(sinceDays.toLong())
+        var lastJump: SampleCounterJump? = null
+        repeat(SYNC_MAX_ROUNDS) { attempt ->
+            try {
+                return@withContext fetchActivityRound(since, connection.activityQueue(), onProgress)
+            } catch (e: SampleCounterJump) {
+                lastJump = e
+                if (attempt < SYNC_MAX_ROUNDS - 1) {
+                    log("⚠ ${e.message} —— 整轮作废，自动重试（${attempt + 1}/${SYNC_MAX_ROUNDS - 1}）")
+                }
+            }
+        }
+        throw (lastJump ?: IllegalStateException("取数循环退出但没有任何结果，不应发生"))
+    }
+
+    /**
+     * 一轮完整的取数（①→⑦）。样本序号断了就抛 [SampleCounterJump]，
+     * 重试与否由 [syncActivity] 决定 —— 这里只管把这一轮跑干净。
+     */
+    private suspend fun fetchActivityRound(
+        since: ZonedDateTime,
+        sampleQueue: Channel<Incoming>,
+        onProgress: (ActivitySyncProgress) -> Unit,
+    ): ActivitySyncResult {
+        // 每轮都先排空 —— 重试时上一轮的包还压在队列里，收到就会立刻又跳变
+        while (sampleQueue.tryReceive().isSuccess) { /* discard */ }
+
         val request = ActivitySync.startRequest(since)
         log("① 取数请求 -> ${hexOf(request)}")
         if (!connection.write(Gatt.CHAR_ACTIVITY_FETCH, request)) {
@@ -484,6 +531,7 @@ class BandSession(
         var startInfo: FetchStartInfo? = null
         val buffer = ByteArrayOutputStream(128 * 1024)
         var lastCounter = -1
+        var lastLoggedBytes = 0
 
         suspend fun processAndAck(): ActivitySyncResult {
             val info = startInfo ?: throw IOException("没有起始应答就想处理数据？不可能走到这")
@@ -494,6 +542,9 @@ class BandSession(
             val samples = ActivitySync.parseSamples(bytes, info.start)
             val nights = ActivitySync.nightsFromSamples(samples)
             log("⑤ 样本解析：${samples.size} 分钟（${info.start} 起），归并出 ${nights.size} 夜")
+            // kind 分布留着诊断用：睡眠样本的类型号（预期 0x78）一眼可见
+            val kindCounts = samples.groupingBy { it.kind }.eachCount().entries.sortedByDescending { it.value }
+            log("   kind 分布：${kindCounts.joinToString(" ") { "0x%02x×%d".format(it.key, it.value) }}")
             // ack 写失败不影响结果 —— 顶多手环下次把同样的数据再推一遍
             runCatching {
                 if (!connection.write(Gatt.CHAR_ACTIVITY_FETCH, byteArrayOf(ActivitySync.CMD_ACK.toByte()))) {
@@ -517,12 +568,9 @@ class BandSession(
             if (System.currentTimeMillis() > deadline) {
                 throw IOException("同步超时（${SYNC_TOTAL_TIMEOUT_MS / 1000} 秒），样本收到 ${buffer.size()} 字节")
             }
-            val msg = withTimeoutOrNull(SYNC_POLL_MS) {
-                connection.incoming.first {
-                    it.characteristic == Gatt.CHAR_ACTIVITY_FETCH ||
-                        it.characteristic == Gatt.CHAR_ACTIVITY_SAMPLES
-                }
-            }
+            // 轮询取包而不是挂起等待：tryReceive 拿不到就 delay 一拍，
+            // 整条路径没有任何「取消瞬间丢消息」的窗口（见 syncActivity 注释）
+            val msg = sampleQueue.tryReceive().getOrNull()
             if (msg == null) {
                 if (System.currentTimeMillis() - idleStart > SYNC_IDLE_TIMEOUT_MS) {
                     throw IOException(
@@ -530,6 +578,7 @@ class BandSession(
                             "样本已收 ${buffer.size()} 字节",
                     )
                 }
+                delay(SYNC_POLL_MS)
                 continue
             }
             idleStart = System.currentTimeMillis()
@@ -556,7 +605,8 @@ class BandSession(
                                 result = processAndAck()
                             } else {
                                 log(
-                                    "② 手环有 ${startInfo.expectedBytes} 字节样本，起点 ${startInfo.start}",
+                                    "② 手环有 ${startInfo.expectedBytes / ActivitySync.SAMPLE_SIZE}" +
+                                        " 个采样（${startInfo.expectedBytes} 字节），起点 ${startInfo.start}",
                                 )
                                 if (!connection.enableNotify(Gatt.CHAR_ACTIVITY_SAMPLES)) {
                                     throw IOException("订阅样本通道（00000005）失败")
@@ -590,11 +640,18 @@ class BandSession(
                     val value = msg.value
                     if (value.isEmpty()) continue
                     val counter = value[0].toInt() and 0xff
-                    val expectedCounter = (lastCounter + 1) and 0xff
-                    if (lastCounter >= 0 && counter != expectedCounter) {
-                        throw IOException(
-                            "样本包序号跳变：上一包 $lastCounter，这一包 $counter —— 数据不连续，重试同步",
-                        )
+                    if (lastCounter >= 0) {
+                        when (counter) {
+                            // 同一个序号再来一遍是重复送达，数据本身没丢，跳过即可
+                            lastCounter -> {
+                                log("⚠ 样本包 $counter 重复送达，跳过")
+                                continue
+                            }
+                            (lastCounter + 1) and 0xff -> {}
+                            else -> throw SampleCounterJump(
+                                "样本包序号跳变：上一包 $lastCounter，这一包 $counter",
+                            )
+                        }
                     }
                     lastCounter = counter
                     buffer.write(value, 1, value.size - 1)
@@ -603,18 +660,22 @@ class BandSession(
                         // 样本收齐 —— 「数据齐」元数据有时贴着最后一包就来，
                         // 不主动处理，等 00000004 的完成标记（下一轮循环会收到）
                         onProgress(ActivitySyncProgress(buffer.size(), info.expectedBytes))
-                    } else if (buffer.size() % (SAMPLE_LOG_EVERY_BYTES) < 20) {
+                    } else if (buffer.size() - lastLoggedBytes >= SAMPLE_LOG_EVERY_BYTES) {
+                        lastLoggedBytes = buffer.size()
                         log("   样本进度 ${buffer.size()} 字节（包 $counter）")
                         info?.let { onProgress(ActivitySyncProgress(buffer.size(), it.expectedBytes)) }
                     }
                 }
 
-                else -> {} // 不会走到：上面 first{} 已过滤
+                else -> {} // 不会走到：队列里只进这两条特征
             }
         }
 
-        result!!
+        return result!!
     }
+
+    /** 样本包序号不连续 —— 时间戳没法对齐，这一轮作废；手环未收到 ack，可以整轮重来。 */
+    private class SampleCounterJump(message: String) : IOException(message)
 
     private fun hexOf(bytes: ByteArray): String =
         bytes.joinToString(" ") { "%02x".format(it) }
