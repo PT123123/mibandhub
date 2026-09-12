@@ -8,7 +8,14 @@ import java.io.File
 import java.io.IOException
 import java.net.HttpURLConnection
 import java.net.URL
+import java.net.URLEncoder
 import java.util.zip.CRC32
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
 
 /** 市场目录（market/index.json）里的一条。 */
 data class MarketEntry(
@@ -28,6 +35,37 @@ data class MarketEntry(
     val note: String?,
     /** 详情页地址 —— 第三方源下载时用作 Referer，也方便用户溯源。 */
     val page: String?,
+    /**
+     * 在线条目的人气数据（"下载 126 · 收藏 1"），展示在卡片副标题上。
+     * 快照目录的条目没有 —— 站点列表页才有这些数字。
+     */
+    val stats: String? = null,
+)
+
+/** 热门榜的统计口径（站点的 sortby 参数；不传 = 按下载量排）。 */
+enum class OnlineMetric(val label: String, val param: String?) {
+    DOWNLOADS("下载量", null),
+    VIEWS("浏览量", "views"),
+    FAVORITES("收藏数", "fav"),
+}
+
+/**
+ * 热门榜的时间窗口（站点的 topof 参数）。
+ * 注意取值就这五个 —— 站点上没有 month，传了会拿到空列表（实测）。
+ */
+enum class OnlinePeriod(val label: String, val param: String) {
+    WEEK("本周", "week"),
+    MONTHS_3("3 个月", "3months"),
+    HALF_YEAR("半年", "6months"),
+    YEAR("一年", "year"),
+    ALL_TIME("总榜", "alltime"),
+}
+
+/** 在线目录的一页。 */
+data class OnlinePage(
+    val entries: List<MarketEntry>,
+    /** false = 这是最后一页，别再往下翻了。 */
+    val hasMore: Boolean,
 )
 
 data class MarketCatalog(
@@ -70,8 +108,35 @@ class MarketRepository private constructor(context: Context) {
             "https://cdn.jsdelivr.net/gh/PT123123/mibandhub@main/market/index.json",
             "https://raw.githubusercontent.com/PT123123/mibandhub/main/market/index.json",
         )
+
+        /** amazfitwatchfaces 在线源：目录页、预览图、包体都从这个域出。 */
+        private const val SITE_BASE = "https://amazfitwatchfaces.com"
+
+        /**
+         * 在线目录对准的设备（站点的 slug）。手环管家现在整条链路都是
+         * Mi Band 5（认证、表盘槽、UIHH 包体），换设备时这里一起改。
+         */
+        private const val DEVICE_SLUG = "mi-band-5"
+
+        /** 站点每页 16 张；解析满一页就当还有下一页，不满一页即到底。 */
+        private const val ONLINE_PAGE_SIZE = 16
         private const val CONNECT_TIMEOUT_MS = 10_000
         private const val READ_TIMEOUT_MS = 30_000
+
+        /**
+         * 仓库内相对路径（faces/、previews/）按 GitHub 目录约定解析：
+         * jsDelivr 用 gh/user/repo@ref/ 形式，raw 用 ref/ 形式，互不通用。
+         */
+        private val GITHUB_RAW_RE = Regex(
+            """^https://raw\.githubusercontent\.com/([^/]+)/([^/]+)/(?:refs/heads/)?(.+?)/([^/]+)$""",
+        )
+
+        /**
+         * 目录/包体这类「小、要新鲜」的请求才禁缓存；预览图是静态资源，
+         * 必须留着磁盘缓存和 30 天 max-age，否则每次进市场都白拉一遍。
+         */
+        private const val CACHE_BUST_HEADER = "Cache-Control"
+        private const val CACHE_BUST_VALUE = "no-cache"
 
         @Volatile
         private var instance: MarketRepository? = null
@@ -82,16 +147,47 @@ class MarketRepository private constructor(context: Context) {
             }
     }
 
-    /** 目录拉成功时记下的 base（faces/、previews/ 跟着同一个源走，别混用）。 */
+    /** 目录拉成功时记下的 base 拼装函数（faces/、previews/ 跟着同一个源走，别混用）。 */
     @Volatile
-    private var activeBase: String = CATALOG_URLS.first().substringBeforeLast('/')
+    private var resolveRelative: (String) -> String = { rel ->
+        "https://cdn.jsdelivr.net/gh/PT123123/mibandhub@main/$rel"
+    }
 
-    /** 华米 .bin 容器的文件头 —— 下载校验用（第三方源没有 CRC32 可查）。 */
-    private val UIHH_MAGIC = byteArrayOf(0x55, 0x49, 0x48, 0x48)
+    /**
+     * 第三方站点反爬失败时回的是 HTML 说明页，不是 .bin —— 靠头部字节拦下来。
+     * 实测 amazfitwatchfaces 的 Mi Band 5 包体是 `55 49 48 48`（"UIHH"）开头；
+     * 仓库自制包体走自研容器，可能是明文头，也可能是 `ENCRYPTED` 头。
+     */
+    private val UIHH_MAGIC = "UIHH".toByteArray(Charsets.US_ASCII).toList()
+    private val ENCRYPTED_MAGIC = "ENCRYPTED".toByteArray(Charsets.US_ASCII).toList()
 
-    private fun isUihh(bytes: ByteArray): Boolean =
-        bytes.size >= 4 && bytes[0] == UIHH_MAGIC[0] && bytes[1] == UIHH_MAGIC[1] &&
-            bytes[2] == UIHH_MAGIC[2] && bytes[3] == UIHH_MAGIC[3]
+    private fun startsWith(bytes: ByteArray, magic: List<Byte>): Boolean =
+        bytes.size >= magic.size && magic.indices.all { bytes[it] == magic[it] }
+
+    private fun looksLikePackage(bytes: ByteArray): Boolean =
+        startsWith(bytes, UIHH_MAGIC) || startsWith(bytes, ENCRYPTED_MAGIC)
+
+    /** 预览图解码后的内存缓存：省掉每次进市场都重新解码上百张图。 */
+    private val previewMemory = HashMap<String, ByteArray>()
+    private val previewMemoryLock = Any()
+
+    /** 预览图落盘的后台任务：并发上限 4，不阻塞界面。 */
+    private val prefetchScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private val prefetchGate = Semaphore(4)
+    private val prefetchStarted = java.util.Collections.synchronizedSet(HashSet<String>())
+
+    /** 起一批后台预取：整页 149 张预览图，滑到哪张有哪张。 */
+    fun startPreviewPrefetch(entries: List<MarketEntry>) {
+        for (entry in entries) {
+            if (previewMemory.containsKey(entry.id)) continue
+            if (!prefetchStarted.add(entry.id)) continue
+            prefetchScope.launch {
+                prefetchGate.withPermit {
+                    runCatching { fetchPreviewCached(entry) }
+                }
+            }
+        }
+    }
 
     private val BROWSER_UA =
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 " +
@@ -130,7 +226,7 @@ class MarketRepository private constructor(context: Context) {
                     }
                 }
                 if (entries.isEmpty()) throw IOException("目录是空的")
-                activeBase = url.substringBeforeLast('/')
+                resolveRelative = resolverFor(url)
                 return MarketCatalog(updated = root.optString("updated"), faces = entries)
             } catch (e: IOException) {
                 lastError = e
@@ -142,21 +238,202 @@ class MarketRepository private constructor(context: Context) {
     }
 
     /**
-     * 浏览用预览图：有缓存直接回，没有拉一次。失败返回 null，界面降级成无图卡片。
+     * 目录清单地址 → 「相对路径怎么拼」的解析函数。
+     *
+     * 这里必须按源分别构造，不能统一拼一个 base：jsDelivr 的路径带 `@main`，
+     * raw 的路径没有 —— 早先统一按 jsDelivr 拼接，一旦回落到 raw 源，
+     * 拼出来的地址就是 404，表现是目录能出、图全空。
      */
-    fun fetchPreviewCached(entry: MarketEntry): File? {
+    private fun resolverFor(catalogUrl: String): (String) -> String {
+        GITHUB_RAW_RE.find(catalogUrl)?.let { m ->
+            val (user, repo, ref, _) = m.destructured
+            return { rel -> "https://raw.githubusercontent.com/$user/$repo/$ref/$rel" }
+        }
+        val base = catalogUrl.substringBeforeLast('/')
+        return { rel -> "$base/$rel" }
+    }
+
+    // ----------------------------------------------------------------
+    // 在线源（amazfitwatchfaces.com）
+    //
+    // 站点没有公开 API，但目录页是服务端渲染的 HTML，卡片里预览图、作者、
+    // 人气数字全在标记里 —— 抓下来正则解析即可（Notify for Mi Band 同款思路）。
+    // 列表页实测 16 张/页，分页是路径式的 /p/N（搜索页是 ?page=N）。
+    // ----------------------------------------------------------------
+
+    /** 一张卡片的起点；两处起点之间恰好是一张卡的完整标记。 */
+    private val CARD_ANCHOR = "class=\"panel wf-panel\""
+
+    private val TITLE_RE = Regex("title=\"([^\"]+)\"")
+    private val VIEW_LINK_RE = Regex("href=\"/([a-z0-9-]+)/view/(\\d+)\"")
+    private val IMG_RE = Regex("src=\"([^\"]+)\"")
+    private val ALT_RE = Regex("alt=\"([^\"]+)\"")
+    private val AUTHOR_RE = Regex("/ucp/\\d+\"[^>]*>([^<]+)<")
+    private val COMP_RE = Regex("<code>([^<]+)</code>")
+
+    /** 卡片人气行：星=收藏、眼=浏览、下载图标=下载，各自跟着一个数字 span。 */
+    private val COUNT_RE = Regex(
+        "fa-(star|eye|download)\"></i>\\s*<span class=\"text-muted\">(\\d+)<",
+    )
+
+    /** 详情页里真正的包体直链（文件名带指纹，离线算不出来，只能现抓）。 */
+    private val DL_LINK_RE = Regex("href=\"(/dl/[^\"]+\\.bin)\"")
+
+    /**
+     * 拉一页在线目录。
+     *
+     * 源站偶尔会回 200 + 空 body（Cloudflare 后面的限流行为，实测），
+     * 所以这里带一次重试；空响应和「解析不到卡片」都按失败处理，
+     * 交给调用方回落快照目录，绝不能让界面摆出一个莫名的空市场。
+     *
+     * @param fresh true = 最新上传（/fresh）；false = 热门榜（/top，按 [metric] × [period] 排）
+     * @param query 非空 = 站内搜索，其余参数全部忽略
+     */
+    @Throws(IOException::class)
+    fun fetchOnlinePage(
+        page: Int,
+        fresh: Boolean,
+        metric: OnlineMetric = OnlineMetric.DOWNLOADS,
+        period: OnlinePeriod = OnlinePeriod.ALL_TIME,
+        query: String? = null,
+    ): OnlinePage {
+        val url = onlineListUrl(page, fresh, metric, period, query)
+        var lastError: IOException? = null
+        repeat(2) { attempt ->
+            if (attempt > 0) runCatching { Thread.sleep(1_200) }
+            try {
+                val html = httpGet(url)
+                when {
+                    html.isBlank() -> throw IOException("源站返回了空响应")
+                    else -> {
+                        val entries = parseListing(html)
+                        // 「Nothing to display」是站点的合法空页（如本周没有新表盘）；
+                        // 除此之外解析不到卡片就是被拦了，不能当空目录用
+                        if (entries.isEmpty() && !html.contains("Nothing to display")) {
+                            throw IOException("页面里解析不到表盘（多半被源站拦截）")
+                        }
+                        return OnlinePage(entries = entries, hasMore = entries.size >= ONLINE_PAGE_SIZE)
+                    }
+                }
+            } catch (e: IOException) {
+                lastError = e
+            }
+        }
+        throw lastError ?: IOException("目录拉取失败")
+    }
+
+    /** 组一页目录的地址。分页格式实测：目录 /p/N，搜索 ?page=N。 */
+    private fun onlineListUrl(
+        page: Int,
+        fresh: Boolean,
+        metric: OnlineMetric,
+        period: OnlinePeriod,
+        query: String?,
+    ): String {
+        if (!query.isNullOrBlank()) {
+            val q = URLEncoder.encode(query.trim(), "UTF-8")
+            return "$SITE_BASE/search/$DEVICE_SLUG/text/$q" + if (page > 1) "?page=$page" else ""
+        }
+        return if (fresh) {
+            "$SITE_BASE/$DEVICE_SLUG/fresh" + if (page > 1) "/p/$page" else ""
+        } else {
+            // top 页不带显式 topof 会返回空列表（站点默认窗口对着一个空的「本月」），
+            // 所以这里永远把时间窗口带上
+            val params = mutableListOf<String>()
+            metric.param?.let { params += "sortby=$it" }
+            params += "topof=${period.param}"
+            "$SITE_BASE/$DEVICE_SLUG/top" +
+                (if (page > 1) "/p/$page" else "") +
+                "?" + params.joinToString("&")
+        }
+    }
+
+    /** 把目录页 HTML 拆成表盘条目；解析不出的卡片直接跳过，不拖累整页。 */
+    private fun parseListing(html: String): List<MarketEntry> =
+        html.split(CARD_ANCHOR).drop(1).mapNotNull(::parseCard)
+
+    private fun parseCard(chunk: String): MarketEntry? {
+        val view = VIEW_LINK_RE.find(chunk) ?: return null
+        val device = view.groupValues[1]
+        val numericId = view.groupValues[2]
+
+        // 站点目录混着「表盘 App」（游戏、快捷方式）—— 那不是 .bin 表盘包，跳过
+        val compatible = COMP_RE.find(chunk)?.groupValues?.get(1).orEmpty()
+        if (compatible.contains("app", ignoreCase = true)) return null
+
+        val name = (TITLE_RE.find(chunk)?.groupValues?.get(1) ?: ALT_RE.find(chunk)?.groupValues?.get(1))
+            ?.takeIf { it.isNotBlank() }
+            ?: return null
+        val img = IMG_RE.find(chunk)?.groupValues?.get(1) ?: return null
+        val author = AUTHOR_RE.find(chunk)?.groupValues?.get(1)?.trim().orEmpty()
+
+        val counts = COUNT_RE.findAll(chunk).associate { it.groupValues[1] to it.groupValues[2] }
+        val stats = listOfNotNull(
+            counts["download"]?.let { "下载 $it" },
+            counts["star"]?.let { "收藏 $it" },
+        ).joinToString(" · ").takeIf { it.isNotEmpty() }
+
+        val detail = "$SITE_BASE/$device/view/$numericId"
+        return MarketEntry(
+            // 站内 id 是按设备编号的，加上 awf- 前缀和快照目录的 id 域分开
+            id = "awf-$numericId",
+            name = name,
+            author = author,
+            license = "",          // 目录页不带授权信息，详情页链接可溯源
+            file = detail,         // 下载时从详情页现解析 .bin 直链（见 [resolveDirectBin]）
+            preview = absoluteUrl(img),
+            sizeBytes = 0,
+            crc32 = -1L,
+            note = null,
+            page = detail,
+            stats = stats,
+        )
+    }
+
+    /** 站点标记里的地址三种形态都有：/storage/…、//域名/…、完整 https。 */
+    private fun absoluteUrl(src: String): String = when {
+        src.startsWith("//") -> "https:$src"
+        src.startsWith("/") -> "$SITE_BASE$src"
+        else -> src
+    }
+
+    /**
+     * 在线条目的 file 字段存的是详情页；真正的 .bin 直链（/dl/<设备>/zip-bin/…）
+     * 只能下载时抓详情页现解析。
+     */
+    private fun resolveDirectBin(url: String, entry: MarketEntry): String {
+        if (!url.contains("/view/")) return url
+        val html = httpGet(url, entry, bustCache = false)
+        val href = DL_LINK_RE.find(html)?.groupValues?.get(1)
+            ?: throw IOException("详情页里没找到下载直链（站点结构可能变了）")
+        return absoluteUrl(href)
+    }
+
+    /**
+     * 浏览用预览图字节：内存缓存 → 磁盘缓存 → 网络。
+     * 失败返回 null，界面降级成无图卡片。
+     *
+     * 注意缓存是按 .bin 内容存的，不看扩展名 —— 源站给的多半是 GIF 动图
+     * （149 张里 105 张），文件名一律 .png 只是历史习惯，BitmapFactory 认内容不认后缀。
+     */
+    fun fetchPreviewCached(entry: MarketEntry): ByteArray? {
+        synchronized(previewMemoryLock) { previewMemory[entry.id] }?.let { return it }
         val cached = File(previewCache, "${entry.id}.png")
-        if (cached.isFile && cached.length() > 0) return cached
+        if (cached.isFile && cached.length() > 0) {
+            return runCatching { cached.readBytes() }.getOrNull()
+        }
         return runCatching {
             previewCache.mkdirs()
-            val bytes = httpGetBytes(downloadUrl(entry.preview, entry))
+            val url = downloadUrl(entry.preview, entry)
+            // 站点图床和 .bin 一样认 UA，不带浏览器头可能拿回说明页
+            val bytes = httpGetBytes(url, extraHeaders = httpHeadersFor(url, entry))
+            if (bytes.isEmpty()) return@runCatching null
             cached.writeBytes(bytes)
-            cached
+            synchronized(previewMemoryLock) { previewMemory[entry.id] = bytes }
+            bytes
         }.getOrNull()
     }
 
-    fun peekPreviewCache(entry: MarketEntry): File? =
-        File(previewCache, "${entry.id}.png").takeIf { it.isFile && it.length() > 0 }
 
     // ---------------------------------------------------------------- 下载
 
@@ -167,36 +444,62 @@ class MarketRepository private constructor(context: Context) {
      */
     @Throws(IOException::class)
     fun downloadFace(entry: MarketEntry, onProgress: (Int) -> Unit): StoredWatchFace {
-        val bytes = try {
-            httpGetBytes(downloadUrl(entry.file, entry), onProgress = { percent -> onProgress(percent) })
-        } catch (e: IOException) {
-            throw e
-        } catch (e: Exception) {
-            throw IOException(e.message ?: e.javaClass.simpleName)
+        // 源站对直连下载偶发「200 + 空响应」（见 fetchOnlinePage 的注释），
+        // 空的和「不是包」的都重试一次再认输；报错带上实际收到的字节，
+        // 不然界面上一句「下载到的不是表盘包」根本没法排查
+        var bytes: ByteArray? = null
+        var lastError: IOException? = null
+        repeat(2) { attempt ->
+            if (bytes != null) return@repeat
+            if (attempt > 0) runCatching { Thread.sleep(1_200) }
+            try {
+                val direct = resolveDirectBin(downloadUrl(entry.file, entry), entry)
+                val got = httpGetBytes(
+                    direct,
+                    onProgress = { percent -> onProgress(percent) },
+                    extraHeaders = httpHeadersFor(entry.file, entry) + cacheBust(),
+                )
+                when {
+                    got.isEmpty() -> lastError =
+                        IOException("源站返回了空响应（源站限流或被拦截），稍后再试")
+                    !looksLikePackage(got) -> lastError = IOException(
+                        "下载到的不是表盘包：${got.size} 字节，开头 " +
+                            got.take(8).joinToString(" ") { "%02x".format(it) } +
+                            " —— 源站多半拦了请求，稍后重试或换一张",
+                    )
+                    else -> bytes = got
+                }
+            } catch (e: IOException) {
+                lastError = e
+            } catch (e: Exception) {
+                lastError = IOException(e.message ?: e.javaClass.simpleName)
+            }
         }
-        if (!isUihh(bytes)) {
-            // 第三方站点反爬失败时回的是 HTML 说明页，不是 .bin —— 拦下来给人话
-            throw IOException("下载到的不是表盘包（源站可能拦截了请求），稍后重试或换一张。")
-        }
-        val crc = CRC32().apply { update(bytes) }.value
+        val data = bytes ?: throw lastError ?: IOException("下载失败")
+        val crc = CRC32().apply { update(data) }.value
         if (entry.crc32 >= 0 && crc != entry.crc32) {
             throw IOException("校验和不符：目录说 %08x，下下来 %08x".format(entry.crc32, crc))
         }
-        if (entry.sizeBytes > 0 && bytes.size != entry.sizeBytes) {
-            throw IOException("大小不符：目录说 ${entry.sizeBytes} 字节，下下来 ${bytes.size}")
+        if (entry.sizeBytes > 0 && data.size != entry.sizeBytes) {
+            throw IOException("大小不符：目录说 ${entry.sizeBytes} 字节，下下来 ${data.size}")
         }
 
         val faceDir = File(root, entry.id).apply { deleteRecursively(); mkdirs() }
-        val binFile = File(faceDir, "face.bin").apply { writeBytes(bytes) }
+        val binFile = File(faceDir, "face.bin").apply { writeBytes(data) }
         val previewFile = File(faceDir, "preview.png")
-        runCatching { previewFile.writeBytes(httpGetBytes(downloadUrl(entry.preview, entry))) }
+        runCatching {
+            val previewUrl = downloadUrl(entry.preview, entry)
+            previewFile.writeBytes(
+                httpGetBytes(previewUrl, extraHeaders = httpHeadersFor(previewUrl, entry)),
+            )
+        }
         File(faceDir, "meta.json").writeText(
             JSONObject()
                 .put("id", entry.id)
                 .put("name", entry.name)
                 .put("author", entry.author)
                 .put("license", entry.license)
-                .put("sizeBytes", bytes.size)
+                .put("sizeBytes", data.size)
                 .put("note", entry.note ?: "")
                 .toString(),
         )
@@ -207,7 +510,7 @@ class MarketRepository private constructor(context: Context) {
             name = entry.name,
             author = entry.author,
             license = entry.license,
-            sizeBytes = bytes.size,
+            sizeBytes = data.size,
             note = entry.note,
             binFile = binFile,
             previewFile = previewFile,
@@ -246,15 +549,28 @@ class MarketRepository private constructor(context: Context) {
 
     // ---------------------------------------------------------------- HTTP
 
-    private fun httpGet(url: String): String = String(httpGetBytes(url))
+    /**
+     * 统一的 GET：按目标自动带反爬头（站点对 Android 默认的 Dalvik UA 直接回
+     * 403 —— 必须伪装成浏览器，见 [httpHeadersFor]）。
+     * 只保留这一个入口，别再开不带头的重载。
+     */
+    private fun httpGet(url: String, entry: MarketEntry? = null, bustCache: Boolean = true): String =
+        String(
+            httpGetBytes(
+                url,
+                null,
+                httpHeadersFor(url, entry) + if (bustCache) cacheBust() else emptyMap(),
+            ),
+        )
 
     /**
-     * 算下载地址：绝对 URL（第三方源）直接用；相对路径拼在目录的 base 后。
+     * 算下载地址：绝对 URL（第三方源）直接用；相对路径按当前目录源的规则拼
+     * （见 [resolverFor]）。
      * amazfitwatchfaces 有反爬 —— 请求要带浏览器 UA 和详情页 Referer，
-     * 否则拿回来的是 HTML 说明页（下载处有 UIHH 魔数校验兜底）。
+     * 否则拿回来的是 HTML 说明页（下载处有魔数校验兜底）。
      */
     private fun downloadUrl(url: String, entry: MarketEntry): String =
-        if (url.startsWith("http")) url else "$activeBase/$url"
+        if (url.startsWith("http")) url else resolveRelative(url)
 
     private fun httpHeadersFor(url: String, entry: MarketEntry?): Map<String, String> {
         if (!url.contains("amazfitwatchfaces.com")) return emptyMap()
@@ -263,8 +579,12 @@ class MarketRepository private constructor(context: Context) {
         return headers
     }
 
-    private fun httpGet(url: String, entry: MarketEntry? = null): String =
-        String(httpGetBytes(url, null, httpHeadersFor(url, entry)))
+    /**
+     * 目录和 .bin 都走 CDN（jsDelivr 默认缓存数小时），推完新内容不刷就一直是旧的。
+     * 预览图不加这个头 —— 它们是按 URL 命名的静态资源，让缓存正常生效。
+     */
+    private fun cacheBust(): Map<String, String> =
+        mapOf(CACHE_BUST_HEADER to CACHE_BUST_VALUE)
 
     private fun httpGetBytes(
         url: String,
