@@ -1,5 +1,6 @@
 package com.ted.shouhuan.ui.market
 
+import android.widget.Toast
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -46,6 +47,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
@@ -53,6 +55,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
@@ -69,6 +72,10 @@ import com.ted.shouhuan.ui.components.NoticeBanner
 import com.ted.shouhuan.ui.theme.Mint
 import com.ted.shouhuan.ui.theme.PulseRed
 import com.ted.shouhuan.ui.theme.StepBlue
+import com.ted.shouhuan.ui.watchface.WatchFacePhase
+import com.ted.shouhuan.ui.watchface.WatchFaceViewModel
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 
 /**
  * 表盘市场：在线源（amazfitwatchfaces.com）按 最新/热门/最近更新/搜索/组件标签/语言
@@ -79,6 +86,7 @@ import com.ted.shouhuan.ui.theme.StepBlue
 @Composable
 fun MarketScreen(
     vm: MarketViewModel,
+    installVm: WatchFaceViewModel,
     onBack: () -> Unit,
     onOpenBrowser: () -> Unit,
 ) {
@@ -87,6 +95,46 @@ fun MarketScreen(
     var searchInput by remember { mutableStateOf("") }
     // 进阶筛选（标签 / 语言 / 只看已下载）默认收起，常用入口是模式行
     var filtersExpanded by rememberSaveable { mutableStateOf(false) }
+
+    // ---- 卡片一键安装：走表盘页那条下发流程，进度/结果映射回这张卡片 ----
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    val installPhase by installVm.phase.collectAsStateWithLifecycle()
+    var installingId by remember { mutableStateOf<String?>(null) }
+
+    fun install(entry: MarketEntry) {
+        if (installPhase is WatchFacePhase.Running) return
+        scope.launch {
+            when (val bytes = vm.faceBytes(entry)) {
+                null -> Toast.makeText(context, "找不到已下载的表盘包，重新下载一次", Toast.LENGTH_LONG).show()
+                else -> {
+                    installingId = entry.id
+                    installVm.installBytes(entry.name, bytes)
+                }
+            }
+        }
+    }
+
+    // 安装收尾后把卡片上的结果文案留几秒再撤，让人来得及看到
+    LaunchedEffect(installPhase) {
+        if (installingId != null && installPhase !is WatchFacePhase.Running) {
+            delay(4_000)
+            installingId = null
+        }
+    }
+
+    /** 这张卡片当前该显示的安装状态文案（null = 不显示）。 */
+    fun installStatusFor(id: String): String? {
+        if (installingId != id) return null
+        return when (val p = installPhase) {
+            is WatchFacePhase.Running ->
+                "下发中 ${(p.progress.sentBytes * 100 / p.progress.totalBytes.coerceAtLeast(1))}%"
+            is WatchFacePhase.Success -> "已装上手环 ✓"
+            is WatchFacePhase.Unconfirmed -> "手环没确认，去表盘页看详情"
+            is WatchFacePhase.Failure -> "失败：${p.title}"
+            WatchFacePhase.Idle -> null
+        }
+    }
 
     Column(
         Modifier
@@ -263,7 +311,10 @@ fun MarketScreen(
                             loading = entry.id in state.previewLoading,
                             downloadState = downloadStateOf(state, entry.id),
                             downloaded = entry.id in state.downloadedIds,
+                            installStatus = installStatusFor(entry.id),
+                            installBusy = installPhase is WatchFacePhase.Running,
                             onDownload = { vm.download(entry) },
+                            onInstall = { install(entry) },
                             onDelete = { vm.delete(entry) },
                             onVisible = { vm.ensurePreview(entry) },
                         )
@@ -477,7 +528,10 @@ private fun MarketCard(
     loading: Boolean,
     downloadState: DownloadState,
     downloaded: Boolean,
+    installStatus: String?,
+    installBusy: Boolean,
     onDownload: () -> Unit,
+    onInstall: () -> Unit,
     onDelete: () -> Unit,
     onVisible: () -> Unit,
 ) {
@@ -552,22 +606,45 @@ private fun MarketCard(
             }
 
             DownloadState.Done -> {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text(
-                        "已下载",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = Mint,
-                        modifier = Modifier.weight(1f),
-                    )
-                    Text(
-                        "删除",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = PulseRed,
-                        modifier = Modifier
-                            .clip(RoundedCornerShape(6.dp))
-                            .clickable(onClick = onDelete)
-                            .padding(horizontal = 6.dp, vertical = 3.dp),
-                    )
+                Column {
+                    installStatus?.let {
+                        Text(
+                            it,
+                            style = MaterialTheme.typography.labelSmall,
+                            color = if (it.startsWith("失败")) PulseRed else Mint,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                        Spacer(Modifier.height(3.dp))
+                    }
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(
+                            "已下载",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = Mint,
+                            modifier = Modifier.weight(1f),
+                        )
+                        Text(
+                            // 一键安装对齐官方 App 的体验：下载完当场就能下发，
+                            // 不用再回表盘页选中。安装中禁用防重复触发。
+                            "安装",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = StepBlue,
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(6.dp))
+                                .clickable(enabled = !installBusy, onClick = onInstall)
+                                .padding(horizontal = 6.dp, vertical = 3.dp),
+                        )
+                        Text(
+                            "删除",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = PulseRed,
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(6.dp))
+                                .clickable(enabled = !installBusy, onClick = onDelete)
+                                .padding(horizontal = 6.dp, vertical = 3.dp),
+                        )
+                    }
                 }
             }
 
