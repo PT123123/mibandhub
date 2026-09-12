@@ -10,15 +10,11 @@ import com.ted.shouhuan.data.MarketEntry
 import com.ted.shouhuan.data.MarketRepository
 import java.io.File
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.async
-import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.sync.Semaphore
-import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
 
 /** 一张市场表盘的下载进度状态。 */
@@ -41,8 +37,10 @@ data class MarketUiState(
     val progress: Map<String, Int> = emptyMap(),
     /** id → 下载失败原因。 */
     val failed: Map<String, String> = emptyMap(),
-    /** id → 预览图（缓存命中或已拉取；没有条目 = 还没就绪，界面放占位）。 */
+    /** id → 预览图（懒加载：卡片滑到才拉）。 */
     val previews: Map<String, ImageBitmap> = emptyMap(),
+    /** 预览图正在加载中的 id 集合（防重复发起）。 */
+    val previewLoading: Set<String> = emptySet(),
 )
 
 /**
@@ -60,7 +58,7 @@ class MarketViewModel(app: Application) : AndroidViewModel(app) {
         refresh()
     }
 
-    /** 拉目录 + 预取预览图。失败不清空已有内容（离线也能看/删已下载的）。 */
+    /** 拉目录。预览图不再全量预取 —— 上百张预取又慢又浪费，卡片滑到再拉（[ensurePreview]）。 */
     fun refresh() {
         if (_state.value.loading) return
         _state.update { it.copy(loading = true, error = null) }
@@ -70,25 +68,20 @@ class MarketViewModel(app: Application) : AndroidViewModel(app) {
             }
             result.fold(
                 onSuccess = { catalog ->
-                    // 预览图并行拉，但限制并发（目录上百张时不能一拥而上打满连接池）
-                    val semaphore = Semaphore(6)
-                    val previewJobs = catalog.faces.map { entry ->
-                        async(Dispatchers.IO) {
-                            semaphore.withPermit { entry to repo.fetchPreviewCached(entry) }
-                        }
-                    }.awaitAll()
-                    val previews = previewJobs.mapNotNull { (entry, file) ->
-                        file?.let { f -> decode(f)?.let { bmp -> entry.id to bmp } }
-                    }.toMap()
                     _state.update {
                         it.copy(
                             loading = false,
                             error = null,
                             updated = catalog.updated,
                             entries = catalog.faces,
-                            previews = previews,
                             downloadedIds = downloadedIds(),
                             progress = emptyMap(),
+                            // 之前会话缓存的预览图直接解码复用
+                            previews = catalog.faces.mapNotNull { entry ->
+                                repo.peekPreviewCache(entry)?.let { f ->
+                                    decode(f)?.let { bmp -> entry.id to bmp }
+                                }
+                            }.toMap(),
                         )
                     }
                 },
@@ -102,6 +95,24 @@ class MarketViewModel(app: Application) : AndroidViewModel(app) {
                     }
                 },
             )
+        }
+    }
+
+    /** 卡片进入画面时调用：预览图没拉过就拉一次（磁盘缓存 + 内存缓存）。 */
+    fun ensurePreview(entry: MarketEntry) {
+        val current = _state.value
+        if (current.previews.containsKey(entry.id) || entry.id in current.previewLoading) return
+        _state.update { it.copy(previewLoading = it.previewLoading + entry.id) }
+        viewModelScope.launch {
+            val bmp = withContext(Dispatchers.IO) {
+                repo.fetchPreviewCached(entry)?.let { decode(it) }
+            }
+            _state.update {
+                it.copy(
+                    previews = if (bmp != null) it.previews + (entry.id to bmp) else it.previews,
+                    previewLoading = it.previewLoading - entry.id,
+                )
+            }
         }
     }
 
