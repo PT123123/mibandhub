@@ -636,6 +636,9 @@ class MarketRepository private constructor(context: Context) {
         )
     }
 
+    /** 按 id 找一张已下载的表盘；没下过返回 null（市场卡片「安装」用）。 */
+    fun storedFace(id: String): StoredWatchFace? = loadDownloaded().firstOrNull { it.id == id }
+
     /** 已下载的表盘，按 meta.json 清点；缺文件或元数据的目录直接忽略。 */
     fun loadDownloaded(): List<StoredWatchFace> =
         root.listFiles { f -> f.isDirectory }
