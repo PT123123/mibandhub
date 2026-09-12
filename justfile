@@ -125,29 +125,24 @@ build target="all":
     echo "构建完成。"
 
 
-#   just install                自动判断
-#   just install phone          装到「手机」：多台 adb 设备里按 ro.build.characteristics 挑 phone 那台
-#   just install apk [serial]   装到手机
-#   just install cli [目录]     装命令行入口（默认 ~/.local/bin）
-#   just install termux         装 Termux 桌面小部件
-#   just install /some/dir      等价于 install cli /some/dir
-#   DRY_RUN=1 just install      只打印计划，不真的装
+# 安装到该装的地方：没给目标就自动判断（DRY_RUN=1 只打印不执行）。
+#
 #   just install                自动判断
 #   just install phone          装到「手机」：多台 adb 设备里认出手机那台（跳过平板）
 #   just install apk [serial]   装到手机
 #   just install cli [目录]     装命令行入口（默认 ~/.local/bin）
 #   just install termux         装 Termux 桌面小部件
 #   just install /some/dir      等价于 install cli /some/dir
-#   DRY_RUN=1 just install      只打印计划，不真的装
 #
-# 实现体在 tools/just_install.sh —— 刻意用「不带 shebang 的单行薄包装」
-#（fetch、setup-phone 同款模式）：Windows 上 just 执行 shebang 配方要把
-# 临时脚本路径（…\Temp\just-XXXX\install）拼进命令字符串，个别终端环境会把
-# C:\Users\... 的反斜杠当转义吃掉，bash 打不开脚本直接 127。
-#
-# 安装到该装的地方：没给目标就自动判断。
+# Windows 上优先走 PowerShell 版（tools/just_install.ps1，pwsh / powershell.exe）：
+# just → bash 的链路在个别终端环境里会继承到「哑了的 adb」甚至缺环境变量
+#（实测 pwsh7 + 多个 platform-tools 共存时翻车），ps1 直接在用户的终端环境里干
+# adb 的活，绕开这层。Termux / 没有 PowerShell 的环境回退 bash 版
+# tools/just_install.sh。cli / termux / 直接给路径的目标两种实现都转回 bash
+# 工具链。配方本身仍是「不带 shebang 的单行薄包装」—— shebang 配方在个别
+# 终端会把临时脚本路径的反斜杠吃掉（127），别改回去。
 install target="auto" extra="":
-    bash tools/just_install.sh "{{target}}" "{{extra}}"
+    if command -v pwsh >/dev/null 2>&1; then pwsh -NoProfile -ExecutionPolicy Bypass -File tools/just_install.ps1 "{{target}}" "{{extra}}"; elif command -v powershell.exe >/dev/null 2>&1; then powershell.exe -NoProfile -ExecutionPolicy Bypass -File tools/just_install.ps1 "{{target}}" "{{extra}}"; else bash tools/just_install.sh "{{target}}" "{{extra}}"; fi
 
 
 #   just clean          只清 Python 侧
