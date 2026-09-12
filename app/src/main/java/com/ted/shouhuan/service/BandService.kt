@@ -22,7 +22,6 @@ import com.ted.shouhuan.ble.ConnectionState
 import com.ted.shouhuan.data.BandPrefs
 import com.ted.shouhuan.data.SleepNightRecord
 import com.ted.shouhuan.proto.BandSettings
-import com.ted.shouhuan.util.formatDuration
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -389,26 +388,37 @@ class BandService : Service() {
             ConnectionState.Disconnected -> "未连接"
             is ConnectionState.Failed -> "未连接"
         }
-        val batteryLabel = battery?.let { "电量 $it%" } ?: "电量 --"
-        val stepsLabel = steps?.let { "今日 $it 步" } ?: "步数 --"
-        val sleepLabel = sleep
-            ?.let { "睡眠 ${formatDuration(it.totalMinutes)}（${it.score} 分）" }
-            ?: "暂无睡眠记录"
+        // 精简正文：「电87 睡7小时12分 走6234步」。
+        // 拿不到的那段直接略过（断连时电量/步数留着旧值，只有从未读过才是 null），
+        // 三段全空就给个占位符，正文不至于空白。
+        val summary = listOfNotNull(
+            battery?.let { "电$it" },
+            sleep?.let { "睡${compactDuration(it.totalMinutes)}" },
+            steps?.let { "走${it}步" },
+        ).joinToString(" ").ifEmpty { "—" }
 
         return NotificationCompat.Builder(this, ShouhuanApp.CHANNEL_KEEP_ALIVE)
             .setSmallIcon(R.drawable.ic_stat_band)
             .setContentTitle("$deviceName · $stateLabel")
-            .setContentText("$batteryLabel · $stepsLabel · $sleepLabel")
-            .setStyle(
-                NotificationCompat.BigTextStyle()
-                    .bigText("$batteryLabel · $stepsLabel · $sleepLabel"),
-            )
+            .setContentText(summary)
+            .setStyle(NotificationCompat.BigTextStyle().bigText(summary))
             .setContentIntent(openAppIntent())
             .addAction(0, "停止运行", stopIntent())
             .setOngoing(true)
             // 同 id 反复 notify 刷新内容，别每次都响一声/弹横幅
             .setOnlyAlertOnce(true)
             .build()
+    }
+
+    /** 「442」→「7小时22分」，通知栏精简正文用 —— 无空格，整小时不带零头。 */
+    private fun compactDuration(minutes: Int): String {
+        val h = minutes / 60
+        val m = minutes % 60
+        return when {
+            h <= 0 -> "${m}分钟"
+            m == 0 -> "${h}小时"
+            else -> "${h}小时${m}分"
+        }
     }
 
     private fun openAppIntent(): PendingIntent = PendingIntent.getActivity(
