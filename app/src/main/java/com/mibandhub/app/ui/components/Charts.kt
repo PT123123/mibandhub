@@ -9,6 +9,7 @@ import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -122,16 +123,29 @@ fun SleepStageBar(
     modifier: Modifier = Modifier,
     height: Dp = 14.dp,
 ) {
-    val total = segments.sumOf { it.minutes }.coerceAtLeast(1)
+    val shape = RoundedCornerShape(height / 2)
+    // 0 分钟的段不能进 weight() —— Compose 对 weight(0) 直接抛
+    // IllegalArgumentException（真机闪退过），过滤掉；全部为 0 时画空轨道。
+    val visible = segments.filter { it.minutes > 0 }
+    if (visible.isEmpty()) {
+        Box(
+            modifier
+                .height(height)
+                .clip(shape)
+                .background(MaterialTheme.colorScheme.surfaceVariant),
+        )
+        return
+    }
+    val total = visible.sumOf { it.minutes }.toFloat()
     Row(
         modifier
             .height(height)
-            .clip(RoundedCornerShape(height / 2)),
+            .clip(shape),
     ) {
-        segments.forEach { seg ->
+        visible.forEach { seg ->
             Box(
                 Modifier
-                    .weight(seg.minutes.toFloat() / total)
+                    .weight(seg.minutes / total)
                     .fillMaxHeight()
                     .background(seg.stage.displayColor()),
             )

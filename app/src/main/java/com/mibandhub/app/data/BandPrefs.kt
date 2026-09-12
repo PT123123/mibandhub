@@ -36,6 +36,9 @@ class BandPrefs(private val context: Context) {
         /** 手环同步来的真实睡眠是否已经落过盘 —— 决定演示种子还能不能播种。 */
         val SLEEP_REAL_SYNCED = booleanPreferencesKey("sleep_real_synced")
 
+        /** 记录是否由 v2 解析（kind/强度语义修正）产生 —— 之前的整批数据不可信。 */
+        val SLEEP_PARSER_V2 = booleanPreferencesKey("sleep_parser_v2")
+
         // ---- 通知详细设置 ----
         val DND_ENABLED = booleanPreferencesKey("dnd_enabled")
         val DND_START = intPreferencesKey("dnd_start")
@@ -158,12 +161,17 @@ class BandPrefs(private val context: Context) {
     /**
      * 导入手环同步来的真实睡眠。
      *
-     * 第一次导入时把演示种子整份清掉 —— 真实数据一到假数据必须走，
-     * 不然界面真假混在一起没法看；之后的导入按天合并（[replaceSleepNight]）。
+     * v2 解析之前入库的记录全部不可信（旧解析把 0x80 基础位当睡眠旗标，
+     * 产出的「睡眠夜」把清醒也算成深睡）—— 第一批 v2 数据到达时整份清掉重来，
+     * 和演示种子的退役同款处理。之后的导入按天合并（[replaceSleepNight]）。
      */
     suspend fun importSleepNights(nights: List<SleepNightRecord>) {
         context.bandDataStore.edit { prefs ->
-            if (prefs[Keys.SLEEP_REAL_SYNCED] != true) {
+            if (prefs[Keys.SLEEP_PARSER_V2] != true) {
+                prefs.remove(Keys.SLEEP_HISTORY)
+                prefs[Keys.SLEEP_PARSER_V2] = true
+                prefs[Keys.SLEEP_REAL_SYNCED] = true
+            } else if (prefs[Keys.SLEEP_REAL_SYNCED] != true) {
                 prefs.remove(Keys.SLEEP_HISTORY)
                 prefs[Keys.SLEEP_REAL_SYNCED] = true
             }

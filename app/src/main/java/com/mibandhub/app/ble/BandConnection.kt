@@ -14,6 +14,7 @@ import android.content.Context
 import android.os.Build
 import android.util.Log
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
@@ -71,6 +72,17 @@ class BandConnection(private val context: Context) {
 
     private val _incoming = MutableSharedFlow<Incoming>(extraBufferCapacity = 128)
     val incoming: SharedFlow<Incoming> = _incoming
+
+    /**
+     * 活动数据（00000004 元数据 / 00000005 样本）的专用队列。
+     *
+     * 同步时样本包以约 90 包/秒的速率涌入（实测 MTU 244、241 字节/包、286 包 ≈ 3 秒），
+     * 不能走 [incoming]：SharedFlow 的 tryEmit 缓冲满了会静默丢包，消费者每次
+     * `first {}` 的订阅间隙也会漏包 —— 丢一条，包序号就断，整轮同步作废。
+     * Channel(UNLIMITED) 在蓝牙回调线程 trySend，只进不出也丢不了，
+     * 由同步循环按自己的节奏取（见 BandSession.syncActivity）。
+     */
+    private val activityIncoming = Channel<Incoming>(Channel.UNLIMITED)
 
     /** 所有 GATT 操作共用一把锁，保证串行。 */
     private val gattMutex = Mutex()
@@ -170,8 +182,16 @@ class BandConnection(private val context: Context) {
         }
     }
 
+    /** 活动数据的取包入口 —— 同步循环从这里 receive，语义见 [activityIncoming]。 */
+    fun activityQueue(): Channel<Incoming> = activityIncoming
+
     private fun emit(uuid: UUID, value: ByteArray) {
-        _incoming.tryEmit(Incoming(uuid, value))
+        val msg = Incoming(uuid, value)
+        if (uuid == Gatt.CHAR_ACTIVITY_FETCH || uuid == Gatt.CHAR_ACTIVITY_SAMPLES) {
+            activityIncoming.trySend(msg)
+        } else {
+            _incoming.tryEmit(msg)
+        }
     }
 
     /** 按 MAC 连接并完成服务发现。 */

@@ -133,13 +133,15 @@ object ActivityLab {
         val packetLengths = sortedMapOf<Int, Int>()
         val rawHead = mutableListOf<String>()
 
-        // 数据与元数据分别从两条特征回来，同一个 collect 里按特征分流。
+        // 数据与元数据从 BandConnection 的活动专用队列回来（00000004/00000005 已不再走
+        // SharedFlow，见 activityQueue 的注释：同步速率下会丢包、序号跳变）。
+        // for 循环持续消费 —— 别对队列反复 first{}，订阅间隙同样会漏包。
         val dataPump = launch {
-            conn.incoming.collect { msg ->
+            for (msg in conn.activityQueue()) {
                 when (msg.characteristic) {
                     CHAR_DATA -> {
                         val v = msg.value
-                        if (v.isEmpty()) return@collect
+                        if (v.isEmpty()) continue
                         packetLengths[v.size] = (packetLengths[v.size] ?: 0) + 1
                         if (rawHead.size < 3) rawHead.add(hex(v))
                         val counter = v[0].toInt() and 0xff
