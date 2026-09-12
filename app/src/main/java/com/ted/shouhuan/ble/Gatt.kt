@@ -47,6 +47,14 @@ object Gatt {
      * 是初代 MiBand 的对应物，留着做兼容。启用方式见 BandSession.enableRealtimeSteps。
      */
     val CHAR_REALTIME_STEPS_HUAMI = h("00000007")
+
+    /**
+     * 活动数据同步的两条特征（GB HuamiService 同名特征）：
+     * 00000004 收发指令与元数据（取数请求/长度/起点的应答都从这里），00000005 推样本。
+     * 不走 chunked 通道 —— 样本每 8 字节一分钟，字节布局见 proto/ActivitySync。
+     */
+    val CHAR_ACTIVITY_FETCH = h("00000004")
+    val CHAR_ACTIVITY_SAMPLES = h("00000005")
     val CHAR_USER_SETTINGS = h("00000008")
     val CHAR_DEVICE_EVENT = h("00000010")
 

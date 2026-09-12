@@ -26,7 +26,6 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -45,6 +44,7 @@ import com.ted.shouhuan.ui.components.NoticeBanner
 import com.ted.shouhuan.ui.components.SectionCard
 import com.ted.shouhuan.ui.components.StatusDot
 import com.ted.shouhuan.ui.theme.Mint
+import com.ted.shouhuan.ui.theme.StepBlue
 import com.ted.shouhuan.ui.theme.NotifyAmber
 import com.ted.shouhuan.ui.theme.PulseRed
 import kotlinx.coroutines.launch
@@ -66,6 +66,7 @@ fun DeviceScreen(vm: DeviceViewModel, onPair: () -> Unit) {
     val connection by vm.connectionState.collectAsStateWithLifecycle()
     val battery by vm.battery.collectAsStateWithLifecycle()
     val error by vm.error.collectAsStateWithLifecycle()
+    val sleepSync by vm.sleepSync.collectAsStateWithLifecycle()
     val autoConnect by vm.autoConnect.collectAsStateWithLifecycle()
     val forwardNotifications by vm.forwardNotifications.collectAsStateWithLifecycle()
 
@@ -80,12 +81,6 @@ fun DeviceScreen(vm: DeviceViewModel, onPair: () -> Unit) {
         // API < 31 没有 BLUETOOTH_CONNECT 这个运行时权限，hasBluetoothPermission() 恒为 true，
         // 所以走不到 launch 那条分支。
         if (vm.hasBluetoothPermission()) vm.connect() else permissionLauncher.launch(Manifest.permission.BLUETOOTH_CONNECT)
-    }
-
-    // 离开设备页就把这条连接松开：它只是为了「连一次看看电量」，没必要一直占着 ——
-    // 空闲的 GATT 两边都在耗电，而且「已连接」会跨页留在界面上，让人以为链路还通着。
-    DisposableEffect(Unit) {
-        onDispose { vm.onLeaveScreen() }
     }
 
     Column(
@@ -243,10 +238,57 @@ fun DeviceScreen(vm: DeviceViewModel, onPair: () -> Unit) {
                 color = MaterialTheme.colorScheme.outline.copy(alpha = 0.35f),
             )
             Text(
-                "这条连接只为「连一次看看电量」，离开本页会自动断开。",
+                "连接会一直保持（通知栏和首页实时显示手环状态），点上面的「断开连接」才断开。",
                 style = MaterialTheme.typography.labelMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
+        }
+
+        Spacer(Modifier.height(12.dp))
+
+        // ---- 数据同步：拉活动明细 → 解析睡眠 → 落本地 ----
+        SectionCard(title = "数据同步", accent = StepBlue) {
+            Text(
+                "从手环拉取最近 7 天的活动与睡眠明细，解析出每晚分期写进本地。" +
+                    "首次成功会自动清掉演示数据。",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Spacer(Modifier.height(12.dp))
+            Button(
+                onClick = { vm.syncSleep() },
+                enabled = paired && sleepSync !is SleepSyncPhase.Syncing,
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(14.dp),
+            ) {
+                Text(if (sleepSync is SleepSyncPhase.Syncing) "同步中…" else "同步睡眠数据（近 7 天）")
+            }
+            Spacer(Modifier.height(8.dp))
+            when (val phase = sleepSync) {
+                is SleepSyncPhase.Syncing -> {
+                    Text(
+                        "接收中 ${phase.received} / ${phase.expected} 字节" +
+                            if (phase.expected <= 0) "（等待手环应答…）" else "",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = StepBlue,
+                    )
+                }
+                is SleepSyncPhase.Done -> Text(
+                    "完成：解析出 ${phase.nights} 晚睡眠（${phase.sampleMinutes} 分钟样本）",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = Mint,
+                )
+                is SleepSyncPhase.Failed -> Text(
+                    "失败：${phase.message}",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = PulseRed,
+                )
+                SleepSyncPhase.Idle -> Text(
+                    "尚未同步",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
         }
 
         Spacer(Modifier.height(12.dp))

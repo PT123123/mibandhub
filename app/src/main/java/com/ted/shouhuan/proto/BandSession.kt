@@ -17,6 +17,9 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
+import java.io.ByteArrayOutputStream
+import java.io.IOException
+import java.time.ZonedDateTime
 import java.util.UUID
 
 /**
@@ -57,6 +60,19 @@ class BandSession(
 
         /** 每这么多包回调一次进度（≈3 秒一次）。 */
         const val PROGRESS_EVERY_PACKETS = 500
+
+        // ---- 活动数据同步（syncActivity）----
+        // 近 7 天 ≈ 8 万字节 ≈ 4000 包，限速推大约 25~40 秒；给足余量。
+        private const val SYNC_TOTAL_TIMEOUT_MS = 300_000L
+
+        /** 这么久没有新包就算卡死（传输途中偶尔停顿几秒是正常的，别太敏感）。 */
+        private const val SYNC_IDLE_TIMEOUT_MS = 30_000L
+
+        /** 每次等包的超时 —— 也是「停顿了多久」的计时粒度。 */
+        private const val SYNC_POLL_MS = 1_000L
+
+        /** 进度日志粒度（样本字节数）。 */
+        private const val SAMPLE_LOG_EVERY_BYTES = 8_000
     }
 
     private val connection = BandConnection(context)
@@ -310,6 +326,191 @@ class BandSession(
         val raw = connection.read(Gatt.CHAR_BATTERY_INFO) ?: return
         parseBattery(raw)?.let { _battery.value = it }
     }
+
+    // ------------------------------------------------------------------
+    // 活动数据同步（含睡眠）—— 字节层见 ActivitySync
+    // ------------------------------------------------------------------
+
+    /** 同步进行到哪了：received/expected 是样本字节数。 */
+    data class ActivitySyncProgress(val receivedBytes: Int, val expectedBytes: Int)
+
+    data class ActivitySyncResult(
+        val sampleMinutes: Int,
+        val since: ZonedDateTime,
+        val nights: List<com.ted.shouhuan.data.SleepNightRecord>,
+    )
+
+    /**
+     * 从手环拉 [sinceDays] 天的活动明细并归并成睡眠夜。
+     *
+     * 字节序列照 Gadgetbridge 的 AbstractFetchOperation 抄的，**还没在真机上
+     * 全流程验证过** —— 每一步都把原始字节打进日志，跑挂了靠日志定位：
+     *
+     * ```
+     * ① 00000004 写 [0x01,0x01,时间8字节]     → 元数据应答 [0x10,0x01,状态,长度,起点]
+     * ② 00000004 写 [0x02]                    → 00000005 开始推样本（序号+8字节/分钟）
+     * ③ 00000004 收 [0x10,0x02,0x01]（数据齐） → 解析 + 归并成夜
+     * ④ 00000004 写 [0x03] ack                → 手环收到才清本地，收不到就重复推
+     * ```
+     */
+    suspend fun syncActivity(
+        sinceDays: Int = 7,
+        onProgress: (ActivitySyncProgress) -> Unit = {},
+    ): ActivitySyncResult = coroutineScope {
+        check(_authenticated.value) { "会话未认证，先连接手环" }
+        val hasFetch = connection.hasCharacteristic(Gatt.CHAR_ACTIVITY_FETCH)
+        val hasData = connection.hasCharacteristic(Gatt.CHAR_ACTIVITY_SAMPLES)
+        if (!hasFetch || !hasData) {
+            throw IOException("手环没有活动数据特征（00000004=${hasFetch}，00000005=$hasData）")
+        }
+        if (!connection.enableNotify(Gatt.CHAR_ACTIVITY_FETCH)) {
+            throw IOException("订阅活动元数据通道（00000004）失败")
+        }
+
+        val since = ZonedDateTime.now().minusDays(sinceDays.toLong())
+        val request = ActivitySync.startRequest(since)
+        log("① 取数请求 -> ${hexOf(request)}")
+        if (!connection.write(Gatt.CHAR_ACTIVITY_FETCH, request)) {
+            throw IOException("写取数请求失败（00000004 拒绝写入）")
+        }
+
+        var startInfo: FetchStartInfo? = null
+        val buffer = ByteArrayOutputStream(128 * 1024)
+        var lastCounter = -1
+
+        suspend fun processAndAck(): ActivitySyncResult {
+            val info = startInfo ?: throw IOException("没有起始应答就想处理数据？不可能走到这")
+            val bytes = buffer.toByteArray()
+            if (bytes.size % ActivitySync.SAMPLE_SIZE != 0) {
+                log("⚠ 样本字节数不是 8 的倍数（${bytes.size}），丢弃尾巴继续")
+            }
+            val samples = ActivitySync.parseSamples(bytes, info.start)
+            val nights = ActivitySync.nightsFromSamples(samples)
+            log("⑤ 样本解析：${samples.size} 分钟（${info.start} 起），归并出 ${nights.size} 夜")
+            // ack 写失败不影响结果 —— 顶多手环下次把同样的数据再推一遍
+            runCatching {
+                if (!connection.write(Gatt.CHAR_ACTIVITY_FETCH, byteArrayOf(ActivitySync.CMD_ACK.toByte()))) {
+                    log("⚠ 写 ack 失败（数据已到手，不影响本次结果）")
+                } else {
+                    log("⑥ 已 ack，等手环确认")
+                }
+            }
+            return ActivitySyncResult(
+                sampleMinutes = samples.size,
+                since = since,
+                nights = nights,
+            )
+        }
+
+        val deadline = System.currentTimeMillis() + SYNC_TOTAL_TIMEOUT_MS
+        var idleStart = System.currentTimeMillis()
+        var result: ActivitySyncResult? = null
+
+        while (result == null) {
+            if (System.currentTimeMillis() > deadline) {
+                throw IOException("同步超时（${SYNC_TOTAL_TIMEOUT_MS / 1000} 秒），样本收到 ${buffer.size()} 字节")
+            }
+            val msg = withTimeoutOrNull(SYNC_POLL_MS) {
+                connection.incoming.first {
+                    it.characteristic == Gatt.CHAR_ACTIVITY_FETCH ||
+                        it.characteristic == Gatt.CHAR_ACTIVITY_SAMPLES
+                }
+            }
+            if (msg == null) {
+                if (System.currentTimeMillis() - idleStart > SYNC_IDLE_TIMEOUT_MS) {
+                    throw IOException(
+                        "同步卡住了（${SYNC_IDLE_TIMEOUT_MS / 1000} 秒没有新数据），" +
+                            "样本已收 ${buffer.size()} 字节",
+                    )
+                }
+                continue
+            }
+            idleStart = System.currentTimeMillis()
+
+            when (msg.characteristic) {
+                Gatt.CHAR_ACTIVITY_FETCH -> {
+                    val value = msg.value
+                    log("元数据 <- ${hexOf(value)}")
+                    if (value.size < 3) throw IOException("活动元数据太短（${value.size} 字节）")
+                    if ((value[0].toInt() and 0xff) != ActivitySync.RESPONSE) {
+                        throw IOException("活动元数据不是应答（0x%02x）".format(value[0].toInt()))
+                    }
+                    when (value[1].toInt() and 0xff) {
+                        ActivitySync.CMD_START_DATE -> {
+                            if ((value[2].toInt() and 0xff) != ActivitySync.SUCCESS) {
+                                throw IOException(
+                                    "取数请求被拒（status=0x%02x）".format(value[2].toInt()),
+                                )
+                            }
+                            startInfo = ActivitySync.parseStartResponse(value)
+                                ?: throw IOException("起始应答解析失败：${hexOf(value)}")
+                            if (startInfo.expectedBytes == 0) {
+                                log("② 手环说这个时间之后没有新数据")
+                                result = processAndAck()
+                            } else {
+                                log(
+                                    "② 手环有 ${startInfo.expectedBytes} 字节样本，起点 ${startInfo.start}",
+                                )
+                                if (!connection.enableNotify(Gatt.CHAR_ACTIVITY_SAMPLES)) {
+                                    throw IOException("订阅样本通道（00000005）失败")
+                                }
+                                buffer.reset()
+                                lastCounter = -1
+                                if (!connection.write(Gatt.CHAR_ACTIVITY_FETCH, byteArrayOf(ActivitySync.CMD_FETCH.toByte()))) {
+                                    throw IOException("写取数指令（0x02）失败")
+                                }
+                                log("③ 已下发 0x02，等样本从 00000005 推上来")
+                            }
+                        }
+
+                        ActivitySync.CMD_FETCH -> {
+                            if ((value[2].toInt() and 0xff) != ActivitySync.SUCCESS) {
+                                throw IOException("样本传输失败（status=0x%02x）".format(value[2].toInt()))
+                            }
+                            log("④ 手环报告数据齐了：收到 ${buffer.size()} 字节")
+                            result = processAndAck()
+                        }
+
+                        ActivitySync.CMD_ACK -> {
+                            log("⑦ 手环确认 ack，同步收尾")
+                        }
+
+                        else -> log("（忽略未识别的元数据命令 0x%02x）".format(value[1].toInt()))
+                    }
+                }
+
+                Gatt.CHAR_ACTIVITY_SAMPLES -> {
+                    val value = msg.value
+                    if (value.isEmpty()) continue
+                    val counter = value[0].toInt() and 0xff
+                    val expectedCounter = (lastCounter + 1) and 0xff
+                    if (lastCounter >= 0 && counter != expectedCounter) {
+                        throw IOException(
+                            "样本包序号跳变：上一包 $lastCounter，这一包 $counter —— 数据不连续，重试同步",
+                        )
+                    }
+                    lastCounter = counter
+                    buffer.write(value, 1, value.size - 1)
+                    val info = startInfo
+                    if (info != null && buffer.size() >= info.expectedBytes) {
+                        // 样本收齐 —— 「数据齐」元数据有时贴着最后一包就来，
+                        // 不主动处理，等 00000004 的完成标记（下一轮循环会收到）
+                        onProgress(ActivitySyncProgress(buffer.size(), info.expectedBytes))
+                    } else if (buffer.size() % (SAMPLE_LOG_EVERY_BYTES) < 20) {
+                        log("   样本进度 ${buffer.size()} 字节（包 $counter）")
+                        info?.let { onProgress(ActivitySyncProgress(buffer.size(), it.expectedBytes)) }
+                    }
+                }
+
+                else -> {} // 不会走到：上面 first{} 已过滤
+            }
+        }
+
+        result!!
+    }
+
+    private fun hexOf(bytes: ByteArray): String =
+        bytes.joinToString(" ") { "%02x".format(it) }
 
     /**
      * 订阅实时步数。
