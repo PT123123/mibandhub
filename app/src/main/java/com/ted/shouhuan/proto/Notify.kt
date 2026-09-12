@@ -67,8 +67,15 @@ object Notify {
 
     /**
      * 按 writeToChunkedOld 的格式分块。data 为空时返回空列表（一条也不写）。
+     *
+     * @param type 通道上的「子类型」号：通知 0（默认），手环设置命令 2
+     *   （GB 的 setDisplayItemsNew 就用 writeToChunked(builder, 2, …)）。
      */
-    fun chunk(data: ByteArray, chunkLength: Int = MAX_CHUNK_LENGTH): List<ByteArray> {
+    fun chunk(
+        data: ByteArray,
+        chunkLength: Int = MAX_CHUNK_LENGTH,
+        type: Int = CHUNKED_TYPE_NOTIFICATION,
+    ): List<ByteArray> {
         if (data.isEmpty()) return emptyList()
         val chunks = ArrayList<ByteArray>()
         var offset = 0
@@ -85,7 +92,7 @@ object Notify {
             }
             val chunk = ByteArray(copy + 3)
             chunk[0] = 0
-            chunk[1] = (flags or CHUNKED_TYPE_NOTIFICATION).toByte()
+            chunk[1] = (flags or type).toByte()
             chunk[2] = index.toByte()
             System.arraycopy(data, offset, chunk, 3, copy)
             chunks.add(chunk)

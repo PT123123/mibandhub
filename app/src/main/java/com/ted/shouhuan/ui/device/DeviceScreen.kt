@@ -1,9 +1,12 @@
+@file:OptIn(androidx.compose.material3.ExperimentalMaterial3Api::class)
+
 package com.ted.shouhuan.ui.device
 
 import android.Manifest
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -18,13 +21,21 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.rounded.Add
+import androidx.compose.material.icons.rounded.Close
+import androidx.compose.material.icons.rounded.DragHandle
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.material3.TimePicker
+import androidx.compose.material3.rememberTimePickerState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -39,14 +50,19 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.ted.shouhuan.ble.ConnectionState
 import com.ted.shouhuan.data.Pairing
+import com.ted.shouhuan.proto.BandSettings
+import com.ted.shouhuan.ui.components.DragReorderList
+import com.ted.shouhuan.ui.components.FilterChipRow
 import com.ted.shouhuan.ui.components.KeyValueRow
 import com.ted.shouhuan.ui.components.NoticeBanner
 import com.ted.shouhuan.ui.components.SectionCard
 import com.ted.shouhuan.ui.components.StatusDot
+import com.ted.shouhuan.ui.components.SwitchSettingRow
 import com.ted.shouhuan.ui.theme.Mint
 import com.ted.shouhuan.ui.theme.StepBlue
 import com.ted.shouhuan.ui.theme.NotifyAmber
 import com.ted.shouhuan.ui.theme.PulseRed
+import com.ted.shouhuan.util.minuteOfDayToClock
 import kotlinx.coroutines.launch
 
 /**
@@ -70,8 +86,30 @@ fun DeviceScreen(vm: DeviceViewModel, onPair: () -> Unit) {
     val autoConnect by vm.autoConnect.collectAsStateWithLifecycle()
     val forwardNotifications by vm.forwardNotifications.collectAsStateWithLifecycle()
 
+    // ---- 手环设置 ----
+    val wearLeft by vm.wearLeft.collectAsStateWithLifecycle()
+    val liftWake by vm.liftWake.collectAsStateWithLifecycle()
+    val swipeUnlock by vm.swipeUnlock.collectAsStateWithLifecycle()
+    val disconnectAlert by vm.disconnectAlert.collectAsStateWithLifecycle()
+    val dndMode by vm.dndMode.collectAsStateWithLifecycle()
+    val dndStart by vm.dndStart.collectAsStateWithLifecycle()
+    val dndEnd by vm.dndEnd.collectAsStateWithLifecycle()
+    val nightMode by vm.nightMode.collectAsStateWithLifecycle()
+    val nightStart by vm.nightStart.collectAsStateWithLifecycle()
+    val nightEnd by vm.nightEnd.collectAsStateWithLifecycle()
+    val menuOrder by vm.menuOrder.collectAsStateWithLifecycle()
+    val shortcutOrder by vm.shortcutOrder.collectAsStateWithLifecycle()
+    val remindOnConnect by vm.remindOnConnect.collectAsStateWithLifecycle()
+    val remindLowBattery by vm.remindLowBattery.collectAsStateWithLifecycle()
+    val remindLowBatteryPct by vm.remindLowBatteryPct.collectAsStateWithLifecycle()
+    val remindFullyCharged by vm.remindFullyCharged.collectAsStateWithLifecycle()
+    val settingsStatus by vm.settingsStatus.collectAsStateWithLifecycle()
+
     val scope = rememberCoroutineScope()
     var confirmForget by remember { mutableStateOf(false) }
+
+    // 时间选择弹层：记「哪项设置 + 开始/结束」，弹窗共用一个
+    var editingTime by remember { mutableStateOf<TimeEdit?>(null) }
 
     val permissionLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.RequestPermission(),
@@ -293,6 +331,219 @@ fun DeviceScreen(vm: DeviceViewModel, onPair: () -> Unit) {
 
         Spacer(Modifier.height(12.dp))
 
+        // ---- 手环设置：连接后整套下发，当场改动当场推 ----
+        SectionCard(title = "手环设置", accent = Mint) {
+            settingsStatus?.let { status ->
+                Text(
+                    status,
+                    style = MaterialTheme.typography.labelMedium,
+                    color = Mint,
+                )
+                Spacer(Modifier.height(10.dp))
+            }
+
+            Text("佩戴手", style = MaterialTheme.typography.bodyMedium)
+            Spacer(Modifier.height(6.dp))
+            FilterChipRow(
+                options = listOf("左手", "右手"),
+                selectedIndex = if (wearLeft) 0 else 1,
+                accent = Mint,
+                onSelect = { vm.setWearLocation(it == 0) },
+            )
+            Spacer(Modifier.height(12.dp))
+            SwitchSettingRow(
+                title = "抬腕亮屏",
+                subtitle = "抬手亮屏，放下熄灭",
+                checked = liftWake,
+                onCheckedChange = { vm.setLiftWake(it) },
+                accent = Mint,
+            )
+            HorizontalDivider(
+                Modifier.padding(vertical = 8.dp),
+                color = MaterialTheme.colorScheme.outline.copy(alpha = 0.35f),
+            )
+            SwitchSettingRow(
+                title = "滑动解锁",
+                subtitle = "开启后点亮手环要上滑解锁，防误触",
+                checked = swipeUnlock,
+                onCheckedChange = { vm.setSwipeUnlock(it) },
+                accent = Mint,
+            )
+            HorizontalDivider(
+                Modifier.padding(vertical = 8.dp),
+                color = MaterialTheme.colorScheme.outline.copy(alpha = 0.35f),
+            )
+            SwitchSettingRow(
+                title = "断开提醒",
+                subtitle = "手环与手机断开蓝牙时，手环自己振动提醒（手环侧功能，断开后才生效）",
+                checked = disconnectAlert,
+                onCheckedChange = { vm.setDisconnectAlert(it) },
+                accent = Mint,
+            )
+            HorizontalDivider(
+                Modifier.padding(vertical = 8.dp),
+                color = MaterialTheme.colorScheme.outline.copy(alpha = 0.35f),
+            )
+
+            Text("勿扰模式", style = MaterialTheme.typography.bodyMedium)
+            Spacer(Modifier.height(6.dp))
+            FilterChipRow(
+                options = listOf("关闭", "定时", "自动"),
+                selectedIndex = dndModeIndex(dndMode),
+                accent = Mint,
+                onSelect = { index ->
+                    val mode = dndModeOfIndex(index)
+                    vm.setDndSetting(mode, dndStart, dndEnd)
+                },
+            )
+            if (dndMode == "scheduled") {
+                Spacer(Modifier.height(8.dp))
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    TimePickChip(
+                        "开始 ${minuteOfDayToClock(dndStart)}",
+                        Modifier.weight(1f),
+                    ) { editingTime = TimeEdit("dnd", "start") }
+                    TimePickChip(
+                        "结束 ${minuteOfDayToClock(dndEnd)}",
+                        Modifier.weight(1f),
+                    ) { editingTime = TimeEdit("dnd", "end") }
+                }
+            }
+            Spacer(Modifier.height(12.dp))
+
+            Text("夜间模式", style = MaterialTheme.typography.bodyMedium)
+            Spacer(Modifier.height(6.dp))
+            FilterChipRow(
+                options = listOf("关闭", "定时", "日落自动"),
+                selectedIndex = nightModeIndex(nightMode),
+                accent = Mint,
+                onSelect = { index ->
+                    val mode = nightModeOfIndex(index)
+                    vm.setNightSetting(mode, nightStart, nightEnd)
+                },
+            )
+            if (nightMode == "scheduled") {
+                Spacer(Modifier.height(8.dp))
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    TimePickChip(
+                        "开始 ${minuteOfDayToClock(nightStart)}",
+                        Modifier.weight(1f),
+                    ) { editingTime = TimeEdit("night", "start") }
+                    TimePickChip(
+                        "结束 ${minuteOfDayToClock(nightEnd)}",
+                        Modifier.weight(1f),
+                    ) { editingTime = TimeEdit("night", "end") }
+                }
+            }
+            Spacer(Modifier.height(10.dp))
+            Text(
+                "这些是手环本机的设置：连接成功后自动整套下发，改了当场生效；" +
+                    "手环上改的不会反向同步回来。",
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+
+        Spacer(Modifier.height(12.dp))
+
+        // ---- 菜单顺序 / 快捷方式：长按拖拽排序 ----
+        SectionCard(title = "菜单顺序", accent = StepBlue) {
+            Text(
+                "手环上划菜单的显示顺序。长按拖动排序，「表盘」固定在第一位，最多 16 项。",
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Spacer(Modifier.height(10.dp))
+            DragReorderList(
+                items = menuOrder,
+                onMove = { from, to -> vm.moveMenuItem(from, to) },
+            ) { item ->
+                ReorderRow(label = item.label, onRemove = { vm.removeMenuItem(item) })
+            }
+            Spacer(Modifier.height(12.dp))
+            AddItemChips(
+                all = BandSettings.Item.entries.filter { it !in menuOrder },
+                accent = StepBlue,
+                onAdd = { vm.addMenuItem(it) },
+            )
+        }
+
+        Spacer(Modifier.height(12.dp))
+
+        SectionCard(title = "快捷方式", accent = NotifyAmber) {
+            Text(
+                "表盘界面左右滑显示的快捷卡片。长按拖动排序，点 × 移除。",
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Spacer(Modifier.height(10.dp))
+            DragReorderList(
+                items = shortcutOrder,
+                onMove = { from, to -> vm.moveShortcutItem(from, to) },
+            ) { item ->
+                ReorderRow(label = item.label, onRemove = { vm.removeShortcutItem(item) })
+            }
+            Spacer(Modifier.height(12.dp))
+            AddItemChips(
+                all = BandSettings.Item.entries.filter { it !in shortcutOrder },
+                accent = NotifyAmber,
+                onAdd = { vm.addShortcutItem(it) },
+            )
+        }
+
+        Spacer(Modifier.height(12.dp))
+
+        // ---- 手机提醒：手机这边的状态转成手环通知 ----
+        SectionCard(title = "手机提醒", accent = PulseRed) {
+            Text(
+                "手机这边发生的事，转成一条手环通知。手环不在连接范围内时不会补发。",
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Spacer(Modifier.height(10.dp))
+            SwitchSettingRow(
+                title = "连接提醒",
+                subtitle = "手环管家连上手环时，手环上提示一声",
+                checked = remindOnConnect,
+                onCheckedChange = { vm.setRemindOnConnect(it) },
+                accent = PulseRed,
+            )
+            HorizontalDivider(
+                Modifier.padding(vertical = 8.dp),
+                color = MaterialTheme.colorScheme.outline.copy(alpha = 0.35f),
+            )
+            SwitchSettingRow(
+                title = "低电量提醒",
+                subtitle = "手机电量掉到阈值以下时提醒（充电中不触发）",
+                checked = remindLowBattery,
+                onCheckedChange = { vm.setRemindLowBattery(it, remindLowBatteryPct) },
+                accent = PulseRed,
+            )
+            if (remindLowBattery) {
+                Spacer(Modifier.height(6.dp))
+                val thresholds = listOf(10, 15, 20, 30)
+                FilterChipRow(
+                    options = thresholds.map { "$it%" },
+                    selectedIndex = thresholds.indexOf(remindLowBatteryPct),
+                    accent = PulseRed,
+                    onSelect = { index -> vm.setRemindLowBattery(true, thresholds[index]) },
+                )
+            }
+            HorizontalDivider(
+                Modifier.padding(vertical = 8.dp),
+                color = MaterialTheme.colorScheme.outline.copy(alpha = 0.35f),
+            )
+            SwitchSettingRow(
+                title = "充满提醒",
+                subtitle = "手机充满电时在手环上提醒一声",
+                checked = remindFullyCharged,
+                onCheckedChange = { vm.setRemindFullyCharged(it) },
+                accent = PulseRed,
+            )
+        }
+
+        Spacer(Modifier.height(12.dp))
+
         // ---- 配对 ----
         SectionCard(title = "配对", accent = PulseRed) {
             Text(
@@ -370,6 +621,82 @@ fun DeviceScreen(vm: DeviceViewModel, onPair: () -> Unit) {
             },
         )
     }
+
+    // ---- 手环设置的时间选择弹窗（勿扰 / 夜间模式共用） ----
+    editingTime?.let { edit ->
+        val initialMinute = when {
+            edit.setting == "dnd" && edit.edge == "start" -> dndStart
+            edit.setting == "dnd" -> dndEnd
+            edit.edge == "start" -> nightStart
+            else -> nightEnd
+        }
+        val pickerState = rememberTimePickerState(
+            initialHour = initialMinute / 60,
+            initialMinute = initialMinute % 60,
+            is24Hour = true,
+        )
+        AlertDialog(
+            onDismissRequest = { editingTime = null },
+            title = {
+                Text(
+                    (if (edit.setting == "dnd") "勿扰" else "夜间模式") +
+                        if (edit.edge == "start") "开始时间" else "结束时间",
+                )
+            },
+            text = { TimePicker(state = pickerState) },
+            confirmButton = {
+                TextButton(onClick = {
+                    val next = pickerState.hour * 60 + pickerState.minute
+                    if (edit.setting == "dnd") {
+                        vm.setDndSetting(
+                            "scheduled",
+                            if (edit.edge == "start") next else dndStart,
+                            if (edit.edge == "start") dndEnd else next,
+                        )
+                    } else {
+                        vm.setNightSetting(
+                            "scheduled",
+                            if (edit.edge == "start") next else nightStart,
+                            if (edit.edge == "start") nightEnd else next,
+                        )
+                    }
+                    editingTime = null
+                }) {
+                    Text("确定")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { editingTime = null }) { Text("取消") }
+            },
+        )
+    }
+}
+
+/** 时间选择弹层的目标：哪项设置（勿扰 / 夜间模式）+ 开始还是结束。 */
+private data class TimeEdit(val setting: String, val edge: String)
+
+private fun dndModeIndex(mode: String): Int = when (mode) {
+    "scheduled" -> 1
+    "automatic" -> 2
+    else -> 0
+}
+
+private fun dndModeOfIndex(index: Int): String = when (index) {
+    1 -> "scheduled"
+    2 -> "automatic"
+    else -> "off"
+}
+
+private fun nightModeIndex(mode: String): Int = when (mode) {
+    "scheduled" -> 1
+    "sunset" -> 2
+    else -> 0
+}
+
+private fun nightModeOfIndex(index: Int): String = when (index) {
+    1 -> "scheduled"
+    2 -> "sunset"
+    else -> "off"
 }
 
 /** 连接状态 → 给人看的一句话。 */
@@ -445,4 +772,96 @@ private fun ToggleRow(
             ),
         )
     }
+}
+
+/** 时间选择入口的小按钮（勿扰 / 夜间模式的起止时刻）。 */
+@Composable
+private fun TimePickChip(
+    label: String,
+    modifier: Modifier = Modifier,
+    accent: androidx.compose.ui.graphics.Color = Mint,
+    onClick: () -> Unit,
+) {
+    Box(
+        modifier
+            .clip(RoundedCornerShape(12.dp))
+            .background(accent.copy(alpha = 0.12f))
+            .clickable(onClick = onClick)
+            .padding(vertical = 10.dp),
+        contentAlignment = Alignment.Center,
+    ) {
+        Text(
+            label,
+            style = MaterialTheme.typography.bodyMedium,
+            color = accent,
+        )
+    }
+}
+
+/**
+ * 排序列表的一行：拖动手柄 + 名称 + 移除。
+ * 注意保持等高 —— DragReorderList 按第一行实测高度换算拖拽位置。
+ */
+@Composable
+private fun ReorderRow(label: String, onRemove: () -> Unit) {
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .background(
+                MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f),
+                RoundedCornerShape(12.dp),
+            )
+            .padding(horizontal = 12.dp, vertical = 10.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Icon(
+            Icons.Rounded.DragHandle,
+            contentDescription = "长按拖动排序",
+            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Spacer(Modifier.width(10.dp))
+        Text(
+            label,
+            style = MaterialTheme.typography.bodyMedium,
+            modifier = Modifier.weight(1f),
+        )
+        IconButton(onClick = onRemove) {
+            Icon(
+                Icons.Rounded.Close,
+                contentDescription = "移除",
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+    }
+}
+
+/** 「添加项目」标题 + 横向滚动的候选 chips（点一下加入排序列表）。 */
+@Composable
+private fun AddItemChips(
+    all: List<BandSettings.Item>,
+    accent: androidx.compose.ui.graphics.Color,
+    onAdd: (BandSettings.Item) -> Unit,
+) {
+    if (all.isEmpty()) return
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Icon(
+            Icons.Rounded.Add,
+            contentDescription = null,
+            tint = accent,
+            modifier = Modifier.size(16.dp),
+        )
+        Spacer(Modifier.width(4.dp))
+        Text(
+            "添加项目",
+            style = MaterialTheme.typography.labelMedium,
+            color = accent,
+        )
+    }
+    Spacer(Modifier.height(8.dp))
+    FilterChipRow(
+        options = all.map { it.label },
+        selectedIndex = -1, // 候选项没有选中态
+        accent = accent,
+        onSelect = { index -> onAdd(all[index]) },
+    )
 }
