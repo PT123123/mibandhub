@@ -22,9 +22,47 @@ if (-not (Test-Path "xiaomi_authkey.py")) {
 }
 $DryRun = $env:DRY_RUN -eq "1"
 
+# gradle.sh / android_install.sh / install_cli.sh 都是 bash 脚本，而且必须在
+# Git Bash 里跑：pwsh 里裸调 `bash` 会拿到 WSL 的 bash（System32 的 shim），
+# 那里面没有 Android SDK 和依赖缓存，gradle 一进 /mnt/c 就离线解析失败。
+# 从 git.exe 的安装位置推导 Git Bash，再退到几个标准安装路径。
+function Get-GitBash {
+    $cands = @()
+    $git = (Get-Command git -ErrorAction SilentlyContinue).Source
+    if ($git) {
+        $gitRoot = Split-Path -Parent (Split-Path -Parent $git)   # <Git>\cmd\git.exe → <Git>
+        $cands += (Join-Path $gitRoot "bin\bash.exe")
+        $cands += (Join-Path $gitRoot "usr\bin\bash.exe")
+    }
+    $cands += @(
+        (Join-Path $env:ProgramFiles "Git\bin\bash.exe"),
+        (Join-Path ${env:ProgramFiles(x86)} "Git\bin\bash.exe"),
+        (Join-Path $env:LOCALAPPDATA "Programs\Git\bin\bash.exe")
+    )
+    foreach ($c in $cands) {
+        if ($c -and (Test-Path $c)) { return $c }
+    }
+    # 还没有就从所有 bash.exe 里挑一个非 System32 的（System32 的是 WSL shim）
+    $b = Get-Command bash.exe -All -ErrorAction SilentlyContinue |
+        Where-Object { $_.Source -notmatch 'System32' } |
+        Select-Object -First 1
+    if ($b) { return $b.Source }
+    return $null
+}
+$script:gitBash = Get-GitBash
+
+function Invoke-BashTool([string]$ScriptPath, [string[]]$ScriptArgs) {
+    if (-not $script:gitBash) {
+        Write-Host "错误：找不到 Git Bash —— gradle/装机脚本要用它跑。"
+        Write-Host "装 Git for Windows，或把它的 bash.exe 加进 PATH。"
+        exit 1
+    }
+    & $script:gitBash $ScriptPath @ScriptArgs
+}
+
 # cli / termux / 直接给路径：本来就是 bash 工具链的活，转回 bash 版
 if ($Target -eq "cli" -or $Target -eq "termux" -or $Target -match '^(~|\./|\.\./|/)') {
-    & bash tools/just_install.sh $Target $Extra
+    Invoke-BashTool "tools/just_install.sh" @($Target, $Extra)
     exit $LASTEXITCODE
 }
 
@@ -156,7 +194,7 @@ switch -Exact ($Target) {
         }
         Write-Host ""
         Write-Host "==> 编译 APK"
-        & bash tools/gradle.sh assembleDebug
+        Invoke-BashTool "tools/gradle.sh" @("assembleDebug")
         if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
         $apk = Get-ChildItem "app/build/outputs/apk/debug/*.apk" -ErrorAction SilentlyContinue | Select-Object -First 1
         if (-not $apk) {
@@ -165,15 +203,15 @@ switch -Exact ($Target) {
         }
         Write-Host ""
         Write-Host "==> 装到手机"
-        & bash tools/android_install.sh $apk.FullName $Extra
+        Invoke-BashTool "tools/android_install.sh" @($apk.FullName, $Extra)
         exit $LASTEXITCODE
     }
     "termux" {
-        & bash termux/install.sh
+        Invoke-BashTool "termux/install.sh" @()
         exit $LASTEXITCODE
     }
     "cli" {
-        & bash tools/install_cli.sh $Extra
+        Invoke-BashTool "tools/install_cli.sh" @($Extra)
         exit $LASTEXITCODE
     }
     default {
