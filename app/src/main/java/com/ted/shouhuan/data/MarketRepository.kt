@@ -54,9 +54,17 @@ class MarketRepository private constructor(context: Context) {
     private val previewCache: File = File(context.applicationContext.filesDir, "market-cache/previews")
 
     companion object {
-        /** 目录清单地址 —— 要换源（自建镜像之类）改这里就行。 */
-        const val CATALOG_URL =
-            "https://raw.githubusercontent.com/PT123123/mibandhub/main/market/index.json"
+        /**
+         * 目录清单地址：按顺序试，谁成谁算。
+         * jsDelivr 是 GitHub 仓库的 CDN 镜像，国内可达性远好于
+         * raw.githubusercontent.com（实测同一时刻一个 200 一个连不上），
+         * 所以它做主源。代价是它有 CDN 缓存 —— 推完新目录要主动刷一次：
+         * curl https://purge.jsdelivr.net/gh/PT123123/mibandhub@main/market/index.json
+         */
+        private val CATALOG_URLS = listOf(
+            "https://cdn.jsdelivr.net/gh/PT123123/mibandhub@main/market/index.json",
+            "https://raw.githubusercontent.com/PT123123/mibandhub/main/market/index.json",
+        )
         private const val CONNECT_TIMEOUT_MS = 10_000
         private const val READ_TIMEOUT_MS = 30_000
 
@@ -69,47 +77,51 @@ class MarketRepository private constructor(context: Context) {
             }
     }
 
-    private val base get() = CATALOG_URL.substringBeforeLast('/')
+    /** 目录拉成功时记下的 base（faces/、previews/ 跟着同一个源走，别混用）。 */
+    @Volatile
+    private var activeBase: String = CATALOG_URLS.first().substringBeforeLast('/')
 
     // ---------------------------------------------------------------- 目录
 
-    /** 拉目录清单。网络/格式问题一律抛 IOException，消息给人看。 */
+    /** 拉目录清单：逐个源试，第一个成功的算数。全挂了抛最后一个错。 */
     @Throws(IOException::class)
     fun fetchCatalog(): MarketCatalog {
-        val text = try {
-            httpGet(CATALOG_URL)
-        } catch (e: IOException) {
-            throw e
-        } catch (e: Exception) {
-            throw IOException(e.message ?: e.javaClass.simpleName)
-        }
-        val root = try {
-            JSONObject(text)
-        } catch (e: JSONException) {
-            throw IOException("目录格式不对（不是合法 JSON）")
-        }
-        val faces = root.optJSONArray("faces") ?: throw IOException("目录里没有 faces 字段")
-        val entries = (0 until faces.length()).mapNotNull { i ->
-            // 单条坏了跳过，别让一张烂数据拖垮整个目录
+        var lastError: IOException? = null
+        for (url in CATALOG_URLS) {
             try {
-                val o = faces.getJSONObject(i)
-                MarketEntry(
-                    id = o.getString("id"),
-                    name = o.getString("name"),
-                    author = o.getString("author"),
-                    license = o.getString("license"),
-                    file = o.getString("file"),
-                    preview = o.getString("preview"),
-                    sizeBytes = o.optInt("sizeBytes", 0),
-                    crc32 = o.optString("crc32").toLongOrNull(16) ?: -1L,
-                    note = o.optString("note").takeIf { it.isNotEmpty() },
-                )
-            } catch (e: JSONException) {
-                null
+                val text = httpGet(url)
+                val root = JSONObject(text)
+                val faces = root.optJSONArray("faces")
+                    ?: throw IOException("目录里没有 faces 字段")
+                val entries = (0 until faces.length()).mapNotNull { i ->
+                    // 单条坏了跳过，别让一张烂数据拖垮整个目录
+                    try {
+                        val o = faces.getJSONObject(i)
+                        MarketEntry(
+                            id = o.getString("id"),
+                            name = o.getString("name"),
+                            author = o.getString("author"),
+                            license = o.getString("license"),
+                            file = o.getString("file"),
+                            preview = o.getString("preview"),
+                            sizeBytes = o.optInt("sizeBytes", 0),
+                            crc32 = o.optString("crc32").toLongOrNull(16) ?: -1L,
+                            note = o.optString("note").takeIf { it.isNotEmpty() },
+                        )
+                    } catch (e: JSONException) {
+                        null
+                    }
+                }
+                if (entries.isEmpty()) throw IOException("目录是空的")
+                activeBase = url.substringBeforeLast('/')
+                return MarketCatalog(updated = root.optString("updated"), faces = entries)
+            } catch (e: IOException) {
+                lastError = e
+            } catch (e: Exception) {
+                lastError = IOException(e.message ?: e.javaClass.simpleName)
             }
         }
-        if (entries.isEmpty()) throw IOException("目录是空的")
-        return MarketCatalog(updated = root.optString("updated"), faces = entries)
+        throw lastError ?: IOException("目录源全部不可达")
     }
 
     /**
@@ -120,7 +132,7 @@ class MarketRepository private constructor(context: Context) {
         if (cached.isFile && cached.length() > 0) return cached
         return runCatching {
             previewCache.mkdirs()
-            val bytes = httpGetBytes("$base/${entry.preview}")
+            val bytes = httpGetBytes("$activeBase/${entry.preview}")
             cached.writeBytes(bytes)
             cached
         }.getOrNull()
@@ -139,7 +151,7 @@ class MarketRepository private constructor(context: Context) {
     @Throws(IOException::class)
     fun downloadFace(entry: MarketEntry, onProgress: (Int) -> Unit): StoredWatchFace {
         val bytes = try {
-            httpGetBytes("$base/${entry.file}") { percent -> onProgress(percent) }
+            httpGetBytes("$activeBase/${entry.file}") { percent -> onProgress(percent) }
         } catch (e: IOException) {
             throw e
         } catch (e: Exception) {
@@ -156,7 +168,7 @@ class MarketRepository private constructor(context: Context) {
         val faceDir = File(root, entry.id).apply { deleteRecursively(); mkdirs() }
         val binFile = File(faceDir, "face.bin").apply { writeBytes(bytes) }
         val previewFile = File(faceDir, "preview.png")
-        runCatching { previewFile.writeBytes(httpGetBytes("$base/${entry.preview}")) }
+        runCatching { previewFile.writeBytes(httpGetBytes("$activeBase/${entry.preview}")) }
         File(faceDir, "meta.json").writeText(
             JSONObject()
                 .put("id", entry.id)
