@@ -80,9 +80,16 @@ fun MarketScreen(
                 Icon(Icons.Rounded.Refresh, contentDescription = "刷新")
             }
         }
-        if (state.entries.isNotEmpty()) {
+        if (state.loading) {
             Text(
-                "更新于 ${state.updated} · ${state.entries.size} 张 · 均为自制（CC0）",
+                "正在拉取目录…（预览图会随卡片逐张加载）",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        } else if (state.entries.isNotEmpty()) {
+            Text(
+                "更新于 ${state.updated} · ${state.entries.size} 张 · " +
+                    "来源 amazfitwatchfaces.com（免费）· 预览 ${state.previews.size}/${state.entries.size}",
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -130,6 +137,7 @@ fun MarketScreen(
                             downloaded = entry.id in state.downloadedIds,
                             onDownload = { vm.download(entry) },
                             onDelete = { vm.delete(entry) },
+                            onVisible = { vm.ensurePreview(entry) },
                         )
                     }
                 }
@@ -153,7 +161,10 @@ private fun MarketCard(
     downloaded: Boolean,
     onDownload: () -> Unit,
     onDelete: () -> Unit,
+    onVisible: () -> Unit,
 ) {
+    // 懒加载：卡片滑进画面才拉自己的预览图（有磁盘缓存，只拉一次）
+    androidx.compose.runtime.LaunchedEffect(entry.id) { onVisible() }
     Column(
         Modifier
             .clip(RoundedCornerShape(12.dp))
@@ -198,7 +209,8 @@ private fun MarketCard(
             textAlign = TextAlign.Center,
         )
         Text(
-            "${formatSize(entry.sizeBytes)} · ${entry.license.removeSuffix("-1.0")}",
+            (if (entry.sizeBytes > 0) formatSize(entry.sizeBytes) else "—") +
+                " · ${entry.license.removeSuffix("-1.0")}",
             style = MaterialTheme.typography.labelSmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             maxLines = 1,
