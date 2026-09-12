@@ -59,7 +59,8 @@ adb_pick() {
     adb_query "$ADB_BIN"
   fi
   if ! adb_serials | grep -q .; then
-    for alt in "$LOCALAPPDATA/Android/Sdk/platform-tools/adb.exe" \
+    # ${LOCALAPPDATA:-}：set -u 下 pwsp 转过来的环境里这个变量可能没设
+    for alt in "${LOCALAPPDATA:-}/Android/Sdk/platform-tools/adb.exe" \
                "$HOME/AppData/Local/Android/Sdk/platform-tools/adb.exe"; do
       [ -n "$alt" ] || continue
       alt="$(cygpath -u "$alt" 2>/dev/null || printf '%s' "$alt")"
