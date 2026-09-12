@@ -176,8 +176,9 @@ please reduce size! Current size:1848kb.
 - **目录格式**：`{version, updated, faces:[{id,name,author,license,file,
   preview,sizeBytes,crc32,note}]}`；`crc32` 用于下载后校验（对不上即弃）。
 - **内容纪律**：只收本仓库自制（CC0）—— 与 §5.1 同一条授权底线，不抓第三方站。
-- **生成**：`tools/watchfaces/make_market.py` 批量产出（4 布局 × 8 配色 = 32 张：
-  数码 / 终端 / 极简 / 大字 × 冰蓝 玫红 橙阳 森绿 青瓷 石墨 樱粉 葡紫），
+- **生成**：`tools/watchfaces/make_market.py` 批量产出（8 布局 × 13 配色 = 104 张：
+  数码 / 终端 / 极简 / 大字 / 分栏 / 步数 / 日历 / 圆润 × 冰蓝 玫红 橙阳 森绿
+  青瓷 石墨 樱粉 葡紫 暗金 天青 珊瑚 薰衣草 酒红），
   打包后把 UIHH 头第 18..21 字节补丁成唯一表盘 ID（`0x4D4B00xx`），避免市场
   表盘在手环侧互相覆盖。ID 补丁后的包要先真机验证一张再批量信任。
 - **实现**：`data/MarketRepository.kt`（HttpURLConnection + org.json，零新依赖）、
