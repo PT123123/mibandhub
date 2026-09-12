@@ -80,6 +80,15 @@ class BandSession(
     /** 底层 GATT 连接状态。 */
     val connectionState: StateFlow<ConnectionState> = connection.state
 
+    /**
+     * 用户主动断开的意图标记：自动重连（BandService 的保活重试）看到它就让位，
+     * 不然用户点完「断开连接」一分钟又被偷偷连回去。任何一次
+     * [connectAndAuthenticate] 开始时清除 —— 手动点连接等于收回这句话。
+     */
+    @Volatile
+    var userDisconnected = false
+        private set
+
     private val _authenticated = MutableStateFlow(false)
     val authenticated: StateFlow<Boolean> = _authenticated
 
@@ -116,6 +125,7 @@ class BandSession(
 
     /** 连接 + 认证。成功后手环即可收发指令。 */
     suspend fun connectAndAuthenticate(mac: String, authKey: String): Boolean {
+        userDisconnected = false
         log("正在连接 $mac …")
         if (!connection.connect(mac)) {
             val state = connectionState.value
@@ -887,6 +897,7 @@ class BandSession(
         withTimeoutOrNull(timeoutMs) { firmwareIn.receive() }?.let { WatchFace.parse(it) }
 
     fun disconnect() {
+        userDisconnected = true
         collector?.cancel()
         collector = null
         connection.close()
