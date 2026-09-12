@@ -16,13 +16,18 @@ data class MarketEntry(
     val name: String,
     val author: String,
     val license: String,
-    /** 相对 market/ 的路径，如 faces/mk01.bin。 */
+    /**
+     * 表盘包地址：仓库内的相对路径（faces/xx.bin，拼在 activeBase 后），
+     * 或第三方源的绝对 URL（如 amazfitwatchfaces 的 .bin 直链）。
+     */
     val file: String,
     val preview: String,
     val sizeBytes: Int,
-    /** 十六进制串解析出来的 CRC32；目录没给就是 -1（跳过校验）。 */
+    /** 十六进制串解析出来的 CRC32；目录没给就是 -1（跳过校验，改用 UIHH 魔数校验）。 */
     val crc32: Long,
     val note: String?,
+    /** 详情页地址 —— 第三方源下载时用作 Referer，也方便用户溯源。 */
+    val page: String?,
 )
 
 data class MarketCatalog(
@@ -81,6 +86,17 @@ class MarketRepository private constructor(context: Context) {
     @Volatile
     private var activeBase: String = CATALOG_URLS.first().substringBeforeLast('/')
 
+    /** 华米 .bin 容器的文件头 —— 下载校验用（第三方源没有 CRC32 可查）。 */
+    private val UIHH_MAGIC = byteArrayOf(0x55, 0x49, 0x48, 0x48)
+
+    private fun isUihh(bytes: ByteArray): Boolean =
+        bytes.size >= 4 && bytes[0] == UIHH_MAGIC[0] && bytes[1] == UIHH_MAGIC[1] &&
+            bytes[2] == UIHH_MAGIC[2] && bytes[3] == UIHH_MAGIC[3]
+
+    private val BROWSER_UA =
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 " +
+            "(KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36"
+
     // ---------------------------------------------------------------- 目录
 
     /** 拉目录清单：逐个源试，第一个成功的算数。全挂了抛最后一个错。 */
@@ -107,6 +123,7 @@ class MarketRepository private constructor(context: Context) {
                             sizeBytes = o.optInt("sizeBytes", 0),
                             crc32 = o.optString("crc32").toLongOrNull(16) ?: -1L,
                             note = o.optString("note").takeIf { it.isNotEmpty() },
+                            page = o.optString("page").takeIf { it.isNotEmpty() },
                         )
                     } catch (e: JSONException) {
                         null
@@ -132,7 +149,7 @@ class MarketRepository private constructor(context: Context) {
         if (cached.isFile && cached.length() > 0) return cached
         return runCatching {
             previewCache.mkdirs()
-            val bytes = httpGetBytes("$activeBase/${entry.preview}")
+            val bytes = httpGetBytes(downloadUrl(entry.preview, entry))
             cached.writeBytes(bytes)
             cached
         }.getOrNull()
@@ -151,11 +168,15 @@ class MarketRepository private constructor(context: Context) {
     @Throws(IOException::class)
     fun downloadFace(entry: MarketEntry, onProgress: (Int) -> Unit): StoredWatchFace {
         val bytes = try {
-            httpGetBytes("$activeBase/${entry.file}") { percent -> onProgress(percent) }
+            httpGetBytes(downloadUrl(entry.file, entry), onProgress = { percent -> onProgress(percent) })
         } catch (e: IOException) {
             throw e
         } catch (e: Exception) {
             throw IOException(e.message ?: e.javaClass.simpleName)
+        }
+        if (!isUihh(bytes)) {
+            // 第三方站点反爬失败时回的是 HTML 说明页，不是 .bin —— 拦下来给人话
+            throw IOException("下载到的不是表盘包（源站可能拦截了请求），稍后重试或换一张。")
         }
         val crc = CRC32().apply { update(bytes) }.value
         if (entry.crc32 >= 0 && crc != entry.crc32) {
@@ -168,7 +189,7 @@ class MarketRepository private constructor(context: Context) {
         val faceDir = File(root, entry.id).apply { deleteRecursively(); mkdirs() }
         val binFile = File(faceDir, "face.bin").apply { writeBytes(bytes) }
         val previewFile = File(faceDir, "preview.png")
-        runCatching { previewFile.writeBytes(httpGetBytes("$activeBase/${entry.preview}")) }
+        runCatching { previewFile.writeBytes(httpGetBytes(downloadUrl(entry.preview, entry))) }
         File(faceDir, "meta.json").writeText(
             JSONObject()
                 .put("id", entry.id)
@@ -227,16 +248,43 @@ class MarketRepository private constructor(context: Context) {
 
     private fun httpGet(url: String): String = String(httpGetBytes(url))
 
-    private fun httpGetBytes(url: String, onProgress: ((Int) -> Unit)? = null): ByteArray {
+    /**
+     * 算下载地址：绝对 URL（第三方源）直接用；相对路径拼在目录的 base 后。
+     * amazfitwatchfaces 有反爬 —— 请求要带浏览器 UA 和详情页 Referer，
+     * 否则拿回来的是 HTML 说明页（下载处有 UIHH 魔数校验兜底）。
+     */
+    private fun downloadUrl(url: String, entry: MarketEntry): String =
+        if (url.startsWith("http")) url else "$activeBase/$url"
+
+    private fun httpHeadersFor(url: String, entry: MarketEntry?): Map<String, String> {
+        if (!url.contains("amazfitwatchfaces.com")) return emptyMap()
+        val headers = mutableMapOf("User-Agent" to BROWSER_UA)
+        entry?.page?.let { headers["Referer"] = it }
+        return headers
+    }
+
+    private fun httpGet(url: String, entry: MarketEntry? = null): String =
+        String(httpGetBytes(url, null, httpHeadersFor(url, entry)))
+
+    private fun httpGetBytes(
+        url: String,
+        onProgress: ((Int) -> Unit)? = null,
+        extraHeaders: Map<String, String> = emptyMap(),
+    ): ByteArray {
         val conn = (URL(url).openConnection() as HttpURLConnection).apply {
             connectTimeout = CONNECT_TIMEOUT_MS
             readTimeout = READ_TIMEOUT_MS
             instanceFollowRedirects = true
+            for ((k, v) in extraHeaders) setRequestProperty(k, v)
         }
         try {
             val code = conn.responseCode
             if (code != 200) throw IOException("HTTP $code")
-            val total = conn.contentLengthLong.takeIf { it > 0 } ?: -1
+            // amazfit 的 dl 端点是 chunked（没有 Content-Length），
+            // 真实大小放在自定义头 aw-content-length 里 —— 进度条靠它
+            val total = conn.contentLengthLong.takeIf { it > 0 }
+                ?: conn.getHeaderField("aw-content-length")?.toLongOrNull()
+                ?: -1L
             val out = ByteArrayOutputStream(if (total > 0) total.toInt() else 64 * 1024)
             conn.inputStream.use { input ->
                 val buf = ByteArray(16 * 1024)
