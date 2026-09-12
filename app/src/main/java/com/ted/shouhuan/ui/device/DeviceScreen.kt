@@ -3,8 +3,12 @@
 package com.ted.shouhuan.ui.device
 
 import android.Manifest
+import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.health.connect.client.PermissionController
+import androidx.health.connect.client.permission.HealthPermission
+import androidx.health.connect.client.records.SleepSessionRecord
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -32,6 +36,7 @@ import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TimePicker
@@ -46,9 +51,11 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.ted.shouhuan.ble.ConnectionState
+import com.ted.shouhuan.data.HealthConnectSleepSource
 import com.ted.shouhuan.data.Pairing
 import com.ted.shouhuan.proto.BandSettings
 import com.ted.shouhuan.ui.components.DragReorderList
@@ -119,6 +126,31 @@ fun DeviceScreen(vm: DeviceViewModel, onPair: () -> Unit) {
         // API < 31 没有 BLUETOOTH_CONNECT 这个运行时权限，hasBluetoothPermission() 恒为 true，
         // 所以走不到 launch 那条分支。
         if (vm.hasBluetoothPermission()) vm.connect() else permissionLauncher.launch(Manifest.permission.BLUETOOTH_CONNECT)
+    }
+
+    // ---- 健康连接导入：先查可用性，缺权限就拉系统授权框，齐了才真正去读 ----
+    val context = LocalContext.current
+    val hcSleepPermission = remember { HealthPermission.getReadPermission(SleepSessionRecord::class) }
+    val hcPermissionLauncher = rememberLauncherForActivityResult(
+        contract = PermissionController.createRequestPermissionResultContract(),
+    ) { granted ->
+        if (hcSleepPermission in granted) vm.importSleepFromHealthConnect()
+    }
+    val importFromHealthConnect: () -> Unit = {
+        scope.launch {
+            when (val availability = vm.healthConnect.availability()) {
+                is HealthConnectSleepSource.Availability.Ready -> {
+                    val missing = vm.healthConnect.missingPermissions()
+                    if (missing.isEmpty()) {
+                        vm.importSleepFromHealthConnect()
+                    } else {
+                        hcPermissionLauncher.launch(missing)
+                    }
+                }
+                is HealthConnectSleepSource.Availability.Unavailable ->
+                    Toast.makeText(context, availability.reason, Toast.LENGTH_LONG).show()
+            }
+        }
     }
 
     Column(
@@ -287,8 +319,7 @@ fun DeviceScreen(vm: DeviceViewModel, onPair: () -> Unit) {
         // ---- 数据同步：拉活动明细 → 解析睡眠 → 落本地 ----
         SectionCard(title = "数据同步", accent = StepBlue) {
             Text(
-                "从手环拉取最近 7 天的活动与睡眠明细，解析出每晚分期写进本地。" +
-                    "首次成功会自动清掉演示数据。",
+                "从手环拉取全部保存的活动与睡眠明细（手环只留最近 15~30 天，同步后即从手环清除），解析出每晚分期写进本地。",
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -299,7 +330,7 @@ fun DeviceScreen(vm: DeviceViewModel, onPair: () -> Unit) {
                 modifier = Modifier.fillMaxWidth(),
                 shape = RoundedCornerShape(14.dp),
             ) {
-                Text(if (sleepSync is SleepSyncPhase.Syncing) "同步中…" else "同步睡眠数据（近 7 天）")
+                Text(if (sleepSync is SleepSyncPhase.Syncing) "同步中…" else "同步手环数据")
             }
             Spacer(Modifier.height(8.dp))
             when (val phase = sleepSync) {
@@ -326,6 +357,26 @@ fun DeviceScreen(vm: DeviceViewModel, onPair: () -> Unit) {
                     style = MaterialTheme.typography.labelMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
+            }
+
+            HorizontalDivider(
+                Modifier.padding(vertical = 10.dp),
+                color = MaterialTheme.colorScheme.outline.copy(alpha = 0.35f),
+            )
+            // ---- 外部数据源：健康连接（小米运动健康会往里同步）----
+            Text(
+                "手环数据被清掉/不在身边时，可从「健康连接」补睡眠历史 —— 先在小米运动健康的设置里开启数据同步。",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Spacer(Modifier.height(12.dp))
+            OutlinedButton(
+                onClick = importFromHealthConnect,
+                enabled = sleepSync !is SleepSyncPhase.Syncing,
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(14.dp),
+            ) {
+                Text("从健康连接导入")
             }
         }
 

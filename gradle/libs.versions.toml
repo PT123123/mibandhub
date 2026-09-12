@@ -11,6 +11,11 @@ composeBom = "2024.09.00"
 navigationCompose = "2.8.2"
 datastore = "1.1.1"
 coroutines = "1.9.0"
+# 唯一一次联网新增的依赖；Health Connect 读外部睡眠数据用，见 data/HealthConnectSleepSource。
+# 1.1.0 稳定版要求 compileSdk 36、beta01 要求 AGP 8.6+，而项目钉在 35 / AGP 8.5.2 ——
+# alpha10 是两个约束都满足的最新版，API 面与 1.1.0 一致（getSdkStatus /
+# permissionController / readRecords 在 alpha10 已定型）。
+healthConnect = "1.1.0-alpha10"
 
 [libraries]
 androidx-core-ktx = { group = "androidx.core", name = "core-ktx", version.ref = "coreKtx" }
@@ -29,6 +34,7 @@ androidx-material-icons-extended = { group = "androidx.compose.material", name =
 
 androidx-navigation-compose = { group = "androidx.navigation", name = "navigation-compose", version.ref = "navigationCompose" }
 androidx-datastore-preferences = { group = "androidx.datastore", name = "datastore-preferences", version.ref = "datastore" }
+androidx-health-connect-client = { group = "androidx.health.connect", name = "connect-client", version.ref = "healthConnect" }
 kotlinx-coroutines-android = { group = "org.jetbrains.kotlinx", name = "kotlinx-coroutines-android", version.ref = "coroutines" }
 
 [plugins]

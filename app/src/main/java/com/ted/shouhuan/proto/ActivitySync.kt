@@ -1,21 +1,33 @@
 package com.ted.shouhuan.proto
 
 import com.ted.shouhuan.data.SleepNightRecord
+import com.ted.shouhuan.data.SleepStage
 import java.time.Duration
 import java.time.LocalDate
 import java.time.LocalDateTime
 import java.time.ZonedDateTime
 
-/** 一分钟的活动样本 —— MB4/MB5 的 8 字节扩展格式。 */
+/**
+ * 一分钟的活动样本 —— MB4/MB5 的 8 字节扩展格式
+ * （字节切片对齐 Gadgetbridge `FetchActivityOperation.createExtendedSample`）。
+ */
 data class MinuteSample(
     val time: LocalDateTime,
-    val rawKind: Int,
+
+    /** 样本类型：[KIND_SLEEP] = 睡眠分钟，0x73 = 未佩戴，118 = 充电，其余是活动。 */
+    val kind: Int,
     val intensity: Int,
     val steps: Int,
     val heartRate: Int,
-    val isLight: Boolean,
-    val isDeep: Boolean,
-    val isRem: Boolean,
+
+    /** 浅睡强度（byte5 剥掉 0x80 位）。 */
+    val sleepLevel: Int,
+
+    /** 深睡强度（byte6 剥掉 0x80 位）。 */
+    val deepLevel: Int,
+
+    /** REM 强度（byte7 剥掉 0x80 位）。 */
+    val remLevel: Int,
 )
 
 /** 手环对「取数请求」的应答：有多少字节、从什么时候开始。 */
@@ -51,6 +63,9 @@ object ActivitySync {
     /** 每条样本的字节数与时间步长（1 分钟）。 */
     const val SAMPLE_SIZE = 8
 
+    /** 手环的「睡眠样本」类型号 —— GB HuamiExtendedSampleProvider.TYPE_SLEEP（120）。 */
+    const val KIND_SLEEP = 0x78
+
     /**
      * 时间字节（8 字节）：[年 LO, 年 HI, 月, 日, 时, 分, 秒, 时区]。
      * 年小端；时区按 15 分钟一档（含夏令时偏移）—— GB calendarToRawBytes 同款。
@@ -74,8 +89,11 @@ object ActivitySync {
         byteArrayOf(CMD_START_DATE.toByte(), type.toByte()) + timeBytes(since)
 
     /**
-     * ② 起始应答：[0x10, 0x01, 状态, 长度 uint32 LE, 时间 8 字节]（共 15 字节；
-     * 个别固件在尾部多一个 0x00，共 16 字节）。长度是「接下来的样本字节数」。
+     * ② 起始应答：[0x10, 0x01, 状态, 采样数 uint32 LE, 时间 8 字节]（共 15 字节；
+     * 个别固件在尾部多一个 0x00，共 16 字节）。
+     *
+     * 那个 uint32 实测是**采样条数**不是字节数 —— 真机两次分毫不差地对上
+     * （2738 × 8 = 21904、8568 × 8 = 68544）。这里换算成字节，调用方统一按字节记账。
      */
     fun parseStartResponse(value: ByteArray): FetchStartInfo? {
         if (value.size < 15) return null
@@ -86,7 +104,7 @@ object ActivitySync {
             ((value[4].toInt() and 0xff) shl 8) or
             ((value[5].toInt() and 0xff) shl 16) or
             ((value[6].toInt() and 0xff) shl 24)
-        return FetchStartInfo(expectedBytes = expected, start = parseTimeBytes(value, 7))
+        return FetchStartInfo(expectedBytes = expected * SAMPLE_SIZE, start = parseTimeBytes(value, 7))
     }
 
     /** 时间字节 → 本地时间。手环时钟和手机对过时（连接时同步），按本地时间解读。 */
@@ -102,7 +120,11 @@ object ActivitySync {
 
     /**
      * ④ 样本缓冲 → 每分钟一条。8 字节布局：
-     * [rawKind, 强度, 步数, 心率, 未知, 浅睡?, 深睡?, REM?]，后三个是 0/1 标志。
+     * `[kind, 强度, 步数, 心率, 未知, 浅睡强度, 深睡强度, REM 强度]`。
+     *
+     * 注意后三个字节**不是 0/1 旗标**：真机数据里清醒分钟是 `00 80 80` 这样的组合，
+     * 0x80 位是「基础值」而非「真」，强度要从 `& 0x7f` 里来 —— 当初当成旗标解析，
+     * 把整周清醒全判成了深睡+REM。分期阈值见 [stageOf]。
      */
     fun parseSamples(bytes: ByteArray, start: LocalDateTime): List<MinuteSample> {
         val out = ArrayList<MinuteSample>(bytes.size / SAMPLE_SIZE)
@@ -112,13 +134,13 @@ object ActivitySync {
             out.add(
                 MinuteSample(
                     time = t,
-                    rawKind = bytes[i].toInt() and 0xff,
+                    kind = bytes[i].toInt() and 0xff,
                     intensity = bytes[i + 1].toInt() and 0xff,
                     steps = bytes[i + 2].toInt() and 0xff,
                     heartRate = bytes[i + 3].toInt() and 0xff,
-                    isLight = bytes[i + 5].toInt() != 0,
-                    isDeep = bytes[i + 6].toInt() != 0,
-                    isRem = bytes[i + 7].toInt() != 0,
+                    sleepLevel = bytes[i + 5].toInt() and 0x7f,
+                    deepLevel = bytes[i + 6].toInt() and 0x7f,
+                    remLevel = bytes[i + 7].toInt() and 0x7f,
                 ),
             )
             t = t.plusMinutes(1)
@@ -127,17 +149,30 @@ object ActivitySync {
         return out
     }
 
-    /** 分期判定优先级（GB 同款）：REM > 深睡 > 浅睡，三旗皆 0 = 清醒/活动。 */
-    private fun isSleep(m: MinuteSample) = m.isLight || m.isDeep || m.isRem
+    /**
+     * 睡眠样本的分期（GB HuamiExtendedSampleProvider.postProcess 的阈值，
+     * 上游注释明说这些数是经验值，但和手环屏幕显示基本一致）：
+     * REM 强度 > 55 判 REM，其次深睡强度 > 42 判深睡，其余都算浅睡。
+     */
+    fun stageOf(m: MinuteSample): SleepStage = when {
+        m.remLevel > 55 -> SleepStage.REM
+        m.deepLevel > 42 -> SleepStage.DEEP
+        else -> SleepStage.LIGHT
+    }
 
     /**
      * 把分钟样本归并成夜。
      *
-     * 相邻的睡眠分钟聚成一觉，中间允许 ≤60 分钟的清醒间隙（夜里翻身/上厕所）；
-     * 超过 60 分钟就算另一觉 —— 午睡和夜觉天然分开。不足 30 分钟的碎片当噪声丢掉。
+     * 只有 kind == [KIND_SLEEP] 的分钟算睡眠（清醒/活动分钟那三个强度字节也是
+     * 非零的，不能用强度判）。相邻的睡眠分钟聚成一觉，中间允许 ≤60 分钟的清醒
+     * 间隙（夜里翻身/上厕所）；超过 60 分钟就算另一觉 —— 午睡和夜觉天然分开。
+     * 不足 30 分钟的碎片当噪声丢掉。
      */
     fun nightsFromSamples(samples: List<MinuteSample>): List<SleepNightRecord> {
-        val sleepMinutes = samples.filter(::isSleep).distinctBy { it.time }.sortedBy { it.time }
+        val sleepMinutes = samples
+            .filter { it.kind == KIND_SLEEP }
+            .distinctBy { it.time }
+            .sortedBy { it.time }
         if (sleepMinutes.isEmpty()) return emptyList()
 
         val nights = ArrayList<SleepNightRecord>()
@@ -161,8 +196,8 @@ object ActivitySync {
         val bed = cluster.first().time
         val wake = cluster.last().time.plusMinutes(1)
         val total = cluster.size
-        val deep = cluster.count { it.isDeep }
-        val rem = cluster.count { it.isRem }
+        val deep = cluster.count { stageOf(it) == SleepStage.DEEP }
+        val rem = cluster.count { stageOf(it) == SleepStage.REM }
         val light = (total - deep - rem).coerceAtLeast(0)
         val awake = (Duration.between(bed, wake).toMinutes() - total).coerceAtLeast(0).toInt()
         return SleepNightRecord(
@@ -183,8 +218,9 @@ object ActivitySync {
     /**
      * 手环不给睡眠评分，这里按时长和深睡/REM 占比粗算一个（0..100）。
      * 自研口径 —— 界面要有个数；等找到官方算法再替换。
+     * Health Connect 导入的外部记录也用它，两个来源的分数才有可比性。
      */
-    private fun sleepScore(total: Int, deep: Int, rem: Int): Int {
+    fun sleepScore(total: Int, deep: Int, rem: Int): Int {
         val durationBonus = when {
             total < 300 -> -10f
             total < 390 -> (total - 300) / 90f * 10f
