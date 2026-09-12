@@ -3,9 +3,11 @@
 package com.ted.shouhuan.ui.device
 
 import android.Manifest
+import android.content.Intent
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.health.connect.client.HealthConnectClient
 import androidx.health.connect.client.PermissionController
 import androidx.health.connect.client.permission.HealthPermission
 import androidx.health.connect.client.records.SleepSessionRecord
@@ -71,6 +73,12 @@ import com.ted.shouhuan.ui.theme.NotifyAmber
 import com.ted.shouhuan.ui.theme.PulseRed
 import com.ted.shouhuan.util.minuteOfDayToClock
 import kotlinx.coroutines.launch
+
+/** 健康连接提供方（Android 13 是独立 App；14+ 内置于系统设置）。 */
+private const val HC_PROVIDER_PACKAGE = "com.android.healthconnect.controller"
+
+/** 外部睡眠数据源 App：小米运动健康。 */
+private const val MI_FITNESS_PACKAGE = "com.mi.health"
 
 /**
  * 设备页：配对信息 + 手动连接。
@@ -150,6 +158,35 @@ fun DeviceScreen(vm: DeviceViewModel, onPair: () -> Unit) {
                 is HealthConnectSleepSource.Availability.Unavailable ->
                     Toast.makeText(context, availability.reason, Toast.LENGTH_LONG).show()
             }
+        }
+    }
+
+    fun openHealthConnect() {
+        // Android 14+ 走系统设置里的健康连接页；13 的独立 App 个别 ROM（本机 MIUI）
+        // 不响应 androidx.health.ACTION_HEALTH_CONNECT_SETTINGS，逐级兜底到显式组件
+        //（本机实测 MigrationActivity 可直接拉起，引导完成后就是它的主页）。
+        val settings = Intent(HealthConnectClient.ACTION_HEALTH_CONNECT_SETTINGS)
+            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        val target = when {
+            settings.resolveActivity(context.packageManager) != null -> settings
+            else -> context.packageManager.getLaunchIntentForPackage(HC_PROVIDER_PACKAGE)
+                ?: Intent()
+                    .setClassName(HC_PROVIDER_PACKAGE, "$HC_PROVIDER_PACKAGE.migration.MigrationActivity")
+                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        }
+        runCatching { context.startActivity(target) }
+            .onFailure {
+                Toast.makeText(context, "打不开健康连接 App（$HC_PROVIDER_PACKAGE）", Toast.LENGTH_LONG).show()
+            }
+    }
+
+    fun openMiFitness() {
+        val intent = context.packageManager.getLaunchIntentForPackage(MI_FITNESS_PACKAGE)
+            ?.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        if (intent != null) {
+            context.startActivity(intent)
+        } else {
+            Toast.makeText(context, "没装小米运动健康（$MI_FITNESS_PACKAGE）", Toast.LENGTH_LONG).show()
         }
     }
 
@@ -365,11 +402,23 @@ fun DeviceScreen(vm: DeviceViewModel, onPair: () -> Unit) {
             )
             // ---- 外部数据源：健康连接（小米运动健康会往里同步）----
             Text(
-                "手环数据被清掉/不在身边时，可从「健康连接」补睡眠历史 —— 先在小米运动健康的设置里开启数据同步。",
+                "手环数据被清掉/不在身边时，可从「健康连接」补睡眠历史：\n" +
+                    "① 首次打开健康连接 App 要先完成它的初始引导；\n" +
+                    "② 健康连接 → 应用权限 → 小米运动健康 → 全部允许（写入含睡眠）；\n" +
+                    "③ 国内版小米运动健康暂无「同步到健康连接」开关，写入靠它的后台同步，导入为 0 晚通常就是还没写进来。",
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
-            Spacer(Modifier.height(12.dp))
+            Spacer(Modifier.height(8.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                TextButton(onClick = ::openHealthConnect) {
+                    Text("打开健康连接", color = StepBlue)
+                }
+                TextButton(onClick = ::openMiFitness) {
+                    Text("打开小米运动健康", color = StepBlue)
+                }
+            }
+            Spacer(Modifier.height(4.dp))
             OutlinedButton(
                 onClick = importFromHealthConnect,
                 enabled = sleepSync !is SleepSyncPhase.Syncing,
