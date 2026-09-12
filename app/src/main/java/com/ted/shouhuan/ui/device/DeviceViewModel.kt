@@ -7,11 +7,13 @@ import android.bluetooth.BluetoothManager
 import android.content.Context
 import android.content.pm.PackageManager
 import android.os.Build
+import android.util.Log
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.ted.shouhuan.ble.ConnectionState
 import com.ted.shouhuan.data.BandPrefs
+import com.ted.shouhuan.proto.BandSettings
 import com.ted.shouhuan.service.BandSessionProvider
 import com.ted.shouhuan.service.HeartMeasureController
 import kotlinx.coroutines.Job
@@ -83,6 +85,11 @@ class DeviceViewModel(app: Application) : AndroidViewModel(app) {
     private companion object {
         /** 连接 + 认证的总兜底（底层每一步自己还有 15 秒超时）。 */
         const val CONNECT_TIMEOUT_MS = 35_000L
+
+        const val TAG = "DeviceViewModel"
+
+        /** 菜单/快捷方式的项数上限 —— GB 的规则：主菜单超过 16 项会被手环截断。 */
+        const val MAX_ITEMS = 16
     }
 
     private val prefs = BandPrefs(app)
@@ -255,6 +262,207 @@ class DeviceViewModel(app: Application) : AndroidViewModel(app) {
                 _sleepSync.value = SleepSyncPhase.Done(result.nights.size, result.sampleMinutes)
             } catch (e: Exception) {
                 _sleepSync.value = SleepSyncPhase.Failed(e.message ?: e.javaClass.simpleName)
+            }
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // 手环本机设置（存储 + 当场下发；连接后整套推送在 BandService）
+    // ------------------------------------------------------------------
+
+    val wearLeft: StateFlow<Boolean> =
+        prefs.wearLeft.stateIn(viewModelScope, SharingStarted.Eagerly, true)
+
+    val liftWake: StateFlow<Boolean> =
+        prefs.liftWake.stateIn(viewModelScope, SharingStarted.Eagerly, true)
+
+    val swipeUnlock: StateFlow<Boolean> =
+        prefs.swipeUnlock.stateIn(viewModelScope, SharingStarted.Eagerly, false)
+
+    val disconnectAlert: StateFlow<Boolean> =
+        prefs.disconnectAlert.stateIn(viewModelScope, SharingStarted.Eagerly, false)
+
+    val dndMode: StateFlow<String> =
+        prefs.dndMode.stateIn(viewModelScope, SharingStarted.Eagerly, "off")
+
+    val dndStart: StateFlow<Int> =
+        prefs.dndStartMinute.stateIn(viewModelScope, SharingStarted.Eagerly, 22 * 60)
+
+    val dndEnd: StateFlow<Int> =
+        prefs.dndEndMinute.stateIn(viewModelScope, SharingStarted.Eagerly, 7 * 60)
+
+    val nightMode: StateFlow<String> =
+        prefs.nightMode.stateIn(viewModelScope, SharingStarted.Eagerly, "off")
+
+    val nightStart: StateFlow<Int> =
+        prefs.nightStartMinute.stateIn(viewModelScope, SharingStarted.Eagerly, 22 * 60)
+
+    val nightEnd: StateFlow<Int> =
+        prefs.nightEndMinute.stateIn(viewModelScope, SharingStarted.Eagerly, 7 * 60)
+
+    /** 主菜单顺序。没存过时回落到 MB5 出厂默认。 */
+    val menuOrder: StateFlow<List<BandSettings.Item>> =
+        prefs.menuOrder.map { keys -> itemsOf(keys, BandSettings.Item.DEFAULT_MENU) }
+            .stateIn(viewModelScope, SharingStarted.Eagerly, BandSettings.Item.DEFAULT_MENU)
+
+    /** 快捷方式顺序。 */
+    val shortcutOrder: StateFlow<List<BandSettings.Item>> =
+        prefs.shortcutOrder.map { keys -> itemsOf(keys, BandSettings.Item.DEFAULT_SHORTCUTS) }
+            .stateIn(viewModelScope, SharingStarted.Eagerly, BandSettings.Item.DEFAULT_SHORTCUTS)
+
+    val remindOnConnect: StateFlow<Boolean> =
+        prefs.remindOnConnect.stateIn(viewModelScope, SharingStarted.Eagerly, false)
+
+    val remindLowBattery: StateFlow<Boolean> =
+        prefs.remindLowBattery.stateIn(viewModelScope, SharingStarted.Eagerly, false)
+
+    val remindLowBatteryPct: StateFlow<Int> =
+        prefs.remindLowBatteryPct.stateIn(viewModelScope, SharingStarted.Eagerly, 15)
+
+    val remindFullyCharged: StateFlow<Boolean> =
+        prefs.remindFullyCharged.stateIn(viewModelScope, SharingStarted.Eagerly, false)
+
+    /** 最近一次设置动作的结果，给界面显示一行反馈。 */
+    private val _settingsStatus = MutableStateFlow<String?>(null)
+    val settingsStatus: StateFlow<String?> = _settingsStatus.asStateFlow()
+
+    fun clearSettingsStatus() {
+        _settingsStatus.value = null
+    }
+
+    fun setWearLocation(left: Boolean) = applySetting("佩戴手") {
+        prefs.setWearLeft(left)
+        if (isLinked()) session.applyWearLocation(left)
+    }
+
+    fun setLiftWake(enabled: Boolean) = applySetting("抬腕亮屏") {
+        prefs.setLiftWake(enabled)
+        if (isLinked()) session.applyDisplayOnLiftWrist(enabled)
+    }
+
+    fun setSwipeUnlock(enabled: Boolean) = applySetting("滑动解锁") {
+        prefs.setSwipeUnlock(enabled)
+        if (isLinked()) session.applySwipeUnlock(enabled)
+    }
+
+    fun setDisconnectAlert(enabled: Boolean) = applySetting("断开提醒") {
+        prefs.setDisconnectAlert(enabled)
+        if (isLinked()) session.applyDisconnectAlert(enabled)
+    }
+
+    fun setDndSetting(mode: String, startMinute: Int, endMinute: Int) = applySetting("勿扰模式") {
+        prefs.setDndSetting(mode, startMinute, endMinute)
+        if (isLinked()) session.applyDnd(dndModeOf(mode), startMinute, endMinute)
+    }
+
+    fun setNightSetting(mode: String, startMinute: Int, endMinute: Int) = applySetting("夜间模式") {
+        prefs.setNightSetting(mode, startMinute, endMinute)
+        if (isLinked()) session.applyNightMode(nightModeOf(mode), startMinute, endMinute)
+    }
+
+    /** 拖拽排序回调：换位 → 落盘 → 下发整套顺序。 */
+    fun moveMenuItem(from: Int, to: Int) {
+        val next = menuOrder.value.toMutableList().apply { add(to, removeAt(from)) }
+        applySetting("菜单顺序") {
+            prefs.setMenuOrder(next.map { it.key })
+            if (isLinked()) session.applyMenuOrder(next)
+        }
+    }
+
+    fun moveShortcutItem(from: Int, to: Int) {
+        val next = shortcutOrder.value.toMutableList().apply { add(to, removeAt(from)) }
+        applySetting("快捷方式") {
+            prefs.setShortcutOrder(next.map { it.key })
+            if (isLinked()) session.applyShortcutOrder(next)
+        }
+    }
+
+    fun addMenuItem(item: BandSettings.Item) {
+        val current = menuOrder.value
+        if (item in current || current.size >= MAX_ITEMS) return
+        val next = current + item
+        applySetting("菜单顺序") {
+            prefs.setMenuOrder(next.map { it.key })
+            if (isLinked()) session.applyMenuOrder(next)
+        }
+    }
+
+    fun addShortcutItem(item: BandSettings.Item) {
+        val current = shortcutOrder.value
+        if (item in current || current.size >= MAX_ITEMS) return
+        val next = current + item
+        applySetting("快捷方式") {
+            prefs.setShortcutOrder(next.map { it.key })
+            if (isLinked()) session.applyShortcutOrder(next)
+        }
+    }
+
+    fun removeMenuItem(item: BandSettings.Item) {
+        if (item !in menuOrder.value) return
+        val next = menuOrder.value - item
+        applySetting("菜单顺序") {
+            prefs.setMenuOrder(next.map { it.key })
+            if (isLinked()) session.applyMenuOrder(next)
+        }
+    }
+
+    fun removeShortcutItem(item: BandSettings.Item) {
+        if (item !in shortcutOrder.value) return
+        val next = shortcutOrder.value - item
+        applySetting("快捷方式") {
+            prefs.setShortcutOrder(next.map { it.key })
+            if (isLinked()) session.applyShortcutOrder(next)
+        }
+    }
+
+    fun setRemindOnConnect(enabled: Boolean) {
+        viewModelScope.launch { prefs.setRemindOnConnect(enabled) }
+    }
+
+    fun setRemindLowBattery(enabled: Boolean, thresholdPct: Int) {
+        viewModelScope.launch { prefs.setRemindLowBattery(enabled, thresholdPct) }
+    }
+
+    fun setRemindFullyCharged(enabled: Boolean) {
+        viewModelScope.launch { prefs.setRemindFullyCharged(enabled) }
+    }
+
+    // ---- 手环设置的内部工具 ----
+
+    private fun isLinked(): Boolean = session.authenticated.value
+
+    private fun dndModeOf(raw: String): BandSettings.DndMode = when (raw) {
+        "scheduled" -> BandSettings.DndMode.SCHEDULED
+        "automatic" -> BandSettings.DndMode.AUTOMATIC
+        else -> BandSettings.DndMode.OFF
+    }
+
+    private fun nightModeOf(raw: String): BandSettings.NightMode = when (raw) {
+        "scheduled" -> BandSettings.NightMode.SCHEDULED
+        "sunset" -> BandSettings.NightMode.SUNSET
+        else -> BandSettings.NightMode.OFF
+    }
+
+    private fun itemsOf(keys: List<String>?, defaults: List<BandSettings.Item>): List<BandSettings.Item> =
+        keys?.mapNotNull { BandSettings.Item.fromKey(it) }?.takeIf { it.isNotEmpty() } ?: defaults
+
+    /**
+     * 「存偏好 → 连着就当场下发」的统一包装。
+     * 没连手环不算失败 —— 偏好已落盘，下次连接 BandService 会整套推过去。
+     */
+    private fun applySetting(label: String, block: suspend () -> Unit) {
+        viewModelScope.launch {
+            val linked = isLinked()
+            try {
+                block()
+                _settingsStatus.value = if (linked) {
+                    "$label 已下发到手环"
+                } else {
+                    "$label 已保存，连接手环后自动应用"
+                }
+            } catch (e: Exception) {
+                Log.w(TAG, "$label 下发失败", e)
+                _settingsStatus.value = "$label 已保存，但下发失败：${e.message}"
             }
         }
     }

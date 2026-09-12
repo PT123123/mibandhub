@@ -48,6 +48,26 @@ class BandPrefs(private val context: Context) {
         val NOTIFY_INCLUDE_BODY = booleanPreferencesKey("notify_include_body")
         val NOTIFY_VIBRATION = stringPreferencesKey("notify_vibration")
         val APP_RULES = stringPreferencesKey("app_rules")
+
+        // ---- 手环本机设置（连接成功后整套下发，字节协议见 proto/BandSettings）----
+        val SET_WEAR_LEFT = booleanPreferencesKey("band_wear_left")
+        val SET_LIFT_WAKE = booleanPreferencesKey("band_lift_wake")
+        val SET_SWIPE_UNLOCK = booleanPreferencesKey("band_swipe_unlock")
+        val SET_DISCONNECT_ALERT = booleanPreferencesKey("band_disconnect_alert")
+        val SET_DND_MODE = stringPreferencesKey("band_dnd_mode")
+        val SET_DND_START = intPreferencesKey("band_dnd_start")
+        val SET_DND_END = intPreferencesKey("band_dnd_end")
+        val SET_NIGHT_MODE = stringPreferencesKey("band_night_mode")
+        val SET_NIGHT_START = intPreferencesKey("band_night_start")
+        val SET_NIGHT_END = intPreferencesKey("band_night_end")
+        val MENU_ORDER = stringPreferencesKey("band_menu_order")
+        val SHORTCUT_ORDER = stringPreferencesKey("band_shortcut_order")
+
+        // ---- 手机状态提醒（手机这边发生事件 → 发到手环）----
+        val REMIND_ON_CONNECT = booleanPreferencesKey("remind_on_connect")
+        val REMIND_LOW_BATTERY = booleanPreferencesKey("remind_low_battery")
+        val REMIND_LOW_BATTERY_PCT = intPreferencesKey("remind_low_battery_pct")
+        val REMIND_FULLY_CHARGED = booleanPreferencesKey("remind_fully_charged")
     }
 
     val mac: Flow<String?> = context.bandDataStore.data.map { it[Keys.MAC] }
@@ -296,6 +316,127 @@ class BandPrefs(private val context: Context) {
         if (raw.isNullOrBlank()) return emptyList()
         return raw.lineSequence().map { it.trim() }.filter { it.isNotEmpty() }.toList()
     }
+
+    // ------------------------------------------------------------------
+    // 手环本机设置 + 手机状态提醒
+    //
+    // 只管存储；下发时机有两处 —— 用户当场改动（DeviceViewModel）和
+    // 连接成功后整套推送（BandService）。默认值全部对齐 MB5 出厂状态，
+    // 首次连接就整套下发也只是把手环写回它本来就在的状态。
+    // ------------------------------------------------------------------
+
+    /** 佩戴手，true = 左手（出厂默认）。 */
+    val wearLeft: Flow<Boolean> = context.bandDataStore.data.map { it[Keys.SET_WEAR_LEFT] ?: true }
+
+    /** 抬腕亮屏，出厂默认开。 */
+    val liftWake: Flow<Boolean> = context.bandDataStore.data.map { it[Keys.SET_LIFT_WAKE] ?: true }
+
+    /** 滑动解锁，出厂默认关。 */
+    val swipeUnlock: Flow<Boolean> =
+        context.bandDataStore.data.map { it[Keys.SET_SWIPE_UNLOCK] ?: false }
+
+    /** 手环与手机断开蓝牙时手环自己提醒，出厂默认关。 */
+    val disconnectAlert: Flow<Boolean> =
+        context.bandDataStore.data.map { it[Keys.SET_DISCONNECT_ALERT] ?: false }
+
+    /** 勿扰模式："off" / "scheduled" / "automatic"。 */
+    val dndMode: Flow<String> = context.bandDataStore.data.map { it[Keys.SET_DND_MODE] ?: "off" }
+    val dndStartMinute: Flow<Int> =
+        context.bandDataStore.data.map { it[Keys.SET_DND_START] ?: 22 * 60 }
+    val dndEndMinute: Flow<Int> =
+        context.bandDataStore.data.map { it[Keys.SET_DND_END] ?: 7 * 60 }
+
+    /** 夜间模式："off" / "scheduled" / "sunset"。 */
+    val nightMode: Flow<String> = context.bandDataStore.data.map { it[Keys.SET_NIGHT_MODE] ?: "off" }
+    val nightStartMinute: Flow<Int> =
+        context.bandDataStore.data.map { it[Keys.SET_NIGHT_START] ?: 22 * 60 }
+    val nightEndMinute: Flow<Int> =
+        context.bandDataStore.data.map { it[Keys.SET_NIGHT_END] ?: 7 * 60 }
+
+    /** 主菜单顺序（Item.key 逗号分隔）。没存过 = 还没动过，用出厂默认。 */
+    val menuOrder: Flow<List<String>?> =
+        context.bandDataStore.data.map { it[Keys.MENU_ORDER]?.split(',')?.filter { k -> k.isNotBlank() } }
+
+    /** 快捷方式顺序（Item.key 逗号分隔）。 */
+    val shortcutOrder: Flow<List<String>?> =
+        context.bandDataStore.data.map { it[Keys.SHORTCUT_ORDER]?.split(',')?.filter { k -> k.isNotBlank() } }
+
+    /** 连接成功后是否在手环上提醒一声。 */
+    val remindOnConnect: Flow<Boolean> =
+        context.bandDataStore.data.map { it[Keys.REMIND_ON_CONNECT] ?: false }
+
+    /** 手机低电量提醒：开关与阈值（百分比，0 表示从未设置过）。 */
+    val remindLowBattery: Flow<Boolean> =
+        context.bandDataStore.data.map { it[Keys.REMIND_LOW_BATTERY] ?: false }
+    val remindLowBatteryPct: Flow<Int> =
+        context.bandDataStore.data.map { it[Keys.REMIND_LOW_BATTERY_PCT] ?: 15 }
+
+    /** 手机充满电提醒。 */
+    val remindFullyCharged: Flow<Boolean> =
+        context.bandDataStore.data.map { it[Keys.REMIND_FULLY_CHARGED] ?: false }
+
+    suspend fun setWearLeft(left: Boolean) {
+        context.bandDataStore.edit { it[Keys.SET_WEAR_LEFT] = left }
+    }
+
+    suspend fun setLiftWake(enabled: Boolean) {
+        context.bandDataStore.edit { it[Keys.SET_LIFT_WAKE] = enabled }
+    }
+
+    suspend fun setSwipeUnlock(enabled: Boolean) {
+        context.bandDataStore.edit { it[Keys.SET_SWIPE_UNLOCK] = enabled }
+    }
+
+    suspend fun setDisconnectAlert(enabled: Boolean) {
+        context.bandDataStore.edit { it[Keys.SET_DISCONNECT_ALERT] = enabled }
+    }
+
+    suspend fun setDndSetting(mode: String, startMinute: Int, endMinute: Int) {
+        context.bandDataStore.edit {
+            it[Keys.SET_DND_MODE] = mode
+            it[Keys.SET_DND_START] = clampMinuteOfDay(startMinute)
+            it[Keys.SET_DND_END] = clampMinuteOfDay(endMinute)
+        }
+    }
+
+    suspend fun setNightSetting(mode: String, startMinute: Int, endMinute: Int) {
+        context.bandDataStore.edit {
+            it[Keys.SET_NIGHT_MODE] = mode
+            it[Keys.SET_NIGHT_START] = clampMinuteOfDay(startMinute)
+            it[Keys.SET_NIGHT_END] = clampMinuteOfDay(endMinute)
+        }
+    }
+
+    suspend fun setMenuOrder(keys: List<String>) {
+        context.bandDataStore.edit {
+            if (keys.isEmpty()) it.remove(Keys.MENU_ORDER)
+            else it[Keys.MENU_ORDER] = keys.joinToString(",")
+        }
+    }
+
+    suspend fun setShortcutOrder(keys: List<String>) {
+        context.bandDataStore.edit {
+            if (keys.isEmpty()) it.remove(Keys.SHORTCUT_ORDER)
+            else it[Keys.SHORTCUT_ORDER] = keys.joinToString(",")
+        }
+    }
+
+    suspend fun setRemindOnConnect(enabled: Boolean) {
+        context.bandDataStore.edit { it[Keys.REMIND_ON_CONNECT] = enabled }
+    }
+
+    suspend fun setRemindLowBattery(enabled: Boolean, thresholdPct: Int) {
+        context.bandDataStore.edit {
+            it[Keys.REMIND_LOW_BATTERY] = enabled
+            it[Keys.REMIND_LOW_BATTERY_PCT] = thresholdPct.coerceIn(5, 50)
+        }
+    }
+
+    suspend fun setRemindFullyCharged(enabled: Boolean) {
+        context.bandDataStore.edit { it[Keys.REMIND_FULLY_CHARGED] = enabled }
+    }
+
+    private fun clampMinuteOfDay(minute: Int): Int = ((minute % 1440) + 1440) % 1440
 
     // ------------------------------------------------------------------
     // 测量记录的编解码

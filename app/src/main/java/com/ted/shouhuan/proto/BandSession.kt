@@ -328,6 +328,103 @@ class BandSession(
     }
 
     // ------------------------------------------------------------------
+    // 手环本机设置（字节构造见 [BandSettings]）
+    //
+    // 这些设置写完即生效、手环自己持久化，但没有读取接口 —— 手环上现在是
+    // 什么状态只有手环知道。所以应用侧存一份偏好，连接成功后整套下发
+    // （见 BandService），用户当场改的当场也推一条。
+    // ------------------------------------------------------------------
+
+    private suspend fun requireAuthenticated() {
+        check(_authenticated.value) { "会话未认证，先连接手环" }
+    }
+
+    /** 写配置特征（00000003）—— 开关类设置都走这里。 */
+    private suspend fun writeConfiguration(data: ByteArray): Boolean {
+        requireAuthenticated()
+        if (!connection.hasCharacteristic(Gatt.CHAR_CONFIGURATION)) {
+            log("设置下发失败：没有配置特征（00000003）")
+            return false
+        }
+        val ok = connection.write(Gatt.CHAR_CONFIGURATION, data)
+        log("设置 ${BandSettings.hex(data)} -> ${if (ok) "已下发" else "下发失败"}")
+        return ok
+    }
+
+    /** 菜单/快捷方式顺序：payload 常超过单包上限，走 chunked 通道（类型号 2）。 */
+    private suspend fun applyDisplayItems(items: List<BandSettings.Item>, shortcuts: Boolean): Boolean {
+        requireAuthenticated()
+        if (!connection.hasCharacteristic(Gatt.CHAR_CHUNKED)) {
+            log("设置下发失败：没有 chunked 通道（00000020）")
+            return false
+        }
+        val data = BandSettings.displayItemsCommand(items, shortcuts)
+        val chunks = Notify.chunk(data, type = BandSettings.CHUNKED_TYPE_DISPLAY_ITEMS)
+        log(
+            "${if (shortcuts) "快捷方式" else "菜单"}顺序下发：${items.size} 项，" +
+                "payload ${data.size} 字节分 ${chunks.size} 包",
+        )
+        for ((index, chunk) in chunks.withIndex()) {
+            if (!connection.write(Gatt.CHAR_CHUNKED, chunk)) {
+                log("设置第 ${index + 1}/${chunks.size} 包写入失败，中止")
+                return false
+            }
+        }
+        return true
+    }
+
+    /** 手环上划菜单的显示顺序。 */
+    suspend fun applyMenuOrder(items: List<BandSettings.Item>): Boolean =
+        applyDisplayItems(items, shortcuts = false)
+
+    /** 表盘左右滑的快捷方式。 */
+    suspend fun applyShortcutOrder(items: List<BandSettings.Item>): Boolean =
+        applyDisplayItems(items, shortcuts = true)
+
+    /**
+     * 佩戴手。GB 写之前先在用户设置特征（00000008）上开一次 notify ——
+     * 手环会在这条特征上回执，照做但收完就关掉。
+     */
+    suspend fun applyWearLocation(left: Boolean): Boolean {
+        requireAuthenticated()
+        if (!connection.hasCharacteristic(Gatt.CHAR_USER_SETTINGS)) {
+            log("设置下发失败：没有用户设置特征（00000008）")
+            return false
+        }
+        connection.enableNotify(Gatt.CHAR_USER_SETTINGS)
+        val ok = connection.write(Gatt.CHAR_USER_SETTINGS, BandSettings.wearLocationCommand(left))
+        connection.enableNotify(Gatt.CHAR_USER_SETTINGS, enable = false)
+        log("佩戴手（${if (left) "左" else "右"}）-> ${if (ok) "已下发" else "下发失败"}")
+        return ok
+    }
+
+    /** 抬腕亮屏。 */
+    suspend fun applyDisplayOnLiftWrist(enabled: Boolean): Boolean =
+        writeConfiguration(BandSettings.displayOnLiftWristCommand(enabled))
+
+    /** 滑动解锁（锁屏后需上滑解锁）。 */
+    suspend fun applySwipeUnlock(enabled: Boolean): Boolean =
+        writeConfiguration(BandSettings.swipeUnlockCommand(enabled))
+
+    /** 断开提醒：手环与手机断开蓝牙时手环自己振动。 */
+    suspend fun applyDisconnectAlert(enabled: Boolean): Boolean =
+        writeConfiguration(BandSettings.disconnectAlertCommand(enabled))
+
+    /** 勿扰模式。 */
+    suspend fun applyDnd(
+        mode: BandSettings.DndMode,
+        startMinute: Int,
+        endMinute: Int,
+    ): Boolean = writeConfiguration(BandSettings.dndCommand(mode, startMinute, endMinute))
+
+    /** 夜间模式。 */
+    suspend fun applyNightMode(
+        mode: BandSettings.NightMode,
+        startMinute: Int,
+        endMinute: Int,
+    ): Boolean = writeConfiguration(BandSettings.nightModeCommand(mode, startMinute, endMinute))
+
+    // ------------------------------------------------------------------
     // 活动数据同步（含睡眠）—— 字节层见 ActivitySync
     // ------------------------------------------------------------------
 
