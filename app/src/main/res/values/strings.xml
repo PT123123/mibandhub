@@ -9,4 +9,11 @@
     <string name="nav_sleep">睡眠</string>
     <string name="nav_notify">通知</string>
     <string name="nav_device">设备</string>
+
+    <!-- 桌面控件 -->
+    <string name="widget_sleep_default_label">睡眠</string>
+    <string name="widget_sleep_label">睡眠时长</string>
+    <string name="widget_sleep_desc">昨晚睡眠时长，来自手环同步</string>
+    <string name="widget_sleep_hr_label">睡眠与心率</string>
+    <string name="widget_sleep_hr_desc">睡眠时长和近 24 小时心率曲线</string>
 </resources>

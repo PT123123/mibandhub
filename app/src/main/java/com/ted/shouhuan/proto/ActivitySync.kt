@@ -47,12 +47,17 @@ data class FetchStartInfo(
  * 流程（[com.ted.shouhuan.proto.BandSession.syncActivity] 编排）：
  *   ① 写 [startRequest]     → ② 应答 [parseStartResponse]
  *   ③ 写 0x02 取数          → ④ 00000005 收样本到 expectedBytes
- *   ⑤ 收到「传输完成」元数据 → ⑥ 解析样本、归并成夜 → ⑦ 写 0x03 ack（手环据此清掉本地）
+ *   ⑤ 收到「传输完成」元数据 → ⑥ 解析样本、归并成夜
+ *
+ * [CMD_ACK]（0x03，GB 发它让手环删掉已传数据）我们**从不发**：同步不清手环数据，
+ * 手环下次会把同一窗口重复推一遍，入库端按时间幂等去重。详见 syncActivity 的注释。
  */
 object ActivitySync {
 
     const val CMD_START_DATE = 0x01
     const val CMD_FETCH = 0x02
+
+    /** 手环收到才删已传数据 —— 协议里认识这个命令，但本项目不发（数据保留在手环上）。 */
     const val CMD_ACK = 0x03
     const val RESPONSE = 0x10
     const val SUCCESS = 0x01

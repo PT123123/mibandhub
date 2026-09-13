@@ -18,6 +18,8 @@ import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import java.io.ByteArrayOutputStream
@@ -27,8 +29,12 @@ import java.util.UUID
 
 /**
  * 「尽量多拉」的起点：手环只留最近 ~15-30 天的分钟样本，起点给到十年前，
- * 手环有多少给多少（起始应答会告诉总数）。已 ack 过的数据手环自己删了，
- * 所以实际传的永远是「上次同步以来」的新增。
+ * 手环有多少给多少（起始应答会告诉总数）。
+ *
+ * 注意同步**从不 ack**（见 [syncActivity]），手环不会因此删数据 ——
+ * 同一窗口每次都会原样重推，导入侧按醒来日期/样本时间戳幂等去重。
+ * 所以起点给得越远，每次重复传的就越多：自动拉取只用近 7 天窗口
+ * （[AUTO_SYNC_DAYS]，见 BandService），十年全量留给设备页的手动同步。
  */
 const val FULL_HISTORY_DAYS = 3650
 
@@ -128,6 +134,16 @@ class BandSession(
      * 中途没人订阅时也不能把消息丢掉（Flow 的 replay=0 就会丢）。
      */
     private val firmwareIn = Channel<ByteArray>(Channel.UNLIMITED)
+
+    /**
+     * 活动取数的互斥锁：同一时刻只跑一轮（自动拉取和设备页手动同步都可能触发，
+     * 各自的 Job 去重挡不住跨层并发）。[syncBusy] 给自动拉取当让路信号。
+     */
+    private val syncMutex = Mutex()
+
+    /** 活动同步是否正在进行（含排队等待）。 */
+    val syncBusy: Boolean
+        get() = syncMutex.isLocked
 
     private var collector: Job? = null
 
@@ -458,19 +474,27 @@ class BandSession(
         val sampleMinutes: Int,
         val since: ZonedDateTime,
         val nights: List<com.ted.shouhuan.data.SleepNightRecord>,
+        /** 原始分钟样本（含心率）—— 睡眠夜之外的二次加工（控件心率曲线）从这里来。 */
+        val samples: List<MinuteSample>,
     )
 
     /**
      * 从手环拉 [sinceDays] 天的活动明细并归并成睡眠夜。
      *
-     * 字节序列照 Gadgetbridge 的 AbstractFetchOperation 抄的：
+     * 字节序列照 Gadgetbridge 的 AbstractFetchOperation 抄的，但**砍掉了最后一步**：
      *
      * ```
      * ① 00000004 写 [0x01,0x01,时间8字节]     → 元数据应答 [0x10,0x01,状态,采样数,起点]
      * ② 00000004 写 [0x02]                    → 00000005 开始推样本（序号+8字节/分钟）
      * ③ 00000004 收 [0x10,0x02,0x01]（数据齐） → 解析 + 归并成夜
-     * ④ 00000004 写 [0x03] ack                → 手环收到才清本地，收不到就重复推
+     * ④ 00000004 写 [0x03] ack                → GB 发这步让手环删数据 —— 我们不发
      * ```
+     *
+     * 不 ack 是有意为之（2026-09-13，用户明确要求）：同步后的数据**留在手环上**，
+     * 下次拉取会把同一窗口重复推一遍。入库端是幂等的 —— 睡眠夜按醒来日期取
+     * 分钟数多的那条（[com.ted.shouhuan.data.BandPrefs.replaceSleepNight]），
+     * 心率分钟样本按时刻去重（[com.ted.shouhuan.data.BandPrefs.replaceHeartRateSamples]），
+     * 重复推送没有副作用。代价是窗口给得越远重复传输越多，调用方自己权衡窗口大小。
      *
      * 收包的两条硬规矩（都是丢过数据才懂的）：
      *   - 样本只从 [BandConnection.activityQueue] 这条无丢失队列取，且用
@@ -478,36 +502,41 @@ class BandSession(
      *     可能吞掉一条刚送达的消息，又是序号跳变；每次重新订阅 first 的间隙也一样。
      *   - 实测 7 天 ≈ 286 包 ≈ 3 秒（MTU 244），超时常量按最坏情况给宽，别收紧。
      *
-     * 序号跳变时整轮作废重来（最多 [SYNC_MAX_ROUNDS] 次）—— 手环还没收到 ack，
-     * 数据留在手环上，重发 ① 就能从头再要一遍。
+     * 序号跳变时整轮作废重来（最多 [SYNC_MAX_ROUNDS] 次）—— 手环没收到 ack，
+     * 数据一直留着，重发 ① 就能从头再要一遍。
+     *
+     * 并发：同一时刻只允许一轮取数（自动拉取和手动同步共用这条互斥锁，
+     * 后到的排队等），两层各查各的 busy 标记挡不住交叉触发。
      */
     suspend fun syncActivity(
         sinceDays: Int = 7,
         onProgress: (ActivitySyncProgress) -> Unit = {},
     ): ActivitySyncResult = withContext(Dispatchers.IO) {
-        check(_authenticated.value) { "会话未认证，先连接手环" }
-        val hasFetch = connection.hasCharacteristic(Gatt.CHAR_ACTIVITY_FETCH)
-        val hasData = connection.hasCharacteristic(Gatt.CHAR_ACTIVITY_SAMPLES)
-        if (!hasFetch || !hasData) {
-            throw IOException("手环没有活动数据特征（00000004=$hasFetch，00000005=$hasData）")
-        }
-        if (!connection.enableNotify(Gatt.CHAR_ACTIVITY_FETCH)) {
-            throw IOException("订阅活动元数据通道（00000004）失败")
-        }
+        syncMutex.withLock {
+            check(_authenticated.value) { "会话未认证，先连接手环" }
+            val hasFetch = connection.hasCharacteristic(Gatt.CHAR_ACTIVITY_FETCH)
+            val hasData = connection.hasCharacteristic(Gatt.CHAR_ACTIVITY_SAMPLES)
+            if (!hasFetch || !hasData) {
+                throw IOException("手环没有活动数据特征（00000004=$hasFetch，00000005=$hasData）")
+            }
+            if (!connection.enableNotify(Gatt.CHAR_ACTIVITY_FETCH)) {
+                throw IOException("订阅活动元数据通道（00000004）失败")
+            }
 
-        val since = ZonedDateTime.now().minusDays(sinceDays.toLong())
-        var lastJump: SampleCounterJump? = null
-        repeat(SYNC_MAX_ROUNDS) { attempt ->
-            try {
-                return@withContext fetchActivityRound(since, connection.activityQueue(), onProgress)
-            } catch (e: SampleCounterJump) {
-                lastJump = e
-                if (attempt < SYNC_MAX_ROUNDS - 1) {
-                    log("⚠ ${e.message} —— 整轮作废，自动重试（${attempt + 1}/${SYNC_MAX_ROUNDS - 1}）")
+            val since = ZonedDateTime.now().minusDays(sinceDays.toLong())
+            var lastJump: SampleCounterJump? = null
+            repeat(SYNC_MAX_ROUNDS) { attempt ->
+                try {
+                    return@withContext fetchActivityRound(since, connection.activityQueue(), onProgress)
+                } catch (e: SampleCounterJump) {
+                    lastJump = e
+                    if (attempt < SYNC_MAX_ROUNDS - 1) {
+                        log("⚠ ${e.message} —— 整轮作废，自动重试（${attempt + 1}/${SYNC_MAX_ROUNDS - 1}）")
+                    }
                 }
             }
+            throw (lastJump ?: IllegalStateException("取数循环退出但没有任何结果，不应发生"))
         }
-        throw (lastJump ?: IllegalStateException("取数循环退出但没有任何结果，不应发生"))
     }
 
     /**
@@ -533,7 +562,7 @@ class BandSession(
         var lastCounter = -1
         var lastLoggedBytes = 0
 
-        suspend fun processAndAck(): ActivitySyncResult {
+        suspend fun processSamples(): ActivitySyncResult {
             val info = startInfo ?: throw IOException("没有起始应答就想处理数据？不可能走到这")
             val bytes = buffer.toByteArray()
             if (bytes.size % ActivitySync.SAMPLE_SIZE != 0) {
@@ -545,18 +574,14 @@ class BandSession(
             // kind 分布留着诊断用：睡眠样本的类型号（预期 0x78）一眼可见
             val kindCounts = samples.groupingBy { it.kind }.eachCount().entries.sortedByDescending { it.value }
             log("   kind 分布：${kindCounts.joinToString(" ") { "0x%02x×%d".format(it.key, it.value) }}")
-            // ack 写失败不影响结果 —— 顶多手环下次把同样的数据再推一遍
-            runCatching {
-                if (!connection.write(Gatt.CHAR_ACTIVITY_FETCH, byteArrayOf(ActivitySync.CMD_ACK.toByte()))) {
-                    log("⚠ 写 ack 失败（数据已到手，不影响本次结果）")
-                } else {
-                    log("⑥ 已 ack，等手环确认")
-                }
-            }
+            // 不写 0x03 ack —— 手环保留数据，下次同一窗口会重复推；
+            // 入库按醒来日期/样本时刻幂等去重，重复没有副作用（见 syncActivity 注释）。
+            log("⑥ 不写 ack，数据留在手环上")
             return ActivitySyncResult(
                 sampleMinutes = samples.size,
                 since = since,
                 nights = nights,
+                samples = samples,
             )
         }
 
@@ -602,7 +627,7 @@ class BandSession(
                                 ?: throw IOException("起始应答解析失败：${hexOf(value)}")
                             if (startInfo.expectedBytes == 0) {
                                 log("② 手环说这个时间之后没有新数据")
-                                result = processAndAck()
+                                result = processSamples()
                             } else {
                                 log(
                                     "② 手环有 ${startInfo.expectedBytes / ActivitySync.SAMPLE_SIZE}" +
@@ -625,11 +650,7 @@ class BandSession(
                                 throw IOException("样本传输失败（status=0x%02x）".format(value[2].toInt()))
                             }
                             log("④ 手环报告数据齐了：收到 ${buffer.size()} 字节")
-                            result = processAndAck()
-                        }
-
-                        ActivitySync.CMD_ACK -> {
-                            log("⑦ 手环确认 ack，同步收尾")
+                            result = processSamples()
                         }
 
                         else -> log("（忽略未识别的元数据命令 0x%02x）".format(value[1].toInt()))
