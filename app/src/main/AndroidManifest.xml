@@ -106,6 +106,33 @@
                 <action android:name="android.service.notification.NotificationListenerService" />
             </intent-filter>
         </service>
+
+        <!-- 桌面控件：1×1 睡眠时长 / 1×2 睡眠+心率曲线。标准 RemoteViews 小部件，
+             小米澎湃OS 和联想 ZUI 的桌面都认这一种。系统投递的 APPWIDGET_UPDATE
+             就够用，exported=false 即可。 -->
+        <receiver
+            android:name=".widget.SleepWidgetProvider"
+            android:exported="false"
+            android:label="@string/widget_sleep_label">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+            </intent-filter>
+            <meta-data
+                android:name="android.appwidget.provider"
+                android:resource="@xml/widget_sleep_1x1_info" />
+        </receiver>
+
+        <receiver
+            android:name=".widget.SleepHeartWidgetProvider"
+            android:exported="false"
+            android:label="@string/widget_sleep_hr_label">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+            </intent-filter>
+            <meta-data
+                android:name="android.appwidget.provider"
+                android:resource="@xml/widget_sleep_hr_1x2_info" />
+        </receiver>
     </application>
 
 </manifest>

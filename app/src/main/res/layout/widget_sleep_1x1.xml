@@ -1,0 +1,44 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 1×1 睡眠时长控件。远程视图只能用白名单控件；时长交给 autoSize 缩放，
+     五列网格的窄格子里也放得下「7小时12分」。 -->
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/widget_sleep_root"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="@drawable/widget_bg"
+    android:gravity="center"
+    android:orientation="vertical"
+    android:padding="10dp">
+
+    <ImageView
+        android:layout_width="22dp"
+        android:layout_height="22dp"
+        android:contentDescription="@null"
+        android:src="@drawable/ic_widget_moon" />
+
+    <TextView
+        android:id="@+id/widget_sleep_value"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="6dp"
+        android:autoSizeMaxTextSize="15sp"
+        android:autoSizeMinTextSize="9sp"
+        android:autoSizeTextType="uniform"
+        android:gravity="center"
+        android:maxLines="1"
+        android:text="—"
+        android:textColor="@color/widget_text_primary"
+        android:textStyle="bold" />
+
+    <TextView
+        android:id="@+id/widget_sleep_label"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="2dp"
+        android:ellipsize="end"
+        android:gravity="center"
+        android:maxLines="1"
+        android:text="@string/widget_sleep_default_label"
+        android:textColor="@color/widget_text_secondary"
+        android:textSize="10sp" />
+</LinearLayout>

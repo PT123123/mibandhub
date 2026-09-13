@@ -33,6 +33,13 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    override fun onResume() {
+        super.onResume()
+        // 从后台切回也算「打开应用」：让服务再跑一遍自动拉取的判断
+        // （服务里带 10 分钟去抖，反复进出不会连番轰炸手环）。
+        BandService.notifyAppOpen(this)
+    }
+
     /** Android 13+ 常驻通知也要运行时权限；不给的话服务照样跑，只是通知收进抽屉。 */
     private fun ensureNotificationPermission() {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) return
