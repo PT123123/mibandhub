@@ -33,6 +33,9 @@ class BandPrefs(private val context: Context) {
         // ---- 睡眠历史 ----
         val SLEEP_HISTORY = stringPreferencesKey("sleep_history")
 
+        // ---- 心率分钟样本（桌面控件的心率曲线数据源）----
+        val HEART_RATE_SERIES = stringPreferencesKey("heart_rate_series")
+
         /** 手环同步来的真实睡眠是否已经落过盘 —— 决定演示种子还能不能播种。 */
         val SLEEP_REAL_SYNCED = booleanPreferencesKey("sleep_real_synced")
 
@@ -179,11 +182,19 @@ class BandPrefs(private val context: Context) {
         nights.forEach { replaceSleepNight(it) }
     }
 
-    /** 写入/覆盖一晚记录（真实同步接通后用；同一天重复写按覆盖处理）。 */
+    /**
+     * 写入/覆盖一晚记录（真实同步接通后用）。
+     *
+     * 同一醒来日只留一条，两份记录取**总分钟数多的** —— 不是简单地「新的覆盖旧的」：
+     * 同步不删手环数据后，拉取窗口的起点可能恰好落在某夜睡眠中间（比如凌晨打开 app
+     * 时 7 天窗口的边界），只推来半截夜；手环没删过数据，窗口起点再早一轮时推来的
+     * 必然是完整夜。半截的样本数一定比完整的少，取多者即可保证完整的记录不被冲掉。
+     */
     suspend fun replaceSleepNight(record: SleepNightRecord) {
         context.bandDataStore.edit { prefs ->
             val next = (listOf(record) + decodeSleepHistory(prefs[Keys.SLEEP_HISTORY]))
-                .distinctBy { it.epochDay }
+                .groupBy { it.epochDay }
+                .map { (_, sameDay) -> sameDay.maxBy { it.totalMinutes } }
                 .sortedByDescending { it.epochDay }
             prefs[Keys.SLEEP_HISTORY] = encodeSleepHistory(next)
         }
@@ -218,6 +229,57 @@ class BandPrefs(private val context: Context) {
                 awakeMinutes = nums[8].toInt(),
             )
         }.sortedByDescending { it.epochDay }.toList()
+    }
+
+    // ------------------------------------------------------------------
+    // 心率分钟样本
+    //
+    // 唯一来源同样是手环同步：分钟样本里 heartRate > 0 的分钟（DeviceViewModel
+    // 落盘）。只给桌面控件的心率曲线用，应用内界面暂时不消费它。
+    //
+    // 只留最近 [HR_KEEP_DAYS] 天：曲线只画近 24 小时，多留一天是给
+    // 「几天没同步」的场景垫底；再多是白占 DataStore（全量 ~60KB 级别）。
+    // ------------------------------------------------------------------
+
+    /** 心率样本的保留天数：曲线窗口 24 小时 + 一天余量。 */
+    private val hrKeepDays = 3L
+
+    /** 全部心率样本，按时间升序。 */
+    val heartRateSamples: Flow<List<HeartRateSample>> =
+        context.bandDataStore.data.map { decodeHeartRate(it[Keys.HEART_RATE_SERIES]) }
+
+    /**
+     * 用一批新样本替换同刻旧值后整体入库（同刻重复推送以新的为准），
+     * 顺手裁掉 [HR_KEEP_DAYS] 天之前的存量。
+     */
+    suspend fun replaceHeartRateSamples(samples: List<HeartRateSample>) {
+        context.bandDataStore.edit { prefs ->
+            val cutoff = System.currentTimeMillis() - hrKeepDays * 24 * 60 * 60 * 1000L
+            val merged = (samples.asSequence() + decodeHeartRate(prefs[Keys.HEART_RATE_SERIES]))
+                .filter { it.atMillis >= cutoff && it.bpm in 20..250 }
+                .distinctBy { it.atMillis }
+                .sortedBy { it.atMillis }
+                .toList()
+            if (merged.isEmpty()) {
+                prefs.remove(Keys.HEART_RATE_SERIES)
+            } else {
+                prefs[Keys.HEART_RATE_SERIES] = encodeHeartRate(merged)
+            }
+        }
+    }
+
+    private fun encodeHeartRate(list: List<HeartRateSample>): String =
+        list.joinToString("\n") { "${it.atMillis},${it.bpm}" }
+
+    private fun decodeHeartRate(raw: String?): List<HeartRateSample> {
+        if (raw.isNullOrBlank()) return emptyList()
+        return raw.lineSequence().mapNotNull { line ->
+            val p = line.split(',')
+            if (p.size != 2) return@mapNotNull null
+            val at = p[0].toLongOrNull() ?: return@mapNotNull null
+            val bpm = p[1].toIntOrNull() ?: return@mapNotNull null
+            HeartRateSample(at, bpm)
+        }.toList()
     }
 
     // ------------------------------------------------------------------

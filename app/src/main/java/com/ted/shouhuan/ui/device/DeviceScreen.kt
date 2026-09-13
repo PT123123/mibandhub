@@ -356,7 +356,9 @@ fun DeviceScreen(vm: DeviceViewModel, onPair: () -> Unit) {
         // ---- 数据同步：拉活动明细 → 解析睡眠 → 落本地 ----
         SectionCard(title = "数据同步", accent = StepBlue) {
             Text(
-                "从手环拉取全部保存的活动与睡眠明细（手环只留最近 15~30 天，同步后即从手环清除），解析出每晚分期写进本地。",
+                "从手环拉取活动与睡眠明细，解析出每晚分期写进本地（手环只留最近 15~30 天）。" +
+                    "同步只读不删 —— 数据留在手环上，重复推送会按日期自动去重。" +
+                    "打开 app 时也会自动拉近 7 天，这里的按钮拉手环保留的全部。",
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )

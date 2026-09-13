@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 1×2 睡眠 + 心率控件的元数据：1 列宽 × 2 行高。 -->
+<appwidget-provider xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools"
+    android:minWidth="40dp"
+    android:minHeight="110dp"
+    android:targetCellWidth="1"
+    android:targetCellHeight="2"
+    android:resizeMode="horizontal|vertical"
+    android:widgetCategory="home_screen"
+    android:updatePeriodMillis="1800000"
+    android:initialLayout="@layout/widget_sleep_hr_1x2"
+    android:previewLayout="@layout/widget_sleep_hr_1x2"
+    android:description="@string/widget_sleep_hr_desc"
+    tools:targetApi="s" />
