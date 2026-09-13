@@ -1,4 +1,11 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <color name="ic_launcher_background">#0E1116</color>
+
+    <!-- 桌面控件：近黑半透明卡片，配色对齐应用内的深夜基调（InkSurface / InkText）。
+         深浅壁纸下都用同一份，不需要 values-night。 -->
+    <color name="widget_bg">#E6141A21</color>
+    <color name="widget_text_primary">#E8EEF5</color>
+    <color name="widget_text_secondary">#8FA0B3</color>
+    <color name="widget_divider">#2A3542</color>
 </resources>

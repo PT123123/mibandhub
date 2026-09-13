@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 控件卡片底：近黑的半透明圆角，深浅壁纸下都用同一份，
+     跟应用内「深夜里的表盘」基调一致。 -->
+<shape xmlns:android="http://schemas.android.com/apk/res/android"
+    android:shape="rectangle">
+    <corners android:radius="16dp" />
+    <solid android:color="@color/widget_bg" />
+</shape>

@@ -6,6 +6,18 @@ enum class SleepStage { AWAKE, LIGHT, DEEP, REM }
 /** 心率采样点。minuteOfDay 是当天的第几分钟，便于直接铺在时间轴上。 */
 data class HeartRatePoint(val minuteOfDay: Int, val bpm: Int)
 
+/**
+ * 一条分钟级心率样本，[BandPrefs] 持久化（桌面控件的心率曲线就吃这份数据）。
+ *
+ * 来源是手环活动同步：分钟样本里 heartRate > 0 的那些分钟。epochMillis 用
+ * 本地时区换算，和睡眠夜的 epochDay 口径一致 —— 手环时钟连上时同步过。
+ */
+data class HeartRateSample(
+    /** epoch 毫秒。 */
+    val atMillis: Long,
+    val bpm: Int,
+)
+
 data class SleepStageShare(val stage: SleepStage, val minutes: Int)
 
 /**

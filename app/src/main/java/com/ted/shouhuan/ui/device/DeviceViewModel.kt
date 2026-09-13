@@ -16,6 +16,7 @@ import com.ted.shouhuan.data.BandPrefs
 import com.ted.shouhuan.data.HealthConnectSleepSource
 import com.ted.shouhuan.proto.BandSettings
 import com.ted.shouhuan.proto.FULL_HISTORY_DAYS
+import com.ted.shouhuan.service.ActivityDataImport
 import com.ted.shouhuan.service.BandSessionProvider
 import com.ted.shouhuan.service.HeartMeasureController
 import kotlinx.coroutines.Job
@@ -226,8 +227,11 @@ class DeviceViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     /**
-     * 从手环同步全部可拉的活动明细，解析成睡眠夜写进本地。
-     * 手环只留最近 ~15-30 天且同步（ack）即删，起点给十年前 = 有多少拉多少。
+     * 从手环同步全部可拉的活动明细，解析成睡眠夜写进本地（设备页的「同步手环数据」按钮）。
+     *
+     * 同步不清手环数据（从不 ack，手环收到 ack 才删），所以同一窗口会重复推，
+     * 入库按醒来日期/样本时刻幂等去重；起点给十年前 = 手环保留多少拉多少，
+     * 比 app 打开时的自动拉取（近 7 天，见 BandService）拉得更远也更久。
      * 没连着就先走一遍连接流程；测心率进行中不让动（共用一条 GATT，互相干扰）。
      */
     fun syncSleep() {
@@ -262,7 +266,7 @@ class DeviceViewModel(app: Application) : AndroidViewModel(app) {
                 val result = session.syncActivity(sinceDays = FULL_HISTORY_DAYS) { p ->
                     _sleepSync.value = SleepSyncPhase.Syncing(p.receivedBytes, p.expectedBytes)
                 }
-                prefs.importSleepNights(result.nights)
+                ActivityDataImport.import(getApplication(), prefs, result.nights, result.samples)
                 _sleepSync.value = SleepSyncPhase.Done(result.nights.size, result.sampleMinutes)
             } catch (e: Exception) {
                 _sleepSync.value = SleepSyncPhase.Failed(e.message ?: e.javaClass.simpleName)
@@ -275,7 +279,7 @@ class DeviceViewModel(app: Application) : AndroidViewModel(app) {
 
     /**
      * 从健康连接导睡眠（小米运动健康等 App 同步进去的数据）。
-     * 与手环同步共用 [_sleepSync] 状态和按天合并的入库路径。
+     * 与手环同步共用 [_sleepSync] 状态和统一的落库入口（[ActivityDataImport]）。
      */
     fun importSleepFromHealthConnect() {
         if (syncing?.isActive == true) return
@@ -285,7 +289,7 @@ class DeviceViewModel(app: Application) : AndroidViewModel(app) {
                 val nights = healthConnect.readNights(
                     ZonedDateTime.now().minusDays(FULL_HISTORY_DAYS.toLong()),
                 )
-                prefs.importSleepNights(nights)
+                ActivityDataImport.import(getApplication(), prefs, nights)
                 _sleepSync.value =
                     SleepSyncPhase.Done(nights.size, nights.sumOf { it.totalMinutes })
             } catch (e: Exception) {
