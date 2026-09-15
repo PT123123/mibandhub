@@ -55,6 +55,10 @@ class BandPrefs(private val context: Context) {
         val NOTIFY_VIBRATION = stringPreferencesKey("notify_vibration")
         val APP_RULES = stringPreferencesKey("app_rules")
 
+        // ---- 睡眠监测（手机侧开关）：控制应用打开时是否自动拉取睡眠。手环睡眠是
+        // 硬件常开的，协议层没有关闭命令，所以这里只管应用自己的自动同步行为。----
+        val SLEEP_MONITOR = booleanPreferencesKey("sleep_monitor")
+
         // ---- 手环本机设置（连接成功后整套下发，字节协议见 proto/BandSettings）----
         val SET_WEAR_LEFT = booleanPreferencesKey("band_wear_left")
         val SET_LIFT_WAKE = booleanPreferencesKey("band_lift_wake")
@@ -395,6 +399,10 @@ class BandPrefs(private val context: Context) {
     // 首次连接就整套下发也只是把手环写回它本来就在的状态。
     // ------------------------------------------------------------------
 
+    /** 睡眠监测（手机侧开关）：打开时应用会在打开后自动拉取近几天睡眠，默认开。 */
+    val sleepMonitoring: Flow<Boolean> =
+        context.bandDataStore.data.map { it[Keys.SLEEP_MONITOR] ?: true }
+
     /** 佩戴手，true = 左手（出厂默认）。 */
     val wearLeft: Flow<Boolean> = context.bandDataStore.data.map { it[Keys.SET_WEAR_LEFT] ?: true }
 
@@ -447,6 +455,10 @@ class BandPrefs(private val context: Context) {
 
     suspend fun setWearLeft(left: Boolean) {
         context.bandDataStore.edit { it[Keys.SET_WEAR_LEFT] = left }
+    }
+
+    suspend fun setSleepMonitoring(enabled: Boolean) {
+        context.bandDataStore.edit { it[Keys.SLEEP_MONITOR] = enabled }
     }
 
     suspend fun setLiftWake(enabled: Boolean) {

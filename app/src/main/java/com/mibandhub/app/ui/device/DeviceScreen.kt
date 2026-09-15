@@ -103,6 +103,7 @@ fun DeviceScreen(vm: DeviceViewModel, onPair: () -> Unit) {
 
     // ---- 手环设置 ----
     val wearLeft by vm.wearLeft.collectAsStateWithLifecycle()
+    val sleepMonitoring by vm.sleepMonitoring.collectAsStateWithLifecycle()
     val liftWake by vm.liftWake.collectAsStateWithLifecycle()
     val swipeUnlock by vm.swipeUnlock.collectAsStateWithLifecycle()
     val disconnectAlert by vm.disconnectAlert.collectAsStateWithLifecycle()
@@ -188,6 +189,12 @@ fun DeviceScreen(vm: DeviceViewModel, onPair: () -> Unit) {
         } else {
             Toast.makeText(context, "没装小米运动健康（$MI_FITNESS_PACKAGE）", Toast.LENGTH_LONG).show()
         }
+    }
+
+    // 小米运动健康是否安装：装了就得提醒「睡眠会被它抢先同步清掉」。装没装不随页面存活变，
+    // 记住了即可。
+    val miHealthInstalled = remember {
+        context.packageManager.getLaunchIntentForPackage(MI_FITNESS_PACKAGE) != null
     }
 
     Column(
@@ -361,6 +368,27 @@ fun DeviceScreen(vm: DeviceViewModel, onPair: () -> Unit) {
                     "打开 app 时也会自动拉近 7 天，这里的按钮拉手环保留的全部。",
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            if (miHealthInstalled) {
+                Spacer(Modifier.height(12.dp))
+                NoticeBanner(
+                    title = "检测到「小米运动健康」已安装",
+                    tone = NotifyAmber,
+                    detail = "它会在后台抢先同步手环并把睡眠数据清掉 —— 你一觉刚睡完它先拉走了，这里就再也拿不到那晚数据（睡眠会显示 0 晚）。",
+                    hint = "用本应用同步睡眠时，关掉小米运动健康的「后台自动同步」/自启动，或者只在需要时才打开它。",
+                )
+            }
+            Spacer(Modifier.height(12.dp))
+            SwitchSettingRow(
+                title = "睡眠监测",
+                subtitle = "打开后，打开应用会自动拉最近几晚睡眠；手环睡眠本身是常开的，关掉只会停掉应用自动拉取，手动同步照常可用。",
+                checked = sleepMonitoring,
+                onCheckedChange = { vm.setSleepMonitoring(it) },
+                accent = StepBlue,
+            )
+            HorizontalDivider(
+                Modifier.padding(vertical = 10.dp),
+                color = MaterialTheme.colorScheme.outline.copy(alpha = 0.35f),
             )
             Spacer(Modifier.height(12.dp))
             Button(

@@ -335,6 +335,11 @@ class BandService : Service() {
         lastAutoSyncAt = now
         scope.launch {
             try {
+                // 睡眠监测开关关掉时不做自动拉取（设备页的手动同步照常可用）。
+                if (prefs.sleepMonitoring.firstOrNull() == false) {
+                    Log.d(TAG, "睡眠监测已关闭，跳过自动拉取")
+                    return@launch
+                }
                 val mac = prefs.mac.first()
                 val key = prefs.authKey.first()
                 if (mac.isNullOrBlank() || key.isNullOrBlank()) return@launch
