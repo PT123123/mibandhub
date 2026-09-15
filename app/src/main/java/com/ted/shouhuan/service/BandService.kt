@@ -19,6 +19,7 @@ import com.ted.shouhuan.MainActivity
 import com.ted.shouhuan.R
 import com.ted.shouhuan.ShouhuanApp
 import com.ted.shouhuan.ble.ConnectionState
+import com.ted.shouhuan.data.BandNotification
 import com.ted.shouhuan.data.BandPrefs
 import com.ted.shouhuan.data.SleepNightRecord
 import com.ted.shouhuan.proto.BandSettings
@@ -447,8 +448,22 @@ class BandService : Service() {
             return
         }
         scope.launch {
-            runCatching { session.sendNotification(BAND_APP_NAME, title, body) }
+            val sent = runCatching { session.sendNotification(BAND_APP_NAME, title, body) }
                 .onFailure { Log.w(TAG, "手环提醒发送失败：$title", it) }
+                .getOrDefault(false)
+            if (sent) {
+                val now = java.time.LocalTime.now()
+                prefs.recordNotification(
+                    BandNotification(
+                        appName = BAND_APP_NAME,
+                        title = title,
+                        body = body,
+                        timeLabel = "%02d:%02d".format(now.hour, now.minute),
+                        forwarded = true,
+                    ),
+                )
+                Log.d(TAG, "手环提醒已发送：$title")
+            }
         }
     }
 

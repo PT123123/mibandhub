@@ -437,6 +437,14 @@ private fun TimePickButton(label: String, modifier: Modifier = Modifier, onClick
 @Composable
 private fun RecentCard(recent: List<BandNotification>) {
     SectionCard(title = "最近推送", accent = NotifyAmber) {
+        if (recent.isEmpty()) {
+            Text(
+                "还没有推送记录。发送一条「测试通知」，或等手环提醒（低电量/充满/连接）触发后，会在这里显示真实记录。",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            return@SectionCard
+        }
         recent.forEachIndexed { index, item ->
             if (index > 0) Spacer(Modifier.height(14.dp))
             Row(Modifier.fillMaxWidth()) {
