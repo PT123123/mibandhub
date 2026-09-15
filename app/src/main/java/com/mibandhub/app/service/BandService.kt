@@ -19,6 +19,7 @@ import com.mibandhub.app.MainActivity
 import com.mibandhub.app.R
 import com.mibandhub.app.ShouhuanApp
 import com.mibandhub.app.ble.ConnectionState
+import com.mibandhub.app.data.BandNotification
 import com.mibandhub.app.data.BandPrefs
 import com.mibandhub.app.data.SleepNightRecord
 import com.mibandhub.app.proto.BandSettings
@@ -447,8 +448,22 @@ class BandService : Service() {
             return
         }
         scope.launch {
-            runCatching { session.sendNotification(BAND_APP_NAME, title, body) }
+            val sent = runCatching { session.sendNotification(BAND_APP_NAME, title, body) }
                 .onFailure { Log.w(TAG, "手环提醒发送失败：$title", it) }
+                .getOrDefault(false)
+            if (sent) {
+                val now = java.time.LocalTime.now()
+                prefs.recordNotification(
+                    BandNotification(
+                        appName = BAND_APP_NAME,
+                        title = title,
+                        body = body,
+                        timeLabel = "%02d:%02d".format(now.hour, now.minute),
+                        forwarded = true,
+                    ),
+                )
+                Log.d(TAG, "手环提醒已发送：$title")
+            }
         }
     }
 
