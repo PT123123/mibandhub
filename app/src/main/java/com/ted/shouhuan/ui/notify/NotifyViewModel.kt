@@ -89,11 +89,11 @@ class NotifyViewModel(app: Application) : AndroidViewModel(app) {
         prefs.appRules.stateIn(viewModelScope, SharingStarted.Eagerly, DemoData.appRules())
 
     /**
-     * 最近推送。通知读取服务（NotificationListener）接通后这里换成真实捕获；
-     * 现在放演示条目 + 发到手环的测试通知。
+     * 最近推送：真实推到手环的通知记录（持久化在 [BandPrefs]）。除了测试通知，
+     * 手环提醒（低电量/充满/连接）也会记进来。无记录时为空 —— 不放演示条目。
      */
-    private val _recent = MutableStateFlow(DemoData.notifications())
-    val recent: StateFlow<List<BandNotification>> = _recent.asStateFlow()
+    val recent: StateFlow<List<BandNotification>> =
+        prefs.recentNotifications.stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
 
     /** 测试通知的进行状态（连接 → 发送 → 结果）。 */
     private val _testSend = MutableStateFlow<TestSendState>(TestSendState.Idle)
@@ -250,9 +250,9 @@ class NotifyViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     /** 测试结果也记进「最近推送」，成功/失败一目了然。 */
-    private fun rememberTestInRecent(forwarded: Boolean) {
+    private suspend fun rememberTestInRecent(forwarded: Boolean) {
         val now = LocalDateTime.ofInstant(java.time.Instant.now(), ZoneId.systemDefault())
-        _recent.value = listOf(
+        prefs.recordNotification(
             BandNotification(
                 appName = "手环管家",
                 title = "测试通知",
@@ -264,7 +264,7 @@ class NotifyViewModel(app: Application) : AndroidViewModel(app) {
                 timeLabel = "%02d:%02d".format(now.hour, now.minute),
                 forwarded = forwarded,
             ),
-        ) + _recent.value
+        )
     }
 
     private fun launch(block: suspend () -> Unit) {
