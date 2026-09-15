@@ -10,6 +10,8 @@ import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
+import org.json.JSONArray
+import org.json.JSONObject
 
 private val Context.bandDataStore: DataStore<Preferences> by preferencesDataStore(name = "band")
 
@@ -54,6 +56,9 @@ class BandPrefs(private val context: Context) {
         val NOTIFY_INCLUDE_BODY = booleanPreferencesKey("notify_include_body")
         val NOTIFY_VIBRATION = stringPreferencesKey("notify_vibration")
         val APP_RULES = stringPreferencesKey("app_rules")
+
+        /** 真实推到手环的通知记录（最近推送页），新的在前。 */
+        val RECENT_NOTIFICATIONS = stringPreferencesKey("recent_notifications")
 
         // ---- 睡眠监测（手机侧开关）：控制应用打开时是否自动拉取睡眠。手环睡眠是
         // 硬件常开的，协议层没有关闭命令，所以这里只管应用自己的自动同步行为。----
@@ -248,6 +253,9 @@ class BandPrefs(private val context: Context) {
     /** 心率样本的保留天数：曲线窗口 24 小时 + 一天余量。 */
     private val hrKeepDays = 3L
 
+    /** 「最近推送」最多留的记录条数。 */
+    private val recentKeep = 20
+
     /** 全部心率样本，按时间升序。 */
     val heartRateSamples: Flow<List<HeartRateSample>> =
         context.bandDataStore.data.map { decodeHeartRate(it[Keys.HEART_RATE_SERIES]) }
@@ -329,6 +337,10 @@ class BandPrefs(private val context: Context) {
             decodeAppRules(prefs[Keys.APP_RULES]) ?: DemoData.appRules()
         }
 
+    /** 真实推到手环的通知记录，新的在前（无记录时为空，不放演示条目）。 */
+    val recentNotifications: Flow<List<BandNotification>> =
+        context.bandDataStore.data.map { decodeRecentNotifications(it[Keys.RECENT_NOTIFICATIONS]) }
+
     suspend fun setDndEnabled(enabled: Boolean) {
         context.bandDataStore.edit { it[Keys.DND_ENABLED] = enabled }
     }
@@ -375,6 +387,50 @@ class BandPrefs(private val context: Context) {
                 "${it.packageName}|${it.appName}|${if (it.enabled) 1 else 0}"
             }
         }
+    }
+
+    /**
+     * 记一条真实推到手环的通知，新的在前，只留最近 [recentKeep] 条。
+     *
+     * title/body 里可能出现任意字符（含换行、逗号），用 org.json 编码最稳，
+     * 不必像睡眠史那样赌内容里没有分隔符。
+     */
+    suspend fun recordNotification(notification: BandNotification) {
+        context.bandDataStore.edit { prefs ->
+            val next = (listOf(notification) + decodeRecentNotifications(prefs[Keys.RECENT_NOTIFICATIONS]))
+                .take(recentKeep)
+            prefs[Keys.RECENT_NOTIFICATIONS] = encodeRecentNotifications(next)
+        }
+    }
+
+    private fun encodeRecentNotifications(list: List<BandNotification>): String =
+        JSONArray().apply {
+            list.forEach { n ->
+                put(
+                    JSONObject().put("app", n.appName)
+                        .put("title", n.title)
+                        .put("body", n.body)
+                        .put("time", n.timeLabel)
+                        .put("ok", n.forwarded),
+                )
+            }
+        }.toString()
+
+    private fun decodeRecentNotifications(raw: String?): List<BandNotification> {
+        if (raw.isNullOrBlank()) return emptyList()
+        return runCatching {
+            val arr = JSONArray(raw)
+            (0 until arr.length()).map { i ->
+                val o = arr.getJSONObject(i)
+                BandNotification(
+                    appName = o.getString("app"),
+                    title = o.getString("title"),
+                    body = o.getString("body"),
+                    timeLabel = o.getString("time"),
+                    forwarded = o.getBoolean("ok"),
+                )
+            }
+        }.getOrElse { emptyList() }
     }
 
     private fun decodeAppRules(raw: String?): List<AppRule>? {
