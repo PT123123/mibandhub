@@ -107,6 +107,7 @@ fun DeviceScreen(vm: DeviceViewModel, onPair: () -> Unit) {
     val liftWake by vm.liftWake.collectAsStateWithLifecycle()
     val swipeUnlock by vm.swipeUnlock.collectAsStateWithLifecycle()
     val disconnectAlert by vm.disconnectAlert.collectAsStateWithLifecycle()
+    val autoHeartRate by vm.autoHeartRate.collectAsStateWithLifecycle()
     val dndMode by vm.dndMode.collectAsStateWithLifecycle()
     val dndStart by vm.dndStart.collectAsStateWithLifecycle()
     val dndEnd by vm.dndEnd.collectAsStateWithLifecycle()
@@ -508,6 +509,19 @@ fun DeviceScreen(vm: DeviceViewModel, onPair: () -> Unit) {
                 subtitle = "手环与手机断开蓝牙时，手环自己振动提醒（手环侧功能，断开后才生效）",
                 checked = disconnectAlert,
                 onCheckedChange = { vm.setDisconnectAlert(it) },
+                accent = Mint,
+            )
+            HorizontalDivider(
+                Modifier.padding(vertical = 8.dp),
+                color = MaterialTheme.colorScheme.outline.copy(alpha = 0.35f),
+            )
+            SwitchSettingRow(
+                title = "自动心率检测",
+                subtitle = "官方「检测模式」里的自动心率检测：开着时手环全天定时探测心率，" +
+                    "本应用按 30 分钟一次的档位下发（默认关）。关掉最省手环电，" +
+                    "代价是手环不再产生连续心率分钟数据，桌面控件的心率曲线会空。",
+                checked = autoHeartRate,
+                onCheckedChange = { vm.setAutoHeartRate(it) },
                 accent = Mint,
             )
             HorizontalDivider(
