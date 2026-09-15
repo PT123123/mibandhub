@@ -524,10 +524,11 @@ class BandSession(
             }
 
             val since = ZonedDateTime.now().minusDays(sinceDays.toLong())
+            val sampleQueue = connection.activityQueue()
             var lastJump: SampleCounterJump? = null
             repeat(SYNC_MAX_ROUNDS) { attempt ->
                 try {
-                    return@withContext fetchActivityRound(since, connection.activityQueue(), onProgress)
+                    return@withContext fetchActivityBlocks(since, sampleQueue, onProgress)
                 } catch (e: SampleCounterJump) {
                     lastJump = e
                     if (attempt < SYNC_MAX_ROUNDS - 1) {
@@ -537,6 +538,40 @@ class BandSession(
             }
             throw (lastJump ?: IllegalStateException("取数循环退出但没有任何结果，不应发生"))
         }
+    }
+
+    /**
+     * 把 [since] 之后的数据**重复抓完**：手环一次应答只给一段时间（实测约 3~8 天）的
+     * 样本，超出就要求从上一次的末尾重新发 [startRequest]。这里顺着块尾一路要下去，
+     * 直到手环说「没有更多数据」，或追上当前时刻 —— 对应 Gadgetbridge 的
+     * AbstractRepeatingFetchOperation。
+     *
+     * 每块 [fetchActivityRound] 只负责取满一块并抽走队列；本函数负责拼装累计样本，
+     * 最后**一次**按全量样本归并成夜 —— 跨块边界的一觉不会被切成两半丢掉。
+     */
+    private suspend fun fetchActivityBlocks(
+        since: ZonedDateTime,
+        sampleQueue: Channel<Incoming>,
+        onProgress: (ActivitySyncProgress) -> Unit,
+    ): ActivitySyncResult {
+        val allSamples = ArrayList<MinuteSample>()
+        var blockSince = since
+        while (true) {
+            val r = fetchActivityRound(blockSince, sampleQueue, onProgress)
+            if (r.samples.isEmpty()) break           // 手环说这个时刻之后没有新数据，收工
+            allSamples.addAll(r.samples)
+            val last = r.samples.maxOf { it.time }
+            blockSince = last.atZone(java.time.ZoneId.systemDefault()).plusMinutes(1)
+            if (!blockSince.isBefore(ZonedDateTime.now())) break   // 已经追上当前时刻
+        }
+        val allNights = ActivitySync.nightsFromSamples(allSamples)
+        log("重复抓取完成：累计 ${allSamples.size} 分钟样本（自 ${allSamples.minOf { it.time }} 起），归并出 ${allNights.size} 夜")
+        return ActivitySyncResult(
+            sampleMinutes = allSamples.size,
+            since = since,
+            nights = allNights,
+            samples = allSamples,
+        )
     }
 
     /**
@@ -574,6 +609,59 @@ class BandSession(
             // kind 分布留着诊断用：睡眠样本的类型号（预期 0x78）一眼可见
             val kindCounts = samples.groupingBy { it.kind }.eachCount().entries.sortedByDescending { it.value }
             log("   kind 分布：${kindCounts.joinToString(" ") { "0x%02x×%d".format(it.key, it.value) }}")
+            // 临时诊断：打印每种 (kind,浅睡,深睡,REM) 字节签名及其覆盖时段，
+            // 用于定位 Mi Band 5 真实的“睡眠分钟”判别方式（当前按 kind==0x78 过滤，真机上查不到）。
+            val sig = samples.groupingBy { Triple(it.kind, it.sleepLevel, it.deepLevel) to it.remLevel }
+                .eachCount()
+                .entries
+                .sortedByDescending { it.value }
+                .take(24)
+            log("● 字节签名(前24种)：${
+                sig.joinToString(" "){ (s,c) ->
+                    val (k,sleep,deep) = s.first; "k%02x s%02x d%02x r%02x×%d".format(k, sleep, deep, s.second, c) }
+            }")
+            // 临时诊断2：按时间把「连续同签名」段 RLE 压缩成跑一会，看清睡眠块长啥样。
+            // 每段输出：起始时刻hmm | 持续分钟 | kind | 字节5 | 字节6 | 字节7
+            val runs = ArrayList<String>()
+            var idx = 0
+            while (idx < samples.size) {
+                val m = samples[idx]
+                var j = idx + 1
+                while (j < samples.size) {
+                    val n = samples[j]
+                    if (n.kind != m.kind || n.sleepLevel != m.sleepLevel ||
+                        n.deepLevel != m.deepLevel || n.remLevel != m.remLevel) break
+                    j++
+                }
+                if (j - idx >= 15) { // 只打足够长、连贯的段，短噪声跳过
+                    runs.add("%s %04d k%02x s%02x d%02x r%02x".format(
+                        m.time.hour * 60 + m.time.minute, j - idx, m.kind, m.sleepLevel, m.deepLevel, m.remLevel))
+                }
+                idx = j
+            }
+            log("  ▸ 长连贯段(≥15分)：${runs.joinToString("  ")}")
+            // 临时诊断3：非清醒分钟（字节5/6/7 任一非0）按“时刻”落在几点，画一条 24h 热力带。
+            // 若睡眠标记分钟真的存在，会在夜里(≈22-08点)凝成一条浓带；日间零散 = 无睡眠通道。
+            val hourTally = IntArray(24)
+            for (m in samples) if (m.sleepLevel != 0 || m.deepLevel != 0 || m.remLevel != 0) hourTally[m.time.hour]++
+            log("  ▷ 非清醒分钟按时段(0-23点)：${hourTally.joinToString(" ")}")
+            // 临时诊断4：按「夜」（21:00-次日09:00 算一晚）切块，打印每晚的 0x78 数量、
+            // 非零分期分钟数与分期直方图 —— 直接回答「手环这几晚到底有没有记录睡眠分期」。
+            val byNight = samples.groupBy { m ->
+                if (m.time.hour < 9) m.time.toLocalDate().minusDays(1) else m.time.toLocalDate()
+            }.toSortedMap()
+            log("  ░ 每晚情况(夜定义=21:00起)：")
+            for ((day, mins) in byNight) {
+                val total = mins.size
+                val nonZero = mins.count { it.sleepLevel != 0 || it.deepLevel != 0 || it.remLevel != 0 }
+                val sleepKind = mins.count { it.kind == 0x78 }
+                val nz = mins
+                    .filter { it.sleepLevel != 0 || it.deepLevel != 0 || it.remLevel != 0 }
+                    .groupingBy { "${it.sleepLevel.toString(16).padStart(2, '0')}${it.deepLevel.toString(16).padStart(2, '0')}${it.remLevel.toString(16).padStart(2, '0')}" }
+                    .eachCount().entries.sortedByDescending { it.value }.take(6)
+                    .joinToString(" ") { (sig, c) -> "$sig×$c" }
+                log("   #$day 分钟=$total 非零分期=$nonZero 0x78=$sleepKind 突围片段=${if (nz.isEmpty()) "-" else nz}")
+            }
             // 不写 0x03 ack —— 手环保留数据，下次同一窗口会重复推；
             // 入库按醒来日期/样本时刻幂等去重，重复没有副作用（见 syncActivity 注释）。
             log("⑥ 不写 ack，数据留在手环上")
