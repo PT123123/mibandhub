@@ -306,6 +306,10 @@ class DeviceViewModel(app: Application) : AndroidViewModel(app) {
     val wearLeft: StateFlow<Boolean> =
         prefs.wearLeft.stateIn(viewModelScope, SharingStarted.Eagerly, true)
 
+    /** 睡眠监测（手机侧开关）：控制打开应用时是否自动拉取睡眠，默认开。 */
+    val sleepMonitoring: StateFlow<Boolean> =
+        prefs.sleepMonitoring.stateIn(viewModelScope, SharingStarted.Eagerly, true)
+
     val liftWake: StateFlow<Boolean> =
         prefs.liftWake.stateIn(viewModelScope, SharingStarted.Eagerly, true)
 
@@ -366,6 +370,11 @@ class DeviceViewModel(app: Application) : AndroidViewModel(app) {
     fun setWearLocation(left: Boolean) = applySetting("佩戴手") {
         prefs.setWearLeft(left)
         if (isLinked()) session.applyWearLocation(left)
+    }
+
+    /** 睡眠监测开关：只存偏好，不涉及手环下发 —— 它的效果在 BandService 的自动拉取。 */
+    fun setSleepMonitoring(enabled: Boolean) {
+        viewModelScope.launch { prefs.setSleepMonitoring(enabled) }
     }
 
     fun setLiftWake(enabled: Boolean) = applySetting("抬腕亮屏") {
