@@ -57,6 +57,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.ted.shouhuan.ble.ConnectionState
+import com.ted.shouhuan.data.BatterySample
 import com.ted.shouhuan.data.HealthConnectSleepSource
 import com.ted.shouhuan.data.Pairing
 import com.ted.shouhuan.proto.BandSettings
@@ -71,11 +72,17 @@ import com.ted.shouhuan.ui.theme.Mint
 import com.ted.shouhuan.ui.theme.StepBlue
 import com.ted.shouhuan.ui.theme.NotifyAmber
 import com.ted.shouhuan.ui.theme.PulseRed
+import com.ted.shouhuan.util.formatDateTime
+import com.ted.shouhuan.util.formatDuration
 import com.ted.shouhuan.util.minuteOfDayToClock
+import kotlin.math.roundToInt
 import kotlinx.coroutines.launch
 
 /** 健康连接提供方（Android 13 是独立 App；14+ 内置于系统设置）。 */
 private const val HC_PROVIDER_PACKAGE = "com.android.healthconnect.controller"
+
+/** 电量记录卡片最多列几条（全量仍在本地，永久保存）。 */
+private const val HISTORY_ROWS = 15
 
 /** 外部睡眠数据源 App：小米运动健康。 */
 private const val MI_FITNESS_PACKAGE = "com.mi.health"
@@ -108,6 +115,8 @@ fun DeviceScreen(vm: DeviceViewModel, onPair: () -> Unit) {
     val swipeUnlock by vm.swipeUnlock.collectAsStateWithLifecycle()
     val disconnectAlert by vm.disconnectAlert.collectAsStateWithLifecycle()
     val autoHeartRate by vm.autoHeartRate.collectAsStateWithLifecycle()
+    val autoHeartRateInterval by vm.autoHeartRateInterval.collectAsStateWithLifecycle()
+    val batteryHistory by vm.batteryHistory.collectAsStateWithLifecycle()
     val dndMode by vm.dndMode.collectAsStateWithLifecycle()
     val dndStart by vm.dndStart.collectAsStateWithLifecycle()
     val dndEnd by vm.dndEnd.collectAsStateWithLifecycle()
@@ -361,6 +370,55 @@ fun DeviceScreen(vm: DeviceViewModel, onPair: () -> Unit) {
 
         Spacer(Modifier.height(12.dp))
 
+        // ---- 电量记录：时间点 + 电量，攒起来看耗电速度 ----
+        SectionCard(title = "电量记录", accent = Mint) {
+            val latest = batteryHistory.lastOrNull()
+            if (latest == null) {
+                Text(
+                    "连上手环后，电量每变 1% 记一条时间点。攒上几天，这里就能算出" +
+                        "「多久掉 1%、满电能撑多久」。",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            } else {
+                KeyValueRow("最新读数", "${latest.percent}%", valueColor = Mint)
+                KeyValueRow("读到时间", formatDateTime(latest.atMillis))
+                batteryDrainSummary(batteryHistory)?.let { summary ->
+                    Spacer(Modifier.height(2.dp))
+                    Text(summary, style = MaterialTheme.typography.bodyMedium, color = Mint)
+                }
+                Spacer(Modifier.height(10.dp))
+                HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.35f))
+                Spacer(Modifier.height(4.dp))
+                // 新的在上。回升（充电）的那条显式标出来，免得被当成耗电。
+                batteryHistory.takeLast(HISTORY_ROWS).reversed().forEachIndexed { index, sample ->
+                    val previous = batteryHistory.getOrNull(batteryHistory.size - index - 2)
+                    val charging = previous != null && sample.percent > previous.percent
+                    KeyValueRow(
+                        formatDateTime(sample.atMillis),
+                        if (charging) "${sample.percent}%（充回）" else "${sample.percent}%",
+                        valueColor = if (charging) NotifyAmber else MaterialTheme.colorScheme.onSurface,
+                    )
+                }
+                if (batteryHistory.size > HISTORY_ROWS) {
+                    Spacer(Modifier.height(6.dp))
+                    Text(
+                        "上面是最近 $HISTORY_ROWS 条。",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+            Spacer(Modifier.height(8.dp))
+            Text(
+                "共 ${batteryHistory.size} 条，永久保存、不清理（同一次读数不重复记）。",
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+
+        Spacer(Modifier.height(12.dp))
+
         // ---- 数据同步：拉活动明细 → 解析睡眠 → 落本地 ----
         SectionCard(title = "数据同步", accent = StepBlue) {
             Text(
@@ -517,13 +575,32 @@ fun DeviceScreen(vm: DeviceViewModel, onPair: () -> Unit) {
             )
             SwitchSettingRow(
                 title = "自动心率检测",
-                subtitle = "官方「检测模式」里的自动心率检测：开着时手环全天定时探测心率，" +
-                    "本应用按 30 分钟一次的档位下发（默认关）。关掉最省手环电，" +
-                    "代价是手环不再产生连续心率分钟数据，桌面控件的心率曲线会空。",
+                subtitle = "官方「检测模式」里的自动心率检测：开着时手环按下面的「检测频率」" +
+                    "全天定时探测心率（默认关）。关掉最省手环电，代价是手环不再产生" +
+                    "连续心率分钟数据，桌面控件的心率曲线会空。",
                 checked = autoHeartRate,
                 onCheckedChange = { vm.setAutoHeartRate(it) },
                 accent = Mint,
             )
+            if (autoHeartRate) {
+                Spacer(Modifier.height(6.dp))
+                Text("检测频率", style = MaterialTheme.typography.bodyMedium)
+                Spacer(Modifier.height(6.dp))
+                FilterChipRow(
+                    options = vm.autoHeartRateIntervals.map { "$it 分钟" },
+                    selectedIndex = vm.autoHeartRateIntervals.indexOf(autoHeartRateInterval)
+                        .coerceAtLeast(0),
+                    accent = Mint,
+                    onSelect = { vm.setAutoHeartRateInterval(vm.autoHeartRateIntervals[it]) },
+                )
+                Spacer(Modifier.height(6.dp))
+                Text(
+                    "档位越小越费手环电：1 分钟接近连续测量，30 分钟是官方标称 15 天续航的" +
+                        "测试条件（默认）。",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
             HorizontalDivider(
                 Modifier.padding(vertical = 8.dp),
                 color = MaterialTheme.colorScheme.outline.copy(alpha = 0.35f),
@@ -818,6 +895,35 @@ fun DeviceScreen(vm: DeviceViewModel, onPair: () -> Unit) {
 
 /** 时间选择弹层的目标：哪项设置（勿扰 / 夜间模式）+ 开始还是结束。 */
 private data class TimeEdit(val setting: String, val edge: String)
+
+/**
+ * 「多久耗多少电」的粗算。
+ *
+ * 只统计最近 7 天里**电量下降**的那些相邻两点，把掉的百分点和花掉的时间加起来
+ * 求平均 —— 充电段（电量回升）直接跳过，否则会把平均速度冲淡成一个没意义的数。
+ * 数据不够（不到两个点、或者这 7 天里根本没掉过电）就返回 null，界面不显示。
+ */
+private fun batteryDrainSummary(
+    samples: List<BatterySample>,
+    nowMillis: Long = System.currentTimeMillis(),
+): String? {
+    if (samples.size < 2) return null
+    val since = nowMillis - 7L * 24 * 60 * 60 * 1000
+    val window = samples.filter { it.atMillis >= since }
+    var dropped = 0
+    var elapsedMs = 0L
+    window.zipWithNext { a, b ->
+        if (b.percent < a.percent) {
+            dropped += a.percent - b.percent
+            elapsedMs += b.atMillis - a.atMillis
+        }
+    }
+    if (dropped <= 0 || elapsedMs <= 0) return null
+    val minutesPerPercent = elapsedMs / 60_000.0 / dropped
+    val perPercent = formatDuration(minutesPerPercent.roundToInt().coerceAtLeast(1))
+    val days = minutesPerPercent * 100 / 1440.0
+    return "最近 7 天平均：每 $perPercent 掉 1%，满电约可用 %.1f 天".format(days)
+}
 
 private fun dndModeIndex(mode: String): Int = when (mode) {
     "scheduled" -> 1

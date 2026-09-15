@@ -13,6 +13,7 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.ted.shouhuan.ble.ConnectionState
 import com.ted.shouhuan.data.BandPrefs
+import com.ted.shouhuan.data.BatterySample
 import com.ted.shouhuan.data.HealthConnectSleepSource
 import com.ted.shouhuan.proto.BandSettings
 import com.ted.shouhuan.proto.FULL_HISTORY_DAYS
@@ -323,6 +324,17 @@ class DeviceViewModel(app: Application) : AndroidViewModel(app) {
     val autoHeartRate: StateFlow<Boolean> =
         prefs.autoHeartRate.stateIn(viewModelScope, SharingStarted.Eagerly, false)
 
+    /** 自动心率检测的探测间隔（分钟）。 */
+    val autoHeartRateInterval: StateFlow<Int> = prefs.autoHeartRateInterval
+        .stateIn(viewModelScope, SharingStarted.Eagerly, BandPrefs.AUTO_HR_DEFAULT_INTERVAL)
+
+    /** 可选档位（分钟），界面直接拿它渲染选项。 */
+    val autoHeartRateIntervals: List<Int> = BandPrefs.AUTO_HR_INTERVALS
+
+    /** 手环电量记录（时间点 + 电量），按时间从早到晚，永久保存。 */
+    val batteryHistory: StateFlow<List<BatterySample>> =
+        prefs.batteryHistory.stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
+
     val dndMode: StateFlow<String> =
         prefs.dndMode.stateIn(viewModelScope, SharingStarted.Eagerly, "off")
 
@@ -398,7 +410,15 @@ class DeviceViewModel(app: Application) : AndroidViewModel(app) {
 
     fun setAutoHeartRate(enabled: Boolean) = applySetting("自动心率检测") {
         prefs.setAutoHeartRate(enabled)
-        if (isLinked()) session.applyAutoHeartRate(enabled)
+        // 关掉就是间隔 0（官方「检测模式 → 关闭」）；打开才带上选定的档位。
+        val minutes = if (enabled) prefs.autoHeartRateInterval.first() else 0
+        if (isLinked()) session.applyAutoHeartRate(minutes)
+    }
+
+    fun setAutoHeartRateInterval(minutes: Int) = applySetting("心率检测频率") {
+        prefs.setAutoHeartRateInterval(minutes)
+        // 开关关着时改频率只落盘，不下发 —— 免得把刚关掉的探测又打开。
+        if (prefs.autoHeartRate.first() && isLinked()) session.applyAutoHeartRate(minutes)
     }
 
     fun setDndSetting(mode: String, startMinute: Int, endMinute: Int) = applySetting("勿扰模式") {

@@ -39,6 +39,16 @@
     <uses-permission android:name="android.permission.WAKE_LOCK" />
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
 
+    <!-- Android 11+ 的应用可见性：不声明这条，packageManager 只能看到系统白名单里的
+         少数几个包，「允许转发的应用」就列不全手机上的应用。这里只问「有什么能启动的
+         应用」，拿不到别的信息，比 QUERY_ALL_PACKAGES 克制。 -->
+    <queries>
+        <intent>
+            <action android:name="android.intent.action.MAIN" />
+            <category android:name="android.intent.category.LAUNCHER" />
+        </intent>
+    </queries>
+
     <application
         android:name=".ShouhuanApp"
         android:allowBackup="false"
