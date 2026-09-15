@@ -367,6 +367,7 @@ class BandService : Service() {
         val liftWake: Boolean,
         val swipeUnlock: Boolean,
         val disconnectAlert: Boolean,
+        val autoHeartRate: Boolean,
         val dndMode: String,
         val dndStart: Int,
         val dndEnd: Int,
@@ -397,6 +398,7 @@ class BandService : Service() {
             session.applyDisplayOnLiftWrist(s.liftWake)
             session.applySwipeUnlock(s.swipeUnlock)
             session.applyDisconnectAlert(s.disconnectAlert)
+            session.applyAutoHeartRate(s.autoHeartRate)
             session.applyDnd(dndModeOf(s.dndMode), s.dndStart, s.dndEnd)
             session.applyNightMode(nightModeOf(s.nightMode), s.nightStart, s.nightEnd)
             session.applyMenuOrder(itemsOf(s.menuOrder, BandSettings.Item.DEFAULT_MENU))
@@ -410,6 +412,7 @@ class BandService : Service() {
             liftWake = prefs.liftWake.first(),
             swipeUnlock = prefs.swipeUnlock.first(),
             disconnectAlert = prefs.disconnectAlert.first(),
+            autoHeartRate = prefs.autoHeartRate.first(),
             dndMode = prefs.dndMode.first(),
             dndStart = prefs.dndStartMinute.first(),
             dndEnd = prefs.dndEndMinute.first(),

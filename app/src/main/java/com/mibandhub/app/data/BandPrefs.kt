@@ -69,6 +69,9 @@ class BandPrefs(private val context: Context) {
         val SET_LIFT_WAKE = booleanPreferencesKey("band_lift_wake")
         val SET_SWIPE_UNLOCK = booleanPreferencesKey("band_swipe_unlock")
         val SET_DISCONNECT_ALERT = booleanPreferencesKey("band_disconnect_alert")
+
+        /** 全天自动心率检测（手环侧）：默认**关**，手环不再全天定时探测心率。 */
+        val SET_AUTO_HR = booleanPreferencesKey("band_auto_hr")
         val SET_DND_MODE = stringPreferencesKey("band_dnd_mode")
         val SET_DND_START = intPreferencesKey("band_dnd_start")
         val SET_DND_END = intPreferencesKey("band_dnd_end")
@@ -473,6 +476,16 @@ class BandPrefs(private val context: Context) {
     val disconnectAlert: Flow<Boolean> =
         context.bandDataStore.data.map { it[Keys.SET_DISCONNECT_ALERT] ?: false }
 
+    /**
+     * 全天自动心率检测（手环侧），**默认关**。
+     *
+     * 官方 App 出厂是按 30 分钟一次全天探测的，这里默认关掉：手环的探测频次直接
+     * 关系到它自己的续航，而连续心率分钟样本只是桌面控件的曲线用；用户要曲线时
+     * 再自己打开（打开按 30 分钟一次下发）。
+     */
+    val autoHeartRate: Flow<Boolean> =
+        context.bandDataStore.data.map { it[Keys.SET_AUTO_HR] ?: false }
+
     /** 勿扰模式："off" / "scheduled" / "automatic"。 */
     val dndMode: Flow<String> = context.bandDataStore.data.map { it[Keys.SET_DND_MODE] ?: "off" }
     val dndStartMinute: Flow<Int> =
@@ -527,6 +540,10 @@ class BandPrefs(private val context: Context) {
 
     suspend fun setDisconnectAlert(enabled: Boolean) {
         context.bandDataStore.edit { it[Keys.SET_DISCONNECT_ALERT] = enabled }
+    }
+
+    suspend fun setAutoHeartRate(enabled: Boolean) {
+        context.bandDataStore.edit { it[Keys.SET_AUTO_HR] = enabled }
     }
 
     suspend fun setDndSetting(mode: String, startMinute: Int, endMinute: Int) {

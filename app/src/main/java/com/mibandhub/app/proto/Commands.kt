@@ -41,6 +41,18 @@ object Commands {
         HR_START_CONTINUOUS,
     )
 
+    /**
+     * 全天自动心率检测的探测间隔 `{0x14, 分钟}` —— **0 分钟即关闭**。
+     *
+     * 这就是官方 App「心率检测 → 检测模式」里的自动心率检测档（GB 中文名叫
+     * 「全天心率检测」，配套的「检测频率」就是这里的分钟数）。
+     * GB HuamiSupport.setHeartrateMeasurementInterval 的写法是
+     * `[HuamiService.COMMAND_SET_PERIODIC_HR_MEASUREMENT_INTERVAL(=0x14), 分钟数]`，
+     * 分钟数由偏好里的秒值 / 60 得到，并夹在 0..120。
+     */
+    fun periodicHeartRateInterval(minutes: Int): ByteArray =
+        byteArrayOf(0x14, minutes.coerceIn(0, 120).toByte())
+
     // ---------------- MiBand 控制点（写 0xFF05）----------------
 
     /** 请求同步活动数据（含睡眠）。 */
