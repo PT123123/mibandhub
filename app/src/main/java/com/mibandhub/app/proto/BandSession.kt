@@ -59,15 +59,6 @@ class BandSession(
         const val CHECKSUM_TIMEOUT_MS = 90_000L
 
         /**
-         * 打开自动心率检测时下发的探测间隔（分钟）。
-         *
-         * 官方标称续航的测试条件正是「以 30 分钟为频率的自动心率检测」，也是官方
-         * FAQ 里给省电建议时推荐的档位；官方 App 可选的 1/5/10/30 分钟里它最省电。
-         * 间隔为 0 表示关闭，见 [Commands.periodicHeartRateInterval]。
-         */
-        const val AUTO_HR_INTERVAL_MINUTES = 30
-
-        /**
          * 数据包之间的最小间隔：6 ms ≈ 166 包/秒。
          *
          * 这个数是实测出来的。手环的接收缓冲有限，而每秒能灌多少取决于当时协商的
@@ -479,22 +470,21 @@ class BandSession(
      * 所以带 notify 开关的仪式照 GB `setHeartrateMeasurementInterval` 抄：
      * 写之前先在该特征上开 notify（收手环回执），写完关掉。
      *
-     * 关闭 = 间隔 0，手环不再全天定时探测心率。
+     * [minutes] 就是官方「检测频率」那几档（1/5/10/30 分钟）；**0 表示关闭**，
+     * 手环不再全天定时探测心率。
      */
-    suspend fun applyAutoHeartRate(enabled: Boolean): Boolean {
+    suspend fun applyAutoHeartRate(minutes: Int): Boolean {
         requireAuthenticated()
         if (!connection.hasCharacteristic(Gatt.CHAR_HR_CONTROL_POINT)) {
             log("设置下发失败：没有心率控制点（0x2A39）")
             return false
         }
-        val data = Commands.periodicHeartRateInterval(
-            if (enabled) AUTO_HR_INTERVAL_MINUTES else 0,
-        )
+        val data = Commands.periodicHeartRateInterval(minutes)
         connection.enableNotify(Gatt.CHAR_HR_CONTROL_POINT)
         val ok = connection.write(Gatt.CHAR_HR_CONTROL_POINT, data)
         connection.enableNotify(Gatt.CHAR_HR_CONTROL_POINT, enable = false)
         log(
-            "自动心率检测（${if (enabled) "$AUTO_HR_INTERVAL_MINUTES 分钟一次" else "关闭"}）" +
+            "自动心率检测（${if (minutes > 0) "$minutes 分钟一次" else "关闭"}）" +
                 "设置 ${BandSettings.hex(data)} -> ${if (ok) "已下发" else "下发失败"}",
         )
         return ok

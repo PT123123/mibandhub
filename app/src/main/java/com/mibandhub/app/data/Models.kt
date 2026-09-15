@@ -61,6 +61,17 @@ data class BandNotification(
 /** 可被转发的应用。 */
 data class AppRule(val packageName: String, val appName: String, val enabled: Boolean)
 
+/** 手机上装的应用 —— 「添加应用」列表里可选的那一份。 */
+data class InstalledApp(val packageName: String, val label: String)
+
+/**
+ * 一次手环电量读数。
+ *
+ * 只记「变了的时候」：手环电量按 1% 跳，同一个数字重复记没有信息量，还白灌
+ * DataStore。有了时间点 + 电量，相邻两点的差就能算出「多久耗多少电」。
+ */
+data class BatterySample(val atMillis: Long, val percent: Int)
+
 /**
  * 一次完成的测量结果。
  *

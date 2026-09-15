@@ -23,6 +23,18 @@ private val Context.bandDataStore: DataStore<Preferences> by preferencesDataStor
  */
 class BandPrefs(private val context: Context) {
 
+    companion object {
+        /**
+         * 官方「检测频率」的四个档位（分钟），也是协议允许下发的值。
+         *
+         * 1 分钟那档基本等于连续测量，手环续航掉得最厉害；30 分钟最省电。
+         */
+        val AUTO_HR_INTERVALS = listOf(1, 5, 10, 30)
+
+        /** 自动心率检测的默认档位 —— 官方标称 15 天续航的测试条件正是 30 分钟这一档。 */
+        const val AUTO_HR_DEFAULT_INTERVAL = 30
+    }
+
     private object Keys {
         val MAC = stringPreferencesKey("device_mac")
         val NAME = stringPreferencesKey("device_name")
@@ -60,6 +72,9 @@ class BandPrefs(private val context: Context) {
         /** 真实推到手环的通知记录（最近推送页），新的在前。 */
         val RECENT_NOTIFICATIONS = stringPreferencesKey("recent_notifications")
 
+        /** 手环电量读数历史（时间点 + 电量）。永久保存，不清理。 */
+        val BATTERY_HISTORY = stringPreferencesKey("battery_history")
+
         // ---- 睡眠监测（手机侧开关）：控制应用打开时是否自动拉取睡眠。手环睡眠是
         // 硬件常开的，协议层没有关闭命令，所以这里只管应用自己的自动同步行为。----
         val SLEEP_MONITOR = booleanPreferencesKey("sleep_monitor")
@@ -72,6 +87,9 @@ class BandPrefs(private val context: Context) {
 
         /** 全天自动心率检测（手环侧）：默认**关**，手环不再全天定时探测心率。 */
         val SET_AUTO_HR = booleanPreferencesKey("band_auto_hr")
+
+        /** 自动心率检测的探测间隔（分钟），取值见 [BandPrefs.AUTO_HR_INTERVALS]。 */
+        val SET_AUTO_HR_INTERVAL = intPreferencesKey("band_auto_hr_interval")
         val SET_DND_MODE = stringPreferencesKey("band_dnd_mode")
         val SET_DND_START = intPreferencesKey("band_dnd_start")
         val SET_DND_END = intPreferencesKey("band_dnd_end")
@@ -334,11 +352,19 @@ class BandPrefs(private val context: Context) {
     val notifyVibration: Flow<String> =
         context.bandDataStore.data.map { it[Keys.NOTIFY_VIBRATION] ?: "standard" }
 
-    /** 应用白名单。没有存过时回落到演示名单，勾选状态由用户改动后持久化。 */
+    /** 应用白名单。没存过时给一份出厂参考名单；只要存过一次（哪怕存的是空），就照存的来。 */
     val appRules: Flow<List<AppRule>> =
         context.bandDataStore.data.map { prefs ->
-            decodeAppRules(prefs[Keys.APP_RULES]) ?: DemoData.appRules()
+            if (prefs.contains(Keys.APP_RULES)) {
+                decodeAppRules(prefs[Keys.APP_RULES])
+            } else {
+                DemoData.appRules()
+            }
         }
+
+    /** 手环电量读数历史，按时间从早到晚。**永不清理** —— 攒着才看得出耗电速度。 */
+    val batteryHistory: Flow<List<BatterySample>> =
+        context.bandDataStore.data.map { decodeBatteryHistory(it[Keys.BATTERY_HISTORY]) }
 
     /** 真实推到手环的通知记录，新的在前（无记录时为空，不放演示条目）。 */
     val recentNotifications: Flow<List<BandNotification>> =
@@ -386,9 +412,27 @@ class BandPrefs(private val context: Context) {
 
     suspend fun setAppRules(rules: List<AppRule>) {
         context.bandDataStore.edit { prefs ->
+            // 空列表也照写（写空串）—— 键存在就代表「用户已经动过」，
+            // 不能让它再回落到出厂参考名单，否则移除过的应用会自己回来。
             prefs[Keys.APP_RULES] = rules.joinToString("\n") {
                 "${it.packageName}|${it.appName}|${if (it.enabled) 1 else 0}"
             }
+        }
+    }
+
+    /**
+     * 记一次手环电量读数。
+     *
+     * 同一个数字不重复记；历史**不设上限、不清理**，攒着才看得出耗电速度。
+     * 时间戳默认取当下 —— 电量是手环实时上报的，上报时刻就是读到的时刻。
+     */
+    suspend fun recordBattery(percent: Int, atMillis: Long = System.currentTimeMillis()) {
+        if (percent !in 0..100) return
+        context.bandDataStore.edit { prefs ->
+            val history = decodeBatteryHistory(prefs[Keys.BATTERY_HISTORY])
+            if (history.lastOrNull()?.percent == percent) return@edit
+            prefs[Keys.BATTERY_HISTORY] =
+                encodeBatteryHistory(history + BatterySample(atMillis, percent))
         }
     }
 
@@ -436,8 +480,8 @@ class BandPrefs(private val context: Context) {
         }.getOrElse { emptyList() }
     }
 
-    private fun decodeAppRules(raw: String?): List<AppRule>? {
-        if (raw.isNullOrBlank()) return null
+    private fun decodeAppRules(raw: String?): List<AppRule> {
+        if (raw.isNullOrBlank()) return emptyList()
         return raw.lineSequence().mapNotNull { line ->
             val p = line.split('|')
             if (p.size != 3) return@mapNotNull null
@@ -448,6 +492,19 @@ class BandPrefs(private val context: Context) {
     private fun decodeLines(raw: String?): List<String> {
         if (raw.isNullOrBlank()) return emptyList()
         return raw.lineSequence().map { it.trim() }.filter { it.isNotEmpty() }.toList()
+    }
+
+    private fun encodeBatteryHistory(list: List<BatterySample>): String =
+        list.joinToString("\n") { "${it.atMillis}|${it.percent}" }
+
+    private fun decodeBatteryHistory(raw: String?): List<BatterySample> {
+        if (raw.isNullOrBlank()) return emptyList()
+        return raw.lineSequence().mapNotNull { line ->
+            val p = line.split('|')
+            val at = p.getOrNull(0)?.toLongOrNull() ?: return@mapNotNull null
+            val pct = p.getOrNull(1)?.toIntOrNull() ?: return@mapNotNull null
+            BatterySample(at, pct)
+        }.toList()
     }
 
     // ------------------------------------------------------------------
@@ -481,10 +538,14 @@ class BandPrefs(private val context: Context) {
      *
      * 官方 App 出厂是按 30 分钟一次全天探测的，这里默认关掉：手环的探测频次直接
      * 关系到它自己的续航，而连续心率分钟样本只是桌面控件的曲线用；用户要曲线时
-     * 再自己打开（打开按 30 分钟一次下发）。
+     * 再自己打开。
      */
     val autoHeartRate: Flow<Boolean> =
         context.bandDataStore.data.map { it[Keys.SET_AUTO_HR] ?: false }
+
+    /** 打开自动心率检测时下发的探测间隔（分钟），取值见 [AUTO_HR_INTERVALS]。 */
+    val autoHeartRateInterval: Flow<Int> = context.bandDataStore.data
+        .map { it[Keys.SET_AUTO_HR_INTERVAL] ?: AUTO_HR_DEFAULT_INTERVAL }
 
     /** 勿扰模式："off" / "scheduled" / "automatic"。 */
     val dndMode: Flow<String> = context.bandDataStore.data.map { it[Keys.SET_DND_MODE] ?: "off" }
@@ -544,6 +605,10 @@ class BandPrefs(private val context: Context) {
 
     suspend fun setAutoHeartRate(enabled: Boolean) {
         context.bandDataStore.edit { it[Keys.SET_AUTO_HR] = enabled }
+    }
+
+    suspend fun setAutoHeartRateInterval(minutes: Int) {
+        context.bandDataStore.edit { it[Keys.SET_AUTO_HR_INTERVAL] = minutes }
     }
 
     suspend fun setDndSetting(mode: String, startMinute: Int, endMinute: Int) {

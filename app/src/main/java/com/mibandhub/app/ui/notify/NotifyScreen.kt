@@ -15,6 +15,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -29,7 +30,9 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Switch
 import androidx.compose.material3.SwitchDefaults
@@ -79,12 +82,14 @@ fun NotifyScreen(vm: NotifyViewModel) {
     val includeBody by vm.includeBody.collectAsStateWithLifecycle()
     val vibration by vm.vibration.collectAsStateWithLifecycle()
     val appRules by vm.appRules.collectAsStateWithLifecycle()
+    val installedApps by vm.installedApps.collectAsStateWithLifecycle()
     val recent by vm.recent.collectAsStateWithLifecycle()
     val testSend by vm.testSend.collectAsStateWithLifecycle()
 
-    // 弹层状态：勿扰时间选择 / 关键词新增
+    // 弹层状态：勿扰时间选择 / 关键词新增 / 添加转发应用
     var editingDndEdge by remember { mutableStateOf<String?>(null) }
     var showKeywordDialog by remember { mutableStateOf(false) }
+    var showAppPicker by remember { mutableStateOf(false) }
 
     val btPermissionLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.RequestPermission(),
@@ -331,6 +336,20 @@ fun NotifyScreen(vm: NotifyViewModel) {
 
         // ---- 应用白名单 ----
         SectionCard(title = "允许转发的应用", accent = NotifyAmber) {
+            Text(
+                "手机上的应用都能加进来：下面这份只是出厂参考名单，点「添加应用」" +
+                    "从已安装的应用里随便挑。",
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Spacer(Modifier.height(10.dp))
+            if (appRules.isEmpty()) {
+                Text(
+                    "还没有选任何应用。",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
             appRules.forEachIndexed { index, rule ->
                 if (index > 0) {
                     HorizontalDivider(
@@ -338,13 +357,60 @@ fun NotifyScreen(vm: NotifyViewModel) {
                         color = MaterialTheme.colorScheme.outline.copy(alpha = 0.35f),
                     )
                 }
-                SwitchSettingRow(
-                    title = rule.appName,
-                    checked = rule.enabled,
-                    onCheckedChange = { vm.setAppEnabled(rule.packageName, it) },
-                    enabled = forwardEnabled,
-                    accent = NotifyAmber,
-                )
+                Row(
+                    modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Column(Modifier.weight(1f)) {
+                        Text(
+                            rule.appName,
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = if (forwardEnabled) {
+                                MaterialTheme.colorScheme.onSurface
+                            } else {
+                                MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f)
+                            },
+                        )
+                        Text(
+                            rule.packageName,
+                            style = MaterialTheme.typography.labelMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    }
+                    IconButton(
+                        onClick = { vm.removeAppRule(rule.packageName) },
+                        enabled = forwardEnabled,
+                    ) {
+                        Icon(
+                            Icons.Rounded.Close,
+                            contentDescription = "移除 ${rule.appName}",
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                    Switch(
+                        checked = rule.enabled,
+                        onCheckedChange = { vm.setAppEnabled(rule.packageName, it) },
+                        enabled = forwardEnabled,
+                        colors = SwitchDefaults.colors(
+                            checkedThumbColor = MaterialTheme.colorScheme.surface,
+                            checkedTrackColor = NotifyAmber,
+                        ),
+                    )
+                }
+            }
+            Spacer(Modifier.height(12.dp))
+            OutlinedButton(
+                onClick = {
+                    vm.loadInstalledApps()
+                    showAppPicker = true
+                },
+                enabled = forwardEnabled,
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(14.dp),
+            ) {
+                Text("添加应用")
             }
         }
 
@@ -381,6 +447,99 @@ fun NotifyScreen(vm: NotifyViewModel) {
                 TextButton(onClick = { editingDndEdge = null }) {
                     Text("取消")
                 }
+            },
+        )
+    }
+
+    // ---- 添加转发应用：从手机上装的应用里挑 ----
+    if (showAppPicker) {
+        var query by remember { mutableStateOf("") }
+        val added = appRules.map { it.packageName }.toSet()
+        val matched = installedApps.filter { app ->
+            query.isBlank() ||
+                app.label.contains(query, ignoreCase = true) ||
+                app.packageName.contains(query, ignoreCase = true)
+        }
+        AlertDialog(
+            onDismissRequest = { showAppPicker = false },
+            title = { Text("添加应用") },
+            text = {
+                Column {
+                    OutlinedTextField(
+                        value = query,
+                        onValueChange = { query = it },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth(),
+                        placeholder = { Text("搜应用名或包名") },
+                    )
+                    Spacer(Modifier.height(10.dp))
+                    when {
+                        installedApps.isEmpty() -> Text(
+                            "正在读取手机上的应用…",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+
+                        matched.isEmpty() -> Text(
+                            "没有匹配的应用。",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+
+                        else -> Column(
+                            Modifier
+                                .heightIn(max = 340.dp)
+                                .verticalScroll(rememberScrollState()),
+                        ) {
+                            matched.forEach { app ->
+                                val already = app.packageName in added
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .clickable(enabled = !already) {
+                                            vm.addAppRule(app.packageName, app.label)
+                                        }
+                                        .padding(vertical = 8.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                ) {
+                                    Column(Modifier.weight(1f)) {
+                                        Text(
+                                            app.label,
+                                            style = MaterialTheme.typography.bodyMedium,
+                                            color = if (already) {
+                                                MaterialTheme.colorScheme.onSurfaceVariant
+                                            } else {
+                                                MaterialTheme.colorScheme.onSurface
+                                            },
+                                        )
+                                        Text(
+                                            app.packageName,
+                                            style = MaterialTheme.typography.labelMedium,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis,
+                                        )
+                                    }
+                                    Text(
+                                        if (already) "已添加" else "添加",
+                                        style = MaterialTheme.typography.labelMedium,
+                                        color = if (already) {
+                                            MaterialTheme.colorScheme.onSurfaceVariant
+                                        } else {
+                                            NotifyAmber
+                                        },
+                                    )
+                                }
+                                HorizontalDivider(
+                                    color = MaterialTheme.colorScheme.outline.copy(alpha = 0.3f),
+                                )
+                            }
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { showAppPicker = false }) { Text("完成") }
             },
         )
     }
