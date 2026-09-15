@@ -3,6 +3,7 @@ package com.ted.shouhuan.ui.notify
 import android.app.Application
 import android.bluetooth.BluetoothManager
 import android.content.Context
+import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Build
 import androidx.core.content.ContextCompat
@@ -13,11 +14,15 @@ import com.ted.shouhuan.data.AppRule
 import com.ted.shouhuan.data.BandNotification
 import com.ted.shouhuan.data.BandPrefs
 import com.ted.shouhuan.data.DemoData
+import com.ted.shouhuan.data.InstalledApp
 import com.ted.shouhuan.service.BandSessionProvider
 import com.ted.shouhuan.service.HeartMeasureController
 import com.ted.shouhuan.util.minuteOfDayToClock
+import java.text.Collator
 import java.time.LocalDateTime
 import java.time.ZoneId
+import java.util.Locale
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -25,6 +30,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 
 /** 测试通知发到哪一步了。任何一步都可能失败，失败要给出「为什么 + 怎么办」。 */
@@ -89,6 +95,39 @@ class NotifyViewModel(app: Application) : AndroidViewModel(app) {
         prefs.appRules.stateIn(viewModelScope, SharingStarted.Eagerly, DemoData.appRules())
 
     /**
+     * 手机上能选的转发应用（「添加应用」列表）。
+     *
+     * 不在构造时读 —— 读一遍要遍历包管理器，只有用户真打开选择器时才值得花这份钱。
+     * 读完缓在内存，同一个进程里不重复读。
+     */
+    private val _installedApps = MutableStateFlow<List<InstalledApp>>(emptyList())
+    val installedApps: StateFlow<List<InstalledApp>> = _installedApps.asStateFlow()
+
+    private var appsLoading = false
+
+    /** 读一遍手机上的应用：只取「能启动的」（有桌面图标的那种），自己排除掉。 */
+    fun loadInstalledApps(force: Boolean = false) {
+        if (appsLoading) return
+        if (!force && _installedApps.value.isNotEmpty()) return
+        appsLoading = true
+        viewModelScope.launch {
+            val app = getApplication<Application>()
+            val list = withContext(Dispatchers.IO) {
+                val pm = app.packageManager
+                val launcher = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER)
+                pm.queryIntentActivities(launcher, 0)
+                    .mapNotNull { it.activityInfo?.applicationInfo }
+                    .distinctBy { it.packageName }
+                    .filter { it.packageName != app.packageName }
+                    .map { InstalledApp(it.packageName, pm.getApplicationLabel(it).toString()) }
+                    .sortedWith(compareBy(Collator.getInstance(Locale.CHINA)) { it.label })
+            }
+            _installedApps.value = list
+            appsLoading = false
+        }
+    }
+
+    /**
      * 最近推送：真实推到手环的通知记录（持久化在 [BandPrefs]）。除了测试通知，
      * 手环提醒（低电量/充满/连接）也会记进来。无记录时为空 —— 不放演示条目。
      */
@@ -129,10 +168,23 @@ class NotifyViewModel(app: Application) : AndroidViewModel(app) {
     fun setVibration(pattern: String) = launch { prefs.setNotifyVibration(pattern) }
 
     fun setAppEnabled(packageName: String, enabled: Boolean) = launch {
-        val current = prefs.appRules.first().ifEmpty { DemoData.appRules() }
         prefs.setAppRules(
-            current.map { if (it.packageName == packageName) it.copy(enabled = enabled) else it },
+            prefs.appRules.first().map {
+                if (it.packageName == packageName) it.copy(enabled = enabled) else it
+            },
         )
+    }
+
+    /** 把手机上的某个应用加进白名单（加进来默认允许转发）。 */
+    fun addAppRule(packageName: String, appName: String) = launch {
+        val current = prefs.appRules.first()
+        if (current.any { it.packageName == packageName }) return@launch
+        prefs.setAppRules(current + AppRule(packageName, appName, enabled = true))
+    }
+
+    /** 从白名单里移除某个应用 —— 不再关心它的通知，也不占列表位置。 */
+    fun removeAppRule(packageName: String) = launch {
+        prefs.setAppRules(prefs.appRules.first().filterNot { it.packageName == packageName })
     }
 
     /** 勿扰时段展示成 "22:00 – 07:30"。 */

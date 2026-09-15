@@ -198,6 +198,18 @@ class BandService : Service() {
             }
         }
 
+        // 电量记录：连着的时候手环每分钟上报一次，把「变了」的点落盘 ——
+        // 时间点 + 电量攒起来就能算耗电速度。断线时读到的还是上一次的值，
+        // 记下来会把旧数字当成现在的，所以只认认证连接的读数。
+        scope.launch {
+            combine(session.battery, session.connectionState) { pct, state -> pct to state }
+                .collect { (pct, state) ->
+                    if (pct != null && state == ConnectionState.Authenticated) {
+                        runCatching { prefs.recordBattery(pct) }
+                    }
+                }
+        }
+
         // 手环提醒配置 —— 收敛成一个不可变快照，广播回调直接读
         scope.launch {
             combine(
@@ -368,6 +380,7 @@ class BandService : Service() {
         val swipeUnlock: Boolean,
         val disconnectAlert: Boolean,
         val autoHeartRate: Boolean,
+        val autoHeartRateInterval: Int,
         val dndMode: String,
         val dndStart: Int,
         val dndEnd: Int,
@@ -398,7 +411,7 @@ class BandService : Service() {
             session.applyDisplayOnLiftWrist(s.liftWake)
             session.applySwipeUnlock(s.swipeUnlock)
             session.applyDisconnectAlert(s.disconnectAlert)
-            session.applyAutoHeartRate(s.autoHeartRate)
+            session.applyAutoHeartRate(if (s.autoHeartRate) s.autoHeartRateInterval else 0)
             session.applyDnd(dndModeOf(s.dndMode), s.dndStart, s.dndEnd)
             session.applyNightMode(nightModeOf(s.nightMode), s.nightStart, s.nightEnd)
             session.applyMenuOrder(itemsOf(s.menuOrder, BandSettings.Item.DEFAULT_MENU))
@@ -413,6 +426,7 @@ class BandService : Service() {
             swipeUnlock = prefs.swipeUnlock.first(),
             disconnectAlert = prefs.disconnectAlert.first(),
             autoHeartRate = prefs.autoHeartRate.first(),
+            autoHeartRateInterval = prefs.autoHeartRateInterval.first(),
             dndMode = prefs.dndMode.first(),
             dndStart = prefs.dndStartMinute.first(),
             dndEnd = prefs.dndEndMinute.first(),
