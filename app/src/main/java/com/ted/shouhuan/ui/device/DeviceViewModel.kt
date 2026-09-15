@@ -319,6 +319,10 @@ class DeviceViewModel(app: Application) : AndroidViewModel(app) {
     val disconnectAlert: StateFlow<Boolean> =
         prefs.disconnectAlert.stateIn(viewModelScope, SharingStarted.Eagerly, false)
 
+    /** 全天自动心率检测（手环侧），默认关。 */
+    val autoHeartRate: StateFlow<Boolean> =
+        prefs.autoHeartRate.stateIn(viewModelScope, SharingStarted.Eagerly, false)
+
     val dndMode: StateFlow<String> =
         prefs.dndMode.stateIn(viewModelScope, SharingStarted.Eagerly, "off")
 
@@ -390,6 +394,11 @@ class DeviceViewModel(app: Application) : AndroidViewModel(app) {
     fun setDisconnectAlert(enabled: Boolean) = applySetting("断开提醒") {
         prefs.setDisconnectAlert(enabled)
         if (isLinked()) session.applyDisconnectAlert(enabled)
+    }
+
+    fun setAutoHeartRate(enabled: Boolean) = applySetting("自动心率检测") {
+        prefs.setAutoHeartRate(enabled)
+        if (isLinked()) session.applyAutoHeartRate(enabled)
     }
 
     fun setDndSetting(mode: String, startMinute: Int, endMinute: Int) = applySetting("勿扰模式") {
