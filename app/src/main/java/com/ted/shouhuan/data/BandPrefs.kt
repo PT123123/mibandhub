@@ -64,6 +64,7 @@ class BandPrefs(private val context: Context) {
         val KEYWORDS = stringPreferencesKey("keywords")
         val DEDUPE_ENABLED = booleanPreferencesKey("dedupe_enabled")
         val DEDUPE_SECONDS = intPreferencesKey("dedupe_seconds")
+        val NOTIFY_ONLY_LOCKED = booleanPreferencesKey("notify_only_locked")
         val NOTIFY_SHOW_APP_NAME = booleanPreferencesKey("notify_show_app_name")
         val NOTIFY_INCLUDE_BODY = booleanPreferencesKey("notify_include_body")
         val NOTIFY_VIBRATION = stringPreferencesKey("notify_vibration")
@@ -342,6 +343,10 @@ class BandPrefs(private val context: Context) {
     val dedupeSeconds: Flow<Int> =
         context.bandDataStore.data.map { it[Keys.DEDUPE_SECONDS] ?: 30 }
 
+    /** 仅锁屏时转发：开着的时候，亮屏解锁使用手机期间的通知不打扰。默认关。 */
+    val notifyOnlyLocked: Flow<Boolean> =
+        context.bandDataStore.data.map { it[Keys.NOTIFY_ONLY_LOCKED] ?: false }
+
     /** 转发内容：应用名前缀 / 正文。 */
     val notifyShowAppName: Flow<Boolean> =
         context.bandDataStore.data.map { it[Keys.NOTIFY_SHOW_APP_NAME] ?: true }
@@ -397,6 +402,10 @@ class BandPrefs(private val context: Context) {
             it[Keys.DEDUPE_ENABLED] = enabled
             it[Keys.DEDUPE_SECONDS] = seconds
         }
+    }
+
+    suspend fun setNotifyOnlyLocked(enabled: Boolean) {
+        context.bandDataStore.edit { it[Keys.NOTIFY_ONLY_LOCKED] = enabled }
     }
 
     suspend fun setNotifyContent(showAppName: Boolean, includeBody: Boolean) {
