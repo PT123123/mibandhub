@@ -11,6 +11,7 @@ import com.ted.shouhuan.data.AppRule
 import com.ted.shouhuan.data.BandNotification
 import com.ted.shouhuan.data.BandPrefs
 import com.ted.shouhuan.proto.BandSession
+import com.ted.shouhuan.proto.Notify
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -26,7 +27,7 @@ import java.util.concurrent.ConcurrentHashMap
  *
  * 流程：
  *   1. 跳过自己、系统噪音（常驻通知/前台服务通知）
- *   2. 读用户偏好：总开关、勿扰、应用白名单、关键词、去重、转发内容
+ *   2. 读用户偏好：总开关、勿扰、应用白名单、关键词、去重、振动档位
  *   3. 确保手环连着（没连就尝试自动连接）
  *   4. 调用协议层 sendNotification 下发
  *   5. 记入「最近推送」
@@ -182,10 +183,7 @@ class BandNotificationListener : NotificationListenerService() {
             dedupeTable[key] = now
         }
 
-        // ---- 组装要推的内容 ----
-        val showAppName = prefs.notifyShowAppName.first()
-        val includeBody = prefs.notifyIncludeBody.first()
-
+        // ---- 组装要推的内容（应用名 + 标题 + 正文，全量照发）----
         val appLabel = try {
             packageManager.getApplicationLabel(
                 packageManager.getApplicationInfo(pkg, 0),
@@ -194,8 +192,11 @@ class BandNotificationListener : NotificationListenerService() {
             pkg
         }
 
-        val finalAppName = if (showAppName) appLabel else "手机通知"
-        val finalBody = if (includeBody) body else ""
+        // ---- 应用级「详细内容」开关：该应用关掉了就只推标题，正文不上手环 ----
+        val effectiveBody = if (rule != null && !rule.showDetail) "" else body
+
+        // ---- 振动档位 → 告警类别（手环按类别存的振动模式来震）----
+        val alertCategory = Notify.alertCategoryFor(prefs.notifyVibration.first())
 
         // ---- 确保手环连着 ----
         val session = BandSessionProvider.get(this@BandNotificationListener)
@@ -205,21 +206,22 @@ class BandNotificationListener : NotificationListenerService() {
 
         // ---- 发送 ----
         val sent = runCatching {
-            session.sendNotification(finalAppName, title.ifBlank { "(无标题)" }, finalBody)
+            session.sendNotification(appLabel, title.ifBlank { "(无标题)" }, effectiveBody, alertCategory)
         }.onFailure { Log.w(TAG, "发送通知到手环失败", it) }.getOrDefault(false)
 
         val timeLabel = "%02d:%02d".format(LocalTime.now().hour, LocalTime.now().minute)
         prefs.recordNotification(
             BandNotification(
-                appName = finalAppName,
+                appName = appLabel,
                 title = title.ifBlank { "(无标题)" },
-                body = finalBody,
+                body = effectiveBody,
                 timeLabel = timeLabel,
                 forwarded = sent,
             ),
         )
 
-        Log.d(TAG, "通知${if (sent) "已转发" else "转发失败"}：$finalAppName / ${title.take(40)}")
+        Log.d(TAG, "通知${if (sent) "已转发" else "转发失败"}：$appLabel / ${title.take(40)}" +
+            if (rule != null && !rule.showDetail) "（该应用仅标题）" else "")
     }
 
     /**

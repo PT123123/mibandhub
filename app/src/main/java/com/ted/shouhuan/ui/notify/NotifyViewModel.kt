@@ -90,10 +90,6 @@ class NotifyViewModel(app: Application) : AndroidViewModel(app) {
     val onlyLocked: StateFlow<Boolean> =
         prefs.notifyOnlyLocked.stateIn(viewModelScope, SharingStarted.Eagerly, false)
 
-    val showAppName: StateFlow<Boolean> =
-        prefs.notifyShowAppName.stateIn(viewModelScope, SharingStarted.Eagerly, true)
-    val includeBody: StateFlow<Boolean> =
-        prefs.notifyIncludeBody.stateIn(viewModelScope, SharingStarted.Eagerly, true)
     val vibration: StateFlow<String> =
         prefs.notifyVibration.stateIn(viewModelScope, SharingStarted.Eagerly, "standard")
 
@@ -201,15 +197,21 @@ class NotifyViewModel(app: Application) : AndroidViewModel(app) {
 
     fun setOnlyLocked(enabled: Boolean) = launch { prefs.setNotifyOnlyLocked(enabled) }
 
-    fun setNotifyContent(showAppName: Boolean, includeBody: Boolean) =
-        launch { prefs.setNotifyContent(showAppName, includeBody) }
-
     fun setVibration(pattern: String) = launch { prefs.setNotifyVibration(pattern) }
 
     fun setAppEnabled(packageName: String, enabled: Boolean) = launch {
         prefs.setAppRules(
             prefs.appRules.first().map {
                 if (it.packageName == packageName) it.copy(enabled = enabled) else it
+            },
+        )
+    }
+
+    /** 单个应用的「详细内容」开关：关掉后该应用的通知只推标题，正文不上手环。 */
+    fun setAppShowDetail(packageName: String, showDetail: Boolean) = launch {
+        prefs.setAppRules(
+            prefs.appRules.first().map {
+                if (it.packageName == packageName) it.copy(showDetail = showDetail) else it
             },
         )
     }

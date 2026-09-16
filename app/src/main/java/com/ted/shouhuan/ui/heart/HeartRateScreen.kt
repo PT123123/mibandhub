@@ -262,9 +262,14 @@ fun HeartRateScreen(vm: HeartRateViewModel) {
             }.toMap()
         }
 
-        // ---- 读数趋势（真实记录，按测量次序从旧到新）----
+        // ---- 读数趋势（真实记录，按测量次序从旧到新）：默认收起，点开再看 ----
         Spacer(Modifier.height(12.dp))
-        SectionCard(title = "读数趋势", accent = PulseRed) {
+        CollapsibleSection(
+            title = "读数趋势",
+            accent = PulseRed,
+            badge = if (filtered.size >= 2) "${filtered.size} 次" else null,
+            initiallyExpanded = false,
+        ) {
             val trend = remember(filtered) { filtered.map { it.bpm.toFloat() }.reversed() }
             if (trend.size >= 2) {
                 Sparkline(
@@ -299,9 +304,13 @@ fun HeartRateScreen(vm: HeartRateViewModel) {
             }
         }
 
-        // ---- 统计（真实记录）----
+        // ---- 统计 + 区间分布（真实记录）：合并成一卡，默认收起 ----
         Spacer(Modifier.height(12.dp))
-        SectionCard(title = "读数统计", accent = StepBlue) {
+        CollapsibleSection(
+            title = "读数统计与分布",
+            accent = StepBlue,
+            initiallyExpanded = false,
+        ) {
             if (filtered.isEmpty()) {
                 Text(
                     "该范围内还没有测量记录",
@@ -321,21 +330,9 @@ fun HeartRateScreen(vm: HeartRateViewModel) {
                         valueColor = PulseRed,
                     )
                 }
-            }
-        }
-
-        Spacer(Modifier.height(12.dp))
-
-        // ---- 区间分布（真实记录）----
-        SectionCard(title = "区间分布", accent = PulseRed) {
-            if (filtered.isEmpty()) {
-                Text(
-                    "该范围内还没有测量记录",
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            } else {
-                val bpms = filtered.map { it.bpm }
+                Spacer(Modifier.height(12.dp))
+                HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.35f))
+                Spacer(Modifier.height(12.dp))
                 ZoneRow("过缓", "< 60", bpms.count { it < 60 }.toFloat() / bpms.size,
                     MaterialTheme.colorScheme.onSurfaceVariant)
                 Spacer(Modifier.height(10.dp))
@@ -346,13 +343,13 @@ fun HeartRateScreen(vm: HeartRateViewModel) {
             }
         }
 
-        // ---- 全部测量记录（可收缩大项）：每一条都能展开看细节 ----
+        // ---- 全部测量记录（可收缩大项）：默认收起，每一条都能展开看细节 ----
         Spacer(Modifier.height(12.dp))
         CollapsibleSection(
             title = "全部测量记录",
             accent = StepBlue,
             badge = "${filtered.size} 条",
-            initiallyExpanded = true,
+            initiallyExpanded = false,
             headerTrailing = {
                 if (history.isNotEmpty()) {
                     TextButton(onClick = { showClearConfirm = true }) {
