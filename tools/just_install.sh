@@ -204,17 +204,18 @@ case "$mode" in
   apk|android|app)
     if [ "${DRY_RUN:-0}" = "1" ]; then
       echo
-      echo "    [dry-run] bash tools/gradle.sh assembleDebug"
       echo "    [dry-run] bash tools/android_install.sh <debug apk> ${extra:-(唯一连接的设备)}"
       exit 0
     fi
-    echo
-    echo "==> 编译 APK"
-    bash tools/gradle.sh assembleDebug
+    # 只装不编译：装现成的 debug APK，绝不在这里触发 gradle。
     apkfile="$(ls app/build/outputs/apk/debug/*.apk 2>/dev/null | head -1 || true)"
-    [ -n "$apkfile" ] || { echo "错误：没找到 debug APK 产物" >&2; exit 1; }
+    if [ -z "$apkfile" ]; then
+      echo "错误：没找到已编译的 debug APK（app/build/outputs/apk/debug/）。" >&2
+      echo "先编译一次：just apk （或 just build apk），之后 just install 直接装现成的。" >&2
+      exit 1
+    fi
     echo
-    echo "==> 装到手机"
+    echo "==> 安装已有 APK：$(basename "$apkfile")"
     bash tools/android_install.sh "$apkfile" "$extra"
     ;;
 

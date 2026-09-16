@@ -188,21 +188,19 @@ switch -Exact ($Target) {
     "apk" {
         if ($DryRun) {
             Write-Host ""
-            Write-Host "    [dry-run] bash tools/gradle.sh assembleDebug"
             Write-Host "    [dry-run] bash tools/android_install.sh <debug apk> $Extra"
             exit 0
         }
-        Write-Host ""
-        Write-Host "==> 编译 APK"
-        Invoke-BashTool "tools/gradle.sh" @("assembleDebug")
-        if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+        # 只装不编译：找现成的 debug APK。没有就报错让用户先编译，
+        # 绝不在这里偷偷触发 gradle —— 编译要等几分钟，装机的语义就该是秒装。
         $apk = Get-ChildItem "app/build/outputs/apk/debug/*.apk" -ErrorAction SilentlyContinue | Select-Object -First 1
         if (-not $apk) {
-            Write-Host "错误：没找到 debug APK 产物"
+            Write-Host "错误：没找到已编译的 debug APK（app/build/outputs/apk/debug/）。"
+            Write-Host "先编译一次：just apk （或 just build apk），之后 just install 直接装现成的。"
             exit 1
         }
         Write-Host ""
-        Write-Host "==> 装到手机"
+        Write-Host "==> 安装已有 APK：$($apk.Name)（编译于 $($apk.LastWriteTime.ToString('yyyy-MM-dd HH:mm'))）"
         Invoke-BashTool "tools/android_install.sh" @($apk.FullName, $Extra)
         exit $LASTEXITCODE
     }
