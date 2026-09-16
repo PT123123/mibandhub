@@ -15,6 +15,14 @@ authkeys.txt
 authkeys.json
 *.authkey
 
+# ---- 正式版签名材料 ----
+# 只在跑「just release」的机器上存在。丢了 = 所有已安装 app 的设备都无法覆盖升级，
+# 只能卸载重装（数据全丢），仓库外的备份在 C:\Users\ted\Tools\keystores\shouhuan-<日期>\。
+*.p12
+*.jks
+*.keystore
+keystore.properties
+
 # ---- Android 工程（手环管理 App）----
 .gradle/
 local.properties

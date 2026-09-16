@@ -1,7 +1,18 @@
+import java.util.Properties
+
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.android)
     alias(libs.plugins.kotlin.compose)
+}
+
+// ---- 正式版签名（just release 用）------------------------------------------------
+// keystore.properties 在仓库根，被 .gitignore 覆盖；裸 clone（没有这个文件的机器）
+// 依然能编 debug、跑测试，只是出不了可分发的 release 包。
+// 密钥备份在仓库外：C:\Users\ted\Tools\keystores\shouhuan-<日期>\
+val keystorePropsFile = rootProject.file("keystore.properties")
+val keystoreProps = Properties().apply {
+    if (keystorePropsFile.exists()) keystorePropsFile.inputStream().use { load(it) }
 }
 
 android {
@@ -17,6 +28,17 @@ android {
         vectorDrawables { useSupportLibrary = true }
     }
 
+    signingConfigs {
+        create("release") {
+            if (keystorePropsFile.exists()) {
+                storeFile = rootProject.file(keystoreProps.getProperty("storeFile"))
+                storePassword = keystoreProps.getProperty("storePassword")
+                keyAlias = keystoreProps.getProperty("keyAlias")
+                keyPassword = keystoreProps.getProperty("keyPassword")
+            }
+        }
+    }
+
     buildTypes {
         release {
             isMinifyEnabled = false
@@ -24,6 +46,14 @@ android {
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro",
             )
+            // 刻意**不**回退 signingConfigs.debug：debug key 是每台机器随机生成的，
+            // 出的包能直装、看着一切正常，换台机器再发一版就变成「装不上更新」
+            // （INSTALL_FAILED_UPDATE_INCOMPATIBLE）—— 那是最难查的一种假象。
+            // 没有 keystore.properties 时这里什么都不设，assembleRelease 会产 unsigned 包，
+            // tools/just_release.ps1 会在自检里拦下来。
+            if (keystorePropsFile.exists()) {
+                signingConfig = signingConfigs.getByName("release")
+            }
         }
     }
 

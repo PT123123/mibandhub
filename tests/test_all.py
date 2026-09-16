@@ -252,10 +252,15 @@ class TestParseLog(unittest.TestCase):
 class TestCliEndToEnd(unittest.TestCase):
     """真的开子进程跑，验证从命令行到输出的整条链路。"""
 
+    # 子进程的中文输出钉死走 UTF-8：Windows 上管道默认用 ANSI 代码页（GBK）
+    # 编码，而下面所有断言都按 utf-8 解码 —— 不钉死的话，在 GBK 控制台环境
+    # 下子进程吐 GBK 字节，父进程 UnicodeDecodeError（stdout 直接变 None）
+    ENV = {**os.environ, "PYTHONIOENCODING": "utf-8"}
+
     def _run(self, *args: str) -> subprocess.CompletedProcess:
         return subprocess.run(
             [PY, os.path.join(ROOT, "parse_log.py"), *args],
-            capture_output=True, text=True, encoding="utf-8", cwd=ROOT,
+            capture_output=True, text=True, encoding="utf-8", cwd=ROOT, env=self.ENV,
         )
 
     def test_json_output(self) -> None:
@@ -297,6 +302,7 @@ class TestCliEndToEnd(unittest.TestCase):
         p = subprocess.run(
             [PY, os.path.join(ROOT, "parse_log.py"), "-", "--keys-only"],
             input=payload, capture_output=True, text=True, encoding="utf-8", cwd=ROOT,
+            env=self.ENV,
         )
         self.assertEqual(p.returncode, 0, p.stderr)
         self.assertEqual(len(p.stdout.strip().splitlines()), FIXTURE_KEY_COUNT)
@@ -309,7 +315,7 @@ class TestCliEndToEnd(unittest.TestCase):
     def test_main_tool_selftest_cli(self) -> None:
         p = subprocess.run(
             [PY, os.path.join(ROOT, "xiaomi_authkey.py"), "--selftest"],
-            capture_output=True, text=True, encoding="utf-8", cwd=ROOT,
+            capture_output=True, text=True, encoding="utf-8", cwd=ROOT, env=self.ENV,
         )
         self.assertEqual(p.returncode, 0, p.stderr)
         self.assertIn("自检全部通过", p.stdout)
@@ -318,7 +324,7 @@ class TestCliEndToEnd(unittest.TestCase):
         """--token-mode 缺参数时必须友好报错，不能抛栈。"""
         p = subprocess.run(
             [PY, os.path.join(ROOT, "xiaomi_authkey.py"), "--token-mode", "--ssecurity", "x"],
-            capture_output=True, text=True, encoding="utf-8", cwd=ROOT,
+            capture_output=True, text=True, encoding="utf-8", cwd=ROOT, env=self.ENV,
         )
         self.assertEqual(p.returncode, 2)
         self.assertNotIn("Traceback", p.stderr)
@@ -328,6 +334,7 @@ class TestCliEndToEnd(unittest.TestCase):
             [PY, os.path.join(ROOT, "xiaomi_authkey.py"),
              "-e", "a@b.c", "--password-stdin"],
             input="", capture_output=True, text=True, encoding="utf-8", cwd=ROOT,
+            env=self.ENV,
         )
         self.assertEqual(p.returncode, 2)
         self.assertNotIn("Traceback", p.stderr)
@@ -336,7 +343,7 @@ class TestCliEndToEnd(unittest.TestCase):
     def test_help_documents_password_stdin(self) -> None:
         p = subprocess.run(
             [PY, os.path.join(ROOT, "xiaomi_authkey.py"), "-h"],
-            capture_output=True, text=True, encoding="utf-8", cwd=ROOT,
+            capture_output=True, text=True, encoding="utf-8", cwd=ROOT, env=self.ENV,
         )
         self.assertEqual(p.returncode, 0, p.stderr)
         self.assertIn("--password-stdin", p.stdout)
