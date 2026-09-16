@@ -1,18 +1,21 @@
-﻿# tools/just_install.ps1 —— just install 的 PowerShell 实现（Windows 优先走这份）。
+﻿# tools/just_install.ps1 —— just install 的 PowerShell 实现（唯一入口）。
 #
 # 为什么有它：just → bash 的这条链路在个别终端环境里，bash 继承到的 adb
 # 可能不是平时用的那个（profile 动过 PATH、多个 platform-tools 互杀 server），
 # 甚至环境变量都缺（LOCALAPPDATA unbound）。用户的交互终端是 pwsh 7，
 # 就让 Windows 上直接跑 PowerShell，绕开 bash 继承环境的坑。
 #
-# justfile 的 install 配方会自动挑执行器：pwsh → powershell.exe → bash 版
-# （tools/just_install.sh，留给 Termux 和没有 PowerShell 的环境）。
-# cli / termux / 直接给路径这几种目标本来就靠 bash 工具链，转回 bash 版执行。
+# cli / termux / 直接给路径这几种目标本来就是 bash 工具链的活
+# （tools/install_cli.sh、termux/install.sh），在这里经 Git Bash 转过去。
 param(
     [string]$Target = "auto",
     [string]$Extra = ""
 )
 $ErrorActionPreference = "Stop"
+
+# 管道/重定向场景下的中文编码：直接写控制台用 WriteConsoleW 不受影响，
+# 但被 bash/CI 捕获时走 [Console]::OutputEncoding，默认是 GBK 会变乱码
+try { [Console]::OutputEncoding = [System.Text.Encoding]::UTF8 } catch { }
 
 $root = Split-Path -Parent $PSScriptRoot
 Set-Location $root
@@ -60,10 +63,10 @@ function Invoke-BashTool([string]$ScriptPath, [string[]]$ScriptArgs) {
     & $script:gitBash $ScriptPath @ScriptArgs
 }
 
-# cli / termux / 直接给路径：本来就是 bash 工具链的活，转回 bash 版
-if ($Target -eq "cli" -or $Target -eq "termux" -or $Target -match '^(~|\./|\.\./|/)') {
-    Invoke-BashTool "tools/just_install.sh" @($Target, $Extra)
-    exit $LASTEXITCODE
+# 位置参数直接给路径（just install /some/dir、~\bin 之类）时当成 cli 的目标目录
+if ($Target -match '^(~|\./|\.\./|[A-Za-z]:[\\/]|/|\\)') {
+    $Extra = $Target
+    $Target = "cli"
 }
 
 $sdkAdb = if ($env:LOCALAPPDATA) { Join-Path $env:LOCALAPPDATA "Android\Sdk\platform-tools\adb.exe" } else { $null }
@@ -205,10 +208,18 @@ switch -Exact ($Target) {
         exit $LASTEXITCODE
     }
     "termux" {
+        if ($DryRun) {
+            Write-Host "    [dry-run] bash termux/install.sh"
+            exit 0
+        }
         Invoke-BashTool "termux/install.sh" @()
         exit $LASTEXITCODE
     }
     "cli" {
+        if ($DryRun) {
+            Write-Host "    [dry-run] bash tools/install_cli.sh $Extra"
+            exit 0
+        }
         Invoke-BashTool "tools/install_cli.sh" @($Extra)
         exit $LASTEXITCODE
     }
