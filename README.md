@@ -185,16 +185,44 @@ App 连手环只需要两样东西：**手环的 MAC** 和 **AuthKey**（32 位�
 `IllegalStateException: incorrect health permission states` —— 授权对话框能弹、
 权限能授，但一读取就挂。本项目用 `HealthRationaleActivity` 满足。
 
-### 桌面控件：1×1 睡眠时长 / 1×2 睡眠+心率曲线
+### 桌面控件：昨晚睡眠（主，2×2）/ 1×2 睡眠+心率 / 1×1 睡眠时长
 
-两个桌面小部件（`com.ted.shouhuan.widget`），**走标准 RemoteViews AppWidget**
-—— 只用 LinearLayout/TextView/ImageView 这类远程视图白名单控件，不依赖任何
-厂商私有接口，小米澎湃OS、联想 ZUI 以及其他原生桌面上是同一套代码：
+三个桌面小部件（`com.ted.shouhuan.widget`），**走标准 RemoteViews AppWidget**
+—— 只用 LinearLayout/TextView/ImageView/ProgressBar 这类远程视图白名单控件，
+不依赖任何厂商私有接口：
 
-| 控件 | 内容 | 尺寸声明 |
-|---|---|---|
-| 睡眠时长 | 最近一晚睡眠时长（醒来那天是今天标「昨晚睡眠」，否则直接标日期），点了开应用 | 1×1 格（`targetCellWidth/Height=1/1`，12- 的桌面按 `minWidth/Height=40dp` 落格） |
-| 睡眠与心率 | 上半同上的睡眠块，下半是近 24 小时心率曲线（当前 bpm + 曲线图里带低/高角标） | 1×2 格（1 列宽 × 2 行高） |
+| 控件 | 内容 | 尺寸声明 | 添加入口 |
+|---|---|---|---|
+| 昨晚睡眠 | 时长 + 入睡→醒来；拉大显示得分、分期占比条、夜间清醒 | 2×2 起步（`minWidth/Height=110dp`，小米小部件规范的认可尺寸），可拉到 1×2 / 4×4 | **长按应用图标菜单**（唯一配了 `miuiWidget` 标识的控件）、应用内「添加到桌面」 |
+| 睡眠与心率 | 上半是睡眠块，下半是近 24 小时心率曲线（当前 bpm + 曲线里的低/高角标） | 1×2 格（1 列宽 × 2 行高） | 桌面「安卓小组件」、应用内「添加到桌面」 |
+| 睡眠时长 | 最近一晚睡眠时长（醒来那天是今天标「昨晚睡眠」，否则直接标日期），点了开应用 | 1×1 格（`targetCellWidth/Height=1/1`，12- 的桌面按 `minWidth/Height=40dp` 落格） | 同上 |
+
+#### 「长按应用图标 → 添加控件」为什么不生效（2026-09-17 查清）
+
+澎湃OS/MIUI 长按图标菜单里那块**控件预览只收录「小米小部件」**——判定依据是 manifest 里
+有没有小米小部件标识（`<meta-data android:name="miuiWidget" android:value="true"/>`，
+小米小部件技术规范 §4），侧载 App 不写这个标识就永远进不了那一格。之前试过的
+「补 `com.android.launcher.permission.INSTALL_SHORTCUT` 系列权限」是无效尝试：那批权限
+管的是控件/快捷方式**钉到桌面**这一步，跟能否被列出来无关（列不列由 AppWidgetService
+里的 provider 注册状态决定）。现在做了三件事：
+
+1. **主控件按小米小部件规范配齐**：`miuiWidget` 标识 + 小米认可的尺寸（2×2 / 4×2 / 4×4，
+   1×1 这种非标尺寸进不了体系，§3）+ 根布局 `@android:id/background`（§7，系统靠这个固定
+   id 统一加圆角，并要求根布局有非全透明背景）+ label 2~8 汉字且不等于应用名（§12.5）。
+2. **加静态快捷方式**（`res/xml/shortcuts.xml`）：长按应用图标 → 「添加桌面控件」，点一下由
+   无界面中转页 `WidgetPinActivity` 走 `requestPinAppWidget` 把主控件钉到桌面。长按菜单只认
+   静态快捷方式，这是第三方 App 自己能给的那条入口（Widgets 是广播接收者，发不了固定请求，
+   必须由前台 Activity 发起，所以中间需要这个中转页）。
+3. **应用内卡片保留三个「添加到桌面」**，小米/红米上额外提示真实路径（桌面双指捏合 →
+   添加小部件 → 手环管家 / 底部「安卓小组件」）以及**应用信息 → 权限管理 → 其他权限 →
+   桌面快捷方式**这个特殊权限：红米上它关着时 `requestPinAppWidget` 不会落控件。
+   故意**不**传小米规范的 `addType=appWidgetDetail` extras —— 那会去调「小米Widget 商店
+   详情页」，而详情页只列通过了小米审核上架的组件，侧载 App 传了只会把用户丢进空页面。
+
+另外，小米的刷新广播 `miui.appwidget.action.APPWIDGET_UPDATE`（展现刷新）在
+`BandWidgetProvider` 里接住了：原生 `AppWidgetProvider` 只认
+`android.appwidget.action.APPWIDGET_UPDATE`，不接这条，澎湃OS 桌面刷新控件时发的广播会被
+丢掉，控件只能干等 30 分钟周期或下一次同步。
 
 实现要点：
 
@@ -224,11 +252,14 @@ just install          # 自动判断装什么（adb 设备 → APK；Termux → 
 ```bash
 just build apk        # 只编译 APK
 just build tools      # 只跑 Python 那套
-just install apk      # 编译并装到 adb 连接的手机（自动处理国产 ROM 拦截）
+just install apk      # 只装不编译：把现成的 debug APK 装到 adb 连接的手机
 just install cli      # 只装 xiaomi-authkey / parse-log 命令行入口
-just apk release      # 编译 release
+just apk release      # 单独编 release（不出正式分发包；分发走 just release）
 just android-clean    # 清理 Android 构建产物
 ```
+
+给人装 / 要在手机上长期用、还想在线升级时，别用上面这套，走 `just release`
+（正式签名 + GitHub Release + Obtainium），见下一节。
 
 > **构建默认走离线**。本机 `dl.google.com` 不可达、`maven.google.com` 超时，让 gradle
 > 在线解析依赖会长时间空转（实测一次 `assembleDebug` 卡了 26 分钟、一个文件都没产出）。
@@ -242,6 +273,67 @@ just android-clean    # 清理 Android 构建产物
 > 国产 ROM 常拦 `adb install`（报 `INSTALL_FAILED_USER_RESTRICTED`）。
 > `tools/android_install.sh` 做了三级降级：`adb install` → `pm install` → 调起系统安装器 UI，
 > 最后一级需要你在手机上点一下「安装」。
+
+## 正式版分发（GitHub Release + Obtainium）
+
+给手机/平板长期用的那个包走 GitHub Release，配 [Obtainium](https://github.com/ImranR98/Obtainium)
+在线升级 —— 不用每次改版本都重新 adb 装机。
+
+**永久直链**（每发一版自动指向最新，Obtainium 少配置一项就靠它）：
+
+    https://github.com/PT123123/mibandhub/releases/latest/download/shouhuan.apk
+
+### 为什么必须用正式 key
+
+`debug` 包签的是 `~/.android/debug.keystore`，**每个 JDK 安装/每台机器都会重新生成**。
+拿 debug 包分发，换个环境发下一版就是「同包名、不同签名」——用户点安装直接
+`INSTALL_FAILED_UPDATE_INCOMPATIBLE`，只能卸载重装（配对信息全丢）。
+
+所以正式包用仓库外备份的那把 key：
+
+| 东西 | 位置 |
+|---|---|
+| 密钥 + 口令（工作副本） | 仓库根 `shouhuan-release.p12` + `keystore.properties`，已被 `.gitignore` 覆盖 |
+| 备份（唯一无法补救的资产） | `C:\Users\ted\Tools\keystores\shouhuan-<日期>\` |
+| 证书 SHA256 | `75:0C:2C:B8:E4:8E:CC:C4:55:E4:3D:F8:65:71:41:4C:53:D5:69:69:8C:F7:77:FC:89:21:D8:97:16:91:33:3D` |
+
+**这把 key 丢了 = 所有已安装的设备以后都装不上更新**，只能卸载重装。请另外往密码管理器里存一份。
+`keystore.properties` 不存在时 gradle 依然能编 debug / 跑测试，只是出不了可分发的 release 包
+（刻意**不**回退 debug key —— 那样出的包能直装、看着一切正常，换台机器才暴雷）。
+
+### 发一版
+
+```bash
+just release bump     # versionCode+1、versionName 末段+1（发新版必做，否则用户装不上）
+just release          # assembleRelease → dist/shouhuan.apk(+留档副本) → 自检签名/包名/版本
+git push              # 代码先上去（publish 会拦下没 push 的情况）
+just release publish  # 打 tag v<版本> + gh release create + 真下载一次比 sha256
+```
+
+`just release` 的自检是硬门槛：**拒收 `CN=Android Debug` 签的包**、校验包名与
+`versionCode/versionName` 和 `build.gradle.kts` 一致、包不能比最后一次提交旧。
+
+`just release publish` 的四道闸：① 工作区必须干净 ② HEAD 必须已 push
+③ 同名 tag 不能指向别的 commit ④ 发布后真去拉一次永久直链比对 sha256。
+它每条 `gh` 命令都显式带 `-R PT123123/mibandhub` —— 仓库里一旦出现 `upstream` remote，
+`gh` 会优先往 upstream 发（报 `422 target_commitish is invalid`），不能让它自己猜。
+
+### 资产命名（别改）
+
+Release 上挂两份同名内容：`shouhuan.apk`（固定名，直链和 Obtainium 认它）+
+`shouhuan-<版本>.apk`（留档）。**固定名是刻意的** —— `releases/latest/download/<name>`
+按资产名精确匹配，名字里带版本号的话每发一版都得改配置。
+
+### Obtainium 配置
+
+1. 添加应用 → 选 **GitHub**，仓库地址填 `https://github.com/PT123123/mibandhub`
+2. 版本号正则、APK 筛选正则都填 `^shouhuan\.apk$`，压实只认固定名那一份
+3. 「包含预发布」不用开
+
+> **首次从 debug 包切过来**：两者包名都是 `com.ted.shouhuan`，签名不同 → 装不上，
+> 需要先卸载旧版再装（配对信息要重填一次，用 `just fetch` 拿 AuthKey 粘进配对页即可）。
+> 之后 Obtainium 就能一直覆盖升级。装了正式包以后，`just app-install`（debug）会因签名冲突失败，
+> 要本地调试就先卸正式包。
 
 ## 协议要点（都从 Gadgetbridge 源码核对过，不是凭记忆写的）
 
