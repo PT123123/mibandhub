@@ -2,10 +2,12 @@ package com.ted.shouhuan.ui.notify
 
 import android.app.Application
 import android.bluetooth.BluetoothManager
+import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Build
+import android.provider.Settings
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
@@ -15,6 +17,7 @@ import com.ted.shouhuan.data.BandNotification
 import com.ted.shouhuan.data.BandPrefs
 import com.ted.shouhuan.data.DemoData
 import com.ted.shouhuan.data.InstalledApp
+import com.ted.shouhuan.service.BandNotificationListener
 import com.ted.shouhuan.service.BandSessionProvider
 import com.ted.shouhuan.service.HeartMeasureController
 import com.ted.shouhuan.util.minuteOfDayToClock
@@ -84,6 +87,9 @@ class NotifyViewModel(app: Application) : AndroidViewModel(app) {
     val dedupeSeconds: StateFlow<Int> =
         prefs.dedupeSeconds.stateIn(viewModelScope, SharingStarted.Eagerly, 30)
 
+    val onlyLocked: StateFlow<Boolean> =
+        prefs.notifyOnlyLocked.stateIn(viewModelScope, SharingStarted.Eagerly, false)
+
     val showAppName: StateFlow<Boolean> =
         prefs.notifyShowAppName.stateIn(viewModelScope, SharingStarted.Eagerly, true)
     val includeBody: StateFlow<Boolean> =
@@ -138,6 +144,37 @@ class NotifyViewModel(app: Application) : AndroidViewModel(app) {
     private val _testSend = MutableStateFlow<TestSendState>(TestSendState.Idle)
     val testSend: StateFlow<TestSendState> = _testSend.asStateFlow()
 
+    /** 通知监听权限是否已授予（读 Settings.Secure 的 enabled_notification_listeners）。 */
+    private val _notifyPermission = MutableStateFlow(checkNotifyPermission(getApplication()))
+    val notifyPermission: StateFlow<Boolean> = _notifyPermission.asStateFlow()
+
+    /** 从系统设置页返回后调一次，刷新权限状态。 */
+    fun refreshNotifyPermission() {
+        _notifyPermission.value = checkNotifyPermission(getApplication())
+    }
+
+    /** 生成跳转到系统通知监听设置页的 Intent（不同 ROM 入口不同，这里用通用入口 + 兜底）。 */
+    fun notifyListenerSettingsIntent(): Intent {
+        val app = getApplication<Application>()
+        val general = Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS).apply {
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        }
+        return if (general.resolveActivity(app.packageManager) != null) {
+            general
+        } else {
+            Intent(Settings.ACTION_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        }
+    }
+
+    private fun checkNotifyPermission(context: Context): Boolean {
+        val raw = runCatching {
+            Settings.Secure.getString(context.contentResolver, "enabled_notification_listeners")
+        }.getOrNull() ?: return false
+        if (raw.isBlank()) return false
+        val our = ComponentName(context, BandNotificationListener::class.java).flattenToString()
+        return raw.split(':').any { it.trim() == our }
+    }
+
     fun setForward(enabled: Boolean) = launch { prefs.setForwardNotifications(enabled) }
 
     fun setDnd(enabled: Boolean) = launch { prefs.setDndEnabled(enabled) }
@@ -161,6 +198,8 @@ class NotifyViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun setDedupe(enabled: Boolean, seconds: Int) = launch { prefs.setDedupe(enabled, seconds) }
+
+    fun setOnlyLocked(enabled: Boolean) = launch { prefs.setNotifyOnlyLocked(enabled) }
 
     fun setNotifyContent(showAppName: Boolean, includeBody: Boolean) =
         launch { prefs.setNotifyContent(showAppName, includeBody) }
