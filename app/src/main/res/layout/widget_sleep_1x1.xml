@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!-- 1×1 睡眠时长控件。远程视图只能用白名单控件；时长交给 autoSize 缩放，
-     五列网格的窄格子里也放得下「7小时12分」。 -->
+     五列网格的窄格子里也放得下「7H12分」。 -->
 <LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
     android:id="@+id/widget_sleep_root"
     android:layout_width="match_parent"
