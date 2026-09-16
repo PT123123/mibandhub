@@ -41,8 +41,24 @@ if (-not (Test-Path "xiaomi_authkey.py")) {
 $AssetFixed = "shouhuan.apk"
 $PackageName = "com.ted.shouhuan"
 $nl = [Environment]::NewLine
+$script:gh = "gh"
+$script:GhOutput = ""
 
 function Say([string]$msg) { Write-Host $msg }
+
+# 跑一条 gh 命令，返回退出码（输出留在 $script:GhOutput）。
+# 关键点：gh 在「没找到」这类正常分支上也会往 stderr 写东西，而 $ErrorActionPreference=Stop
+# 会把原生命令的 stderr 输出升级成终止性错误（NativeCommandError）—— 脚本还没走到读
+# 退出码就挂了。所以这里临时把偏好调回 Continue。
+function Invoke-Gh([string[]]$GhArgs) {
+    $eap = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    try {
+        $script:GhOutput = ((& $script:gh @GhArgs 2>&1) | Out-String)
+        return $LASTEXITCODE
+    }
+    finally { $ErrorActionPreference = $eap }
+}
 
 function Fail([string]$msg) {
     Write-Host ""
@@ -369,19 +385,30 @@ dist/$AssetFixed 不是当前源码出的（源码指纹对不上），发出去
     $notes = New-ReleaseNotes $Tag $slug $versioned $Sha
 
     # 5) gh release（每条命令都显式 -R，别让 gh 自己猜仓库）
-    $gh = $env:GH
-    if (-not $gh) { $gh = "gh" }
+    $script:gh = $env:GH
+    if (-not $script:gh) { $script:gh = "gh" }
+    #    「有没有同名 Release」用 release list 判断，不用 release view：view 在不存在时
+    #    会往 stderr 写 "release not found"，而 $ErrorActionPreference=Stop 会把原生命令的
+    #    stderr 输出当成终止性错误（NativeCommandError），`2>$null` 也拦不住。
+    if ((Invoke-Gh @("release", "list", "-R", $slug, "--json", "tagName", "-L", "200")) -ne 0) {
+        Fail "gh release list 失败：$($script:GhOutput)"
+    }
+    $exists = $script:GhOutput -match ('"tagName"\s*:\s*"' + [regex]::Escape($Tag) + '"')
+
     $assets = @("dist/$AssetFixed", "dist/$versioned")
-    & $gh release view $Tag -R $slug 2>$null | Out-Null
-    if ($LASTEXITCODE -eq 0) {
+    if ($exists) {
         Say "  Release 已存在 → 只覆盖上传资产"
-        & $gh release upload $Tag -R $slug --clobber @assets
-        if ($LASTEXITCODE -ne 0) { Fail "gh release upload 失败" }
+        if ((Invoke-Gh (@("release", "upload", $Tag, "-R", $slug, "--clobber") + $assets)) -ne 0) {
+            Fail "gh release upload 失败：$($script:GhOutput)"
+        }
     }
     else {
-        & $gh release create $Tag -R $slug --title $Tag --notes-file $notes --verify-tag @assets
-        if ($LASTEXITCODE -ne 0) { Fail "gh release create 失败（看上面 gh 的输出）" }
+        if ((Invoke-Gh (@("release", "create", $Tag, "-R", $slug, "--title", $Tag,
+                        "--notes-file", $notes, "--verify-tag") + $assets)) -ne 0) {
+            Fail "gh release create 失败：$($script:GhOutput)"
+        }
     }
+    Say "  $($script:GhOutput.Trim())"
 
     # 6) 真下载一次比 sha256 —— 只看网页显示「已发布」不算验证
     $url = "https://github.com/$slug/releases/latest/download/$AssetFixed"
