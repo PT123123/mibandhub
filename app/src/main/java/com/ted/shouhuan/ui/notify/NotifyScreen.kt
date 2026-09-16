@@ -41,6 +41,7 @@ import androidx.compose.material3.TextButton
 import androidx.compose.material3.TimePicker
 import androidx.compose.material3.rememberTimePickerState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -49,6 +50,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -70,7 +72,9 @@ private val VIBRATION_LABELS = listOf("标准", "短促", "双震")
 
 @Composable
 fun NotifyScreen(vm: NotifyViewModel) {
+    val context = LocalContext.current
     val forwardEnabled by vm.forwardEnabled.collectAsStateWithLifecycle()
+    val notifyPermission by vm.notifyPermission.collectAsStateWithLifecycle()
     val dndEnabled by vm.dndEnabled.collectAsStateWithLifecycle()
     val dndStart by vm.dndStart.collectAsStateWithLifecycle()
     val dndEnd by vm.dndEnd.collectAsStateWithLifecycle()
@@ -78,6 +82,7 @@ fun NotifyScreen(vm: NotifyViewModel) {
     val keywords by vm.keywords.collectAsStateWithLifecycle()
     val dedupeEnabled by vm.dedupeEnabled.collectAsStateWithLifecycle()
     val dedupeSeconds by vm.dedupeSeconds.collectAsStateWithLifecycle()
+    val onlyLocked by vm.onlyLocked.collectAsStateWithLifecycle()
     val showAppName by vm.showAppName.collectAsStateWithLifecycle()
     val includeBody by vm.includeBody.collectAsStateWithLifecycle()
     val vibration by vm.vibration.collectAsStateWithLifecycle()
@@ -85,6 +90,9 @@ fun NotifyScreen(vm: NotifyViewModel) {
     val installedApps by vm.installedApps.collectAsStateWithLifecycle()
     val recent by vm.recent.collectAsStateWithLifecycle()
     val testSend by vm.testSend.collectAsStateWithLifecycle()
+
+    // 每次进入页面都刷新一次权限状态（从系统设置授权回来也能看到最新状态）
+    LaunchedEffect(Unit) { vm.refreshNotifyPermission() }
 
     // 弹层状态：勿扰时间选择 / 关键词新增 / 添加转发应用
     var editingDndEdge by remember { mutableStateOf<String?>(null) }
@@ -114,6 +122,30 @@ fun NotifyScreen(vm: NotifyViewModel) {
         Spacer(Modifier.height(14.dp))
         Text("通知", style = MaterialTheme.typography.titleLarge)
         Spacer(Modifier.height(16.dp))
+
+        // ---- 通知监听权限检查：没授权就高亮提示，这是一切转发的前提 ----
+        if (!notifyPermission) {
+            NoticeBanner(
+                title = "需要开启「通知使用权限」",
+                tone = PulseRed,
+                detail = "手环管家需要读取手机通知，才能把微信、短信等消息转发到手环。" +
+                    "现在没有权限，下面的转发规则都不会生效。",
+                action = {
+                    Spacer(Modifier.height(10.dp))
+                    Button(
+                        onClick = { context.startActivity(vm.notifyListenerSettingsIntent()) },
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = PulseRed,
+                            contentColor = MaterialTheme.colorScheme.onPrimary,
+                        ),
+                        shape = RoundedCornerShape(12.dp),
+                    ) {
+                        Text("去系统设置授权")
+                    }
+                },
+            )
+            Spacer(Modifier.height(12.dp))
+        }
 
         // ---- 转发总开关 ----
         SectionCard(title = "转发到手机", accent = NotifyAmber) {
@@ -221,6 +253,14 @@ fun NotifyScreen(vm: NotifyViewModel) {
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
+            Spacer(Modifier.height(8.dp))
+            SwitchSettingRow(
+                title = "仅锁屏时转发",
+                subtitle = "亮屏使用手机期间的通知不推到手环，锁屏后才转发",
+                checked = onlyLocked,
+                onCheckedChange = vm::setOnlyLocked,
+                accent = NotifyAmber,
+            )
         }
 
         Spacer(Modifier.height(12.dp))
