@@ -11,9 +11,10 @@
 #   just build              全项目构建：Python 校验/测试/打包 + 编译 APK
 #   just build apk          只编译 APK
 #   just build tools        只做 Python 那套
-#   just install            自动判断装什么（adb 设备 → APK；Termux → 小部件；否则 → 命令行入口）
-#   just install phone      编译并装到「手机」—— 多台 adb 设备（手机+平板）里认出手机那台
-#   just install apk        编译并装到手机
+#   just install            只装不编译：自动判断装什么（adb 设备 → APK；Termux → 小部件；否则 → 命令行入口）
+#   just install phone      只装不编译：装到「手机」—— 多台 adb 设备（手机+平板）里认出手机那台
+#   just install apk        只装不编译：把现成的 debug APK 装到手机
+#   just app-install        编译 + 安装一步到位
 #   just install cli        装 xiaomi-authkey / parse-log 命令行入口
 #   just install termux     装 Termux 桌面小部件
 #   just clean              清 Python 缓存与 dist/
@@ -21,7 +22,7 @@
 #
 #  —— 细分命令（要单独跑某一步时用）——
 #   just apk [release]      编译 APK
-#   just app-install        编译并装机（等价于 just install apk）
+#   just app-install        编译并装机（编译 + 安装一步到位）
 #   just android-clean      只清 Android 产物
 #   just deps               联网拉一次依赖（改依赖版本后用）
 #   just fetch              从 adb 连接的手机直接提取手环 AuthKey（手机端零操作）
@@ -126,6 +127,8 @@ build target="all":
 
 
 # 安装到该装的地方：没给目标就自动判断（DRY_RUN=1 只打印不执行）。
+# **只装不编译** —— APK 目标装的是 app/build/outputs/apk/debug/ 下现成的包，
+# 没有就报错提示先跑 just apk；要编译 + 安装一步到位用 just app-install。
 #
 #   just install                自动判断
 #   just install phone          装到「手机」：多台 adb 设备里认出手机那台（跳过平板）
