@@ -43,6 +43,14 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TimePicker
 import androidx.compose.material3.rememberTimePickerState
+import android.appwidget.AppWidgetProvider
+import android.content.Context
+import com.ted.shouhuan.widget.SleepDetailWidgetProvider
+import com.ted.shouhuan.widget.SleepHeartWidgetProvider
+import com.ted.shouhuan.widget.SleepWidgetProvider
+import com.ted.shouhuan.widget.isMiui
+import com.ted.shouhuan.widget.openAppSettings
+import com.ted.shouhuan.widget.pinWidgetToHome
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -61,6 +69,7 @@ import com.ted.shouhuan.data.BatterySample
 import com.ted.shouhuan.data.HealthConnectSleepSource
 import com.ted.shouhuan.data.Pairing
 import com.ted.shouhuan.proto.BandSettings
+import com.ted.shouhuan.ui.components.CollapsibleSection
 import com.ted.shouhuan.ui.components.DragReorderList
 import com.ted.shouhuan.ui.components.FilterChipRow
 import com.ted.shouhuan.ui.components.KeyValueRow
@@ -312,6 +321,10 @@ fun DeviceScreen(vm: DeviceViewModel, onPair: () -> Unit) {
             }
         }
 
+        // ---- 桌面控件：主动添加到桌面，绕开长按图标菜单的控件列表缓存 ----
+        Spacer(Modifier.height(12.dp))
+        WidgetAddCard()
+
         // ---- 连接失败：说清出了什么事 + 怎么办 ----
         val current = error
         if (current != null) {
@@ -370,8 +383,13 @@ fun DeviceScreen(vm: DeviceViewModel, onPair: () -> Unit) {
 
         Spacer(Modifier.height(12.dp))
 
-        // ---- 电量记录：时间点 + 电量，攒起来看耗电速度 ----
-        SectionCard(title = "电量记录", accent = Mint) {
+        // ---- 电量记录：默认收起 —— 明细只有点开时才排版，最新读数贴在标题上 ----
+        CollapsibleSection(
+            title = "电量记录",
+            accent = Mint,
+            badge = batteryHistory.lastOrNull()?.let { "最新 ${it.percent}%" } ?: "暂无",
+            initiallyExpanded = false,
+        ) {
             val latest = batteryHistory.lastOrNull()
             if (latest == null) {
                 Text(
@@ -520,8 +538,12 @@ fun DeviceScreen(vm: DeviceViewModel, onPair: () -> Unit) {
 
         Spacer(Modifier.height(12.dp))
 
-        // ---- 手环设置：连接后整套下发，当场改动当场推 ----
-        SectionCard(title = "手环设置", accent = Mint) {
+        // ---- 手环设置：连接后整套下发，当场改动当场推。默认收起，要用再展开 ----
+        CollapsibleSection(
+            title = "手环设置",
+            accent = Mint,
+            initiallyExpanded = false,
+        ) {
             settingsStatus?.let { status ->
                 Text(
                     status,
@@ -667,8 +689,12 @@ fun DeviceScreen(vm: DeviceViewModel, onPair: () -> Unit) {
 
         Spacer(Modifier.height(12.dp))
 
-        // ---- 菜单顺序 / 快捷方式：长按拖拽排序 ----
-        SectionCard(title = "菜单顺序", accent = StepBlue) {
+        // ---- 菜单顺序 / 快捷方式：长按拖拽排序。列表长且不常动，默认收起 ----
+        CollapsibleSection(
+            title = "菜单顺序",
+            accent = StepBlue,
+            initiallyExpanded = false,
+        ) {
             Text(
                 "手环上划菜单的显示顺序。长按拖动排序，「表盘」固定在第一位，最多 16 项。",
                 style = MaterialTheme.typography.labelMedium,
@@ -691,7 +717,11 @@ fun DeviceScreen(vm: DeviceViewModel, onPair: () -> Unit) {
 
         Spacer(Modifier.height(12.dp))
 
-        SectionCard(title = "快捷方式", accent = NotifyAmber) {
+        CollapsibleSection(
+            title = "快捷方式",
+            accent = NotifyAmber,
+            initiallyExpanded = false,
+        ) {
             Text(
                 "表盘界面左右滑显示的快捷卡片。长按拖动排序，点 × 移除。",
                 style = MaterialTheme.typography.labelMedium,
@@ -714,8 +744,12 @@ fun DeviceScreen(vm: DeviceViewModel, onPair: () -> Unit) {
 
         Spacer(Modifier.height(12.dp))
 
-        // ---- 手机提醒：手机这边的状态转成手环通知 ----
-        SectionCard(title = "手机提醒", accent = PulseRed) {
+        // ---- 手机提醒：手机这边的状态转成手环通知。默认收起 ----
+        CollapsibleSection(
+            title = "手机提醒",
+            accent = PulseRed,
+            initiallyExpanded = false,
+        ) {
             Text(
                 "手机这边发生的事，转成一条手环通知。手环不在连接范围内时不会补发。",
                 style = MaterialTheme.typography.labelMedium,
@@ -1114,4 +1148,78 @@ private fun AddItemChips(
         accent = accent,
         onSelect = { index -> onAdd(all[index]) },
     )
+}
+
+/**
+ * 桌面控件添加入口：三个控件各一行「添加到桌面」，走系统 requestPinAppWidget 直接钉到桌面。
+ *
+ * 为什么不能只靠长按图标菜单：长按菜单里的控件预览只给接了小米小部件体系的 App 留位
+ * （第三方 App 侧载装的历史上就没有这一格），桌面自己那份小部件列表又按包名缓存。
+ * 所以：主控件按小米小部件规范配置（长按图标菜单能收录）+ 静态快捷方式给一条
+ * 「添加桌面控件」，再加这里的固定按钮，三条路至少有一条能走通。
+ */
+@Composable
+private fun WidgetAddCard() {
+    val context = LocalContext.current
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(24.dp))
+            .background(MaterialTheme.colorScheme.surface)
+            .padding(20.dp),
+    ) {
+        Text("桌面控件", style = MaterialTheme.typography.titleMedium)
+        Spacer(Modifier.height(4.dp))
+        Text(
+            "点「添加到桌面」由系统弹位置选择；长按应用图标，菜单里也有「添加桌面控件」。",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Spacer(Modifier.height(10.dp))
+        WidgetAddRow("昨晚睡眠（2×2，可拉大）", SleepDetailWidgetProvider::class.java, context)
+        WidgetAddRow("睡眠与心率", SleepHeartWidgetProvider::class.java, context)
+        WidgetAddRow("睡眠时长", SleepWidgetProvider::class.java, context)
+        Spacer(Modifier.height(4.dp))
+        if (isMiui()) {
+            Text(
+                "小米/红米点了没反应？到桌面双指捏合（或长按空白处）→ 添加小部件 → 找「手环管家」，" +
+                    "没有就滑到最底部的「安卓小组件」；并确认 应用信息 → 权限管理 → 其他权限 " +
+                    "里的「桌面快捷方式」是打开的。",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            TextButton(onClick = { openAppSettings(context) }) {
+                Text("打开应用信息")
+            }
+        } else {
+            Text(
+                "点了没弹位置选择界面？去桌面长按空白处 → 小部件 → 找到「手环管家」。",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+    }
+}
+
+@Composable
+private fun WidgetAddRow(
+    label: String,
+    provider: Class<out AppWidgetProvider>,
+    context: Context,
+) {
+    OutlinedButton(
+        onClick = { pinWidgetToHome(context, provider) },
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 4.dp),
+        shape = RoundedCornerShape(14.dp),
+    ) {
+        Icon(
+            Icons.Rounded.Add,
+            contentDescription = null,
+            modifier = Modifier.size(16.dp),
+        )
+        Spacer(Modifier.width(6.dp))
+        Text("$label — 添加到桌面")
+    }
 }
