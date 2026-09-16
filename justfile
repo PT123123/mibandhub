@@ -11,7 +11,7 @@
 #   just build              全项目构建：Python 校验/测试/打包 + 编译 APK
 #   just build apk          只编译 APK
 #   just build tools        只做 Python 那套
-#   just install            只装不编译：自动判断装什么（adb 设备 → APK；Termux → 小部件；否则 → 命令行入口）
+#   just install            只装不编译：自动判断装什么（adb 设备 → APK；否则 → 命令行入口）
 #   just install phone      只装不编译：装到「手机」—— 多台 adb 设备（手机+平板）里认出手机那台
 #   just install apk        只装不编译：把现成的 debug APK 装到手机
 #   just app-install        编译 + 安装一步到位
@@ -28,29 +28,38 @@
 #   just fetch              从 adb 连接的手机直接提取手环 AuthKey（手机端零操作）
 #   just setup-phone        给手机装 Gadgetbridge 并配好权限
 #
+#  —— 发正式版（给别人装 / Obtainium 在线升级）——
+#   just release            出正式签名包 → dist/shouhuan.apk，并自检签名与版本
+#   just release verify     只对 dist 里现成的包做自检（不编译）
+#   just release bump       版本号 +1（发新版前先跑，不然用户更新装不上）
+#   just release publish    打 tag + 建 GitHub Release 挂上 APK（要先 push 代码）
+#
 #  —— 环境变量 ——
 #   ONLINE=1    让 gradle 走网络。默认一律离线，详见 tools/gradle.sh 里的说明。
 #   DRY_RUN=1   让 just install 只打印计划，不真的装。
 #   PY=...      指定 Python 解释器。
 #
-# 注意：本仓库要在 Windows(Git Bash) 和 Termux(Android) 两边跑，
-#       所以 shebang 用 /usr/bin/env bash（不硬编码 Windows 路径），
-#       并且 .gitattributes 强制 LF 行尾 —— CRLF 会让 Termux 的 bash 直接炸。
+# =============================================================================
+# 架构约定（重要，别改回去）：
 #
-# 另一条踩过的坑：**带 shebang 的配方拿不到 `*ARGS` 位置参数**（$# 恒为 0），
-#       只有 `{{...}}` 插值可靠。所以下面用「具名参数 + 插值」而不是 `$1`。
+# 1. **配方一律不带 shebang**。just 的 shebang 配方会把配方体写进
+#    %TEMP%\just-XXXX\<配方名> 再交给解释器，Windows 上这条路径的反斜杠会被
+#    吃掉（/bin/bash: C:Users...: No such file or directory → exit 127，
+#    实测翻车）。所以每个配方都只是一行「不带 shebang 的薄包装」，由
+#    `set shell` 的 bash 直接当参数执行 —— 走 -c 参数不落临时文件，没事。
+#
+# 2. **逻辑全在 tools/，Windows 一律走 PowerShell**：配方行经 bash -uc 只做
+#    一次「调 powershell.exe -File tools/xxx.ps1」的派发（bash 在这里只是
+#    传话的，不执行任何逻辑）。路径必须用正斜杠 —— bash 会把未加引号的
+#    tools\just_build.ps1 里的 \j 当转义吃掉。ps1 内部再按需经 Git Bash 调
+#    gradle.sh / android_install.sh / termux/install.sh 这些跨平台 bash 工具。
+#    .ps1 必须保存成 UTF-8 带 BOM（PowerShell 5.1 没 BOM 解析中文会乱码）。
 # =============================================================================
 
 set shell := ["bash", "-uc"]
 
-# 项目根目录（justfile 所在目录）
-root := justfile_directory()
-
-# Python 解释器：优先 python3，其次 python；可用 PY=... 覆盖
-py := `command -v python3 2>/dev/null || command -v python 2>/dev/null || echo python`
-
-# 源码文件（用于语法检查）
-sources := "xiaomi_authkey.py parse_log.py tools/package.py"
+# Windows 侧统一用 powershell.exe 跑 ps1（系统自带必有；ps1 内部自己找 Git Bash）
+ps1 := "powershell.exe -NoProfile -ExecutionPolicy Bypass -File"
 
 
 # 默认：列出所有命令
@@ -63,67 +72,7 @@ default:
 #   just build tools    只做 Python 那套
 # 全项目构建：Python 工具链（校验 + 自检 + 测试 + 打包）→ Android APK
 build target="all":
-    #!/usr/bin/env bash
-    set -euo pipefail
-    cd "{{root}}"
-    py="{{py}}"
-    target="{{target}}"
-
-    # 先确认在项目根目录，避免误操作到别处
-    [ -f xiaomi_authkey.py ] || { echo "错误：不在项目根目录（{{root}}）"; exit 1; }
-
-    case "$target" in
-      all|"")          do_tools=1; do_apk=1 ;;
-      apk|android)     do_tools=0; do_apk=1 ;;
-      tools|py|python) do_tools=1; do_apk=0 ;;
-      *) echo "未知目标：$target（可用：all / apk / tools）" >&2; exit 2 ;;
-    esac
-
-    if [ "$do_tools" -eq 1 ]; then
-      echo "[1/5] Python 语法检查"
-      for src in {{sources}}; do
-        if [ -f "$src" ]; then
-          "$py" -m py_compile "$src"
-          echo "      OK  $src"
-        fi
-      done
-      if compgen -G "tests/*.py" > /dev/null; then
-        "$py" -m py_compile tests/*.py
-        echo "      OK  tests/*.py"
-      fi
-      # 跨平台 shell 脚本也要过语法 —— 它们要在 Termux 和 Windows(Git Bash)
-      # 两边都跑，写错了不会在任何单侧编译里暴露
-      for sh in termux/*.sh tools/*.sh; do
-        [ -f "$sh" ] || continue
-        bash -n "$sh"
-        echo "      OK  $sh"
-      done
-
-      echo "[2/5] 离线自检（密码学实现 vs 上游抓包向量）"
-      "$py" xiaomi_authkey.py --selftest
-
-      echo "[3/5] 测试套件"
-      "$py" -m unittest discover -s tests -p "test_*.py"
-
-      echo "[4/5] 打包"
-      "$py" tools/package.py
-    else
-      echo "[1-4/5] 跳过 Python 工具链"
-    fi
-
-    if [ "$do_apk" -eq 1 ]; then
-      echo "[5/5] Android APK（assembleDebug）"
-      bash tools/gradle.sh assembleDebug
-      apkfile="$(ls app/build/outputs/apk/debug/*.apk 2>/dev/null | head -1 || true)"
-      if [ -n "$apkfile" ]; then
-        echo "      APK：$apkfile（$(du -h "$apkfile" | cut -f1)）"
-      fi
-    else
-      echo "[5/5] 跳过 Android"
-    fi
-
-    echo
-    echo "构建完成。"
+    {{ ps1 }} tools/just_build.ps1 {{target}}
 
 
 # 安装到该装的地方：没给目标就自动判断（DRY_RUN=1 只打印不执行）。
@@ -136,92 +85,15 @@ build target="all":
 #   just install cli [目录]     装命令行入口（默认 ~/.local/bin）
 #   just install termux         装 Termux 桌面小部件
 #   just install /some/dir      等价于 install cli /some/dir
-#
-# Windows 上优先走 PowerShell 版（tools/just_install.ps1，pwsh / powershell.exe）：
-# just → bash 的链路在个别终端环境里会继承到「哑了的 adb」甚至缺环境变量
-#（实测 pwsh7 + 多个 platform-tools 共存时翻车），ps1 直接在用户的终端环境里干
-# adb 的活，绕开这层。Termux / 没有 PowerShell 的环境回退 bash 版
-# tools/just_install.sh。cli / termux / 直接给路径的目标两种实现都转回 bash
-# 工具链。配方本身仍是「不带 shebang 的单行薄包装」—— shebang 配方在个别
-# 终端会把临时脚本路径的反斜杠吃掉（127），别改回去。
 install target="auto" extra="":
-    if command -v pwsh >/dev/null 2>&1; then pwsh -NoProfile -ExecutionPolicy Bypass -File tools/just_install.ps1 "{{target}}" "{{extra}}"; elif command -v powershell.exe >/dev/null 2>&1; then powershell.exe -NoProfile -ExecutionPolicy Bypass -File tools/just_install.ps1 "{{target}}" "{{extra}}"; else bash tools/just_install.sh "{{target}}" "{{extra}}"; fi
+    {{ ps1 }} tools/just_install.ps1 "{{target}}" "{{extra}}"
 
 
 #   just clean          只清 Python 侧
 #   just clean all      连 Android 产物一起清
 # 清理缓存与构建产物（只动本仓库内的东西）
 clean what="tools":
-    #!/usr/bin/env bash
-    set -euo pipefail
-    cd "{{root}}"
-    what="{{what}}"
-
-    # 安全网：清错目录会造成真实损失，这里先确认身份
-    [ -f xiaomi_authkey.py ] || { echo "错误：不在项目根目录（{{root}}）"; exit 1; }
-
-    case "$what" in
-      tools|py|python|all|"") ;;
-      *) echo "未知目标：$what（可用：tools / all）" >&2; exit 2 ;;
-    esac
-
-    removed=0
-
-    # 0) Android 产物（要先停 gradle 守护进程，否则 Windows 上文件被占着删不掉）
-    if [ "$what" = "all" ] && [ -d app/build ]; then
-      if [ -f ./gradlew ]; then
-        ./gradlew --stop >/dev/null 2>&1 || true
-      fi
-      # 这里用 rm -rf 而不是 `gradlew clean`：gradle 的 clean 任务会连
-      # app/build/gradle.log 一起删，而那个文件正被本脚本的重定向打开着，
-      # Windows 上会直接删失败。
-      if rm -rf app/build 2>/dev/null; then
-        echo "  removed  app/build/"
-        removed=$((removed + 1))
-      else
-        echo "  ! 删不掉 app/build —— 被沙箱的批量删除保护拦了，或文件被占用" >&2
-        echo "    手动清：./gradlew --stop && rm -rf app/build" >&2
-        exit 1
-      fi
-    fi
-
-    # 1) 构建产物
-    if [ -d dist ]; then
-      rm -rf dist
-      echo "  removed  dist/"
-      removed=$((removed + 1))
-    fi
-
-    # 2) 缓存与临时文件
-    if [ -d __pycache__ ]; then
-      rm -rf __pycache__
-      echo "  removed  __pycache__/"
-      removed=$((removed + 1))
-    fi
-    while IFS= read -r d; do
-      rm -rf "$d"
-      echo "  removed  ${d#./}/"
-      removed=$((removed + 1))
-    done < <(find . -type d -name __pycache__ -not -path "./.git/*" 2>/dev/null)
-    while IFS= read -r f; do
-      rm -f "$f"
-      removed=$((removed + 1))
-    done < <(find . -type f \( -name '*.pyc' -o -name '*.pyo' \) -not -path "./.git/*" 2>/dev/null)
-
-    for f in .picked.log picked.log .coverage; do
-      if [ -e "$f" ]; then
-        rm -f "$f"
-        echo "  removed  $f"
-        removed=$((removed + 1))
-      fi
-    done
-
-    echo
-    if [ "$removed" -eq 0 ]; then
-      echo "没有需要清理的东西，仓库已经是干净的。"
-    else
-      echo "清理完成（$removed 项）。源码与 tests/ 未受影响。"
-    fi
+    {{ ps1 }} tools/just_clean.ps1 {{what}}
 
 
 # =============================================================================
@@ -236,54 +108,55 @@ clean what="tools":
 
 # 编译 APK（variant 默认 debug，可传 release）
 apk variant="debug":
-    #!/usr/bin/env bash
-    set -euo pipefail
-    cd "{{root}}"
-    case "{{variant}}" in
-      debug)   task=assembleDebug ;;
-      release) task=assembleRelease ;;
-      *)       echo "未知 variant：{{variant}}（只支持 debug / release）" >&2; exit 2 ;;
-    esac
-    bash tools/gradle.sh "$task"
-    echo
-    ls -lh app/build/outputs/apk/{{variant}}/*.apk 2>/dev/null || true
+    {{ ps1 }} tools/just_build.ps1 {{variant}}
 
 
 # 编译并安装到手机（serial 可省略；多台设备时 just app-install <serial>）
 app-install serial="":
-    #!/usr/bin/env bash
-    set -euo pipefail
-    cd "{{root}}"
-    bash tools/gradle.sh assembleDebug
-    apkfile="$(ls app/build/outputs/apk/debug/*.apk 2>/dev/null | head -1 || true)"
-    [ -n "$apkfile" ] || { echo "错误：没找到 debug APK 产物" >&2; exit 1; }
-    bash tools/android_install.sh "$apkfile" "{{serial}}"
+    {{ ps1 }} tools/just_build.ps1 apk && {{ ps1 }} tools/just_install.ps1 apk "{{serial}}"
 
 
 # 清理 Android 构建产物
 android-clean:
-    #!/usr/bin/env bash
-    set -euo pipefail
-    cd "{{root}}"
-    # 先停守护进程：Windows 上它握着 app/build 里的文件，直接删会失败
-    if [ -f ./gradlew ]; then
-      ./gradlew --stop >/dev/null 2>&1 || true
-    fi
-    rm -rf app/build
-    echo "已清理 Android 构建产物（app/build）。"
-
-
-# 联网拉一次依赖 —— 只在改了依赖版本、或报「缓存里没有」时用
-deps:
-    #!/usr/bin/env bash
-    set -euo pipefail
-    cd "{{root}}"
-    echo "==> 联网刷新依赖（这一步会等网络；之后照旧离线构建）"
-    ONLINE=1 bash tools/gradle.sh --refresh-dependencies assembleDebug
+    {{ ps1 }} tools/just_clean.ps1 android
 
 
 # =============================================================================
-# 配网 / 取密钥工具链（Python）
+# 发正式版：本地出正式签名包 → GitHub Release → Obtainium 一键更新
+#
+# 为什么要有这套：debug 包签的是每台机器随机生成的 debug key，给别人装、或者
+# 换台机器再发一版，用户点安装会 INSTALL_FAILED_UPDATE_INCOMPATIBLE —— 只能卸载
+# 重装。所以对外分发的包必须是仓库外备份的那把正式 key（keystore.properties，
+# 被 .gitignore 覆盖，备份在 仓库外的密钥库备份目录（按日期分目录））。
+#
+# 资产名固定为 shouhuan.apk（Obtainium 和 releases/latest/download/<name>
+# 都按资产名精确匹配）。所以永久直链是：
+#   https://github.com/PT123123/mibandhub/releases/latest/download/shouhuan.apk
+#
+# 标准发版顺序：
+#   just release bump       → 提交版本号
+#   just release            → 出包 + 自检
+#   git push                → 代码先上去
+#   just release publish    → 打 tag + 建 Release + 校验永久直链
+# =============================================================================
+
+#   just release            出包 + 自检
+#   just release verify     只自检 dist 里现成的包
+#   just release publish    发布（extra 可给 notes 文件路径）
+#   just release bump       版本号 +1
+#
+# 出正式签名包 / 自检 / 打 tag 发 Release（产物 dist/shouhuan.apk + dist/shouhuan-<版本>.apk）
+release target="package" extra="":
+    {{ ps1 }} tools/just_release.ps1 "{{target}}" "{{extra}}"
+
+
+# 联网拉一次依赖 —— 只在改了依赖版本、或报「缓存里没有」时用（ONLINE=1 透传给 gradle.sh）
+deps:
+    {{ ps1 }} tools/just_build.ps1 deps
+
+
+# =============================================================================
+# 配网 / 取密钥工具链 —— 纯 bash 工具（adb 抓取链路），直接经 Git Bash 跑
 # =============================================================================
 
 # 从 adb 连接的安卓手机直接提取手环 AuthKey（手机端零操作；多台设备时 just fetch <serial>）
