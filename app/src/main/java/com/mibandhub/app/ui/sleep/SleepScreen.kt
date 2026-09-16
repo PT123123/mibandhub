@@ -144,8 +144,12 @@ fun SleepScreen(vm: SleepViewModel) {
 
         Spacer(Modifier.height(12.dp))
 
-        // ---- 分期明细 ----
-        SectionCard(title = "分期明细", accent = SleepIndigo) {
+        // ---- 分期明细：默认收起，主卡的分期条已经能看个大概 ----
+        CollapsibleSection(
+            title = "分期明细",
+            accent = SleepIndigo,
+            initiallyExpanded = false,
+        ) {
             selected.stages().sortedByDescending { it.minutes }.forEachIndexed { index, share ->
                 if (index > 0) Spacer(Modifier.height(12.dp))
                 Row(
@@ -401,6 +405,7 @@ private fun DetailedDataSection(
         title = "详细数据",
         accent = SleepIndigo,
         badge = "${rangeNights.size} 晚",
+        initiallyExpanded = false, // 统计 + 每晚明细都收进来，进页面先看主卡和趋势
         headerTrailing = {
             TextButton(onClick = onExport) {
                 Text("导出 CSV", color = SleepIndigo)

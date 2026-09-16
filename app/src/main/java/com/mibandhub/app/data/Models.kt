@@ -59,7 +59,13 @@ data class BandNotification(
 )
 
 /** 可被转发的应用。 */
-data class AppRule(val packageName: String, val appName: String, val enabled: Boolean)
+data class AppRule(
+    val packageName: String,
+    val appName: String,
+    val enabled: Boolean,
+    /** 是否把通知正文一起推到手环；false = 只推应用名 + 标题。 */
+    val showDetail: Boolean = true,
+)
 
 /** 手机上装的应用 —— 「添加应用」列表里可选的那一份。 */
 data class InstalledApp(val packageName: String, val label: String)

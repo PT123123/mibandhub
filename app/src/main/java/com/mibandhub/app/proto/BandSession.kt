@@ -338,7 +338,12 @@ class BandSession(
      *
      * @return 全部分块写入成功为 true；任一分块失败立即中止（手环不会显示半条）。
      */
-    suspend fun sendNotification(appName: String, title: String, body: String): Boolean {
+    suspend fun sendNotification(
+        appName: String,
+        title: String,
+        body: String,
+        alertCategory: Int = Notify.ALERT_CATEGORY_CUSTOM_HUAMI,
+    ): Boolean {
         if (!_authenticated.value) {
             log("发送通知失败：会话未认证")
             return false
@@ -347,9 +352,16 @@ class BandSession(
             log("发送通知失败：手环没有 chunked 通道（00000020）")
             return false
         }
-        val chunks = Notify.chunk(Notify.buildPacket(appName, title, body))
-        log("发送通知 -> $appName / $title，payload 分 ${chunks.size} 包")
+        val payload = Notify.buildPacket(appName, title, body, alertCategory = alertCategory)
+        val chunks = Notify.chunk(payload)
+        log(
+            "发送通知 -> $appName / $title，类别 0x%02x，payload %d 字节分 %d 包"
+                .format(alertCategory, payload.size, chunks.size),
+        )
         for ((index, chunk) in chunks.withIndex()) {
+            // 包与包之间垫一小口气：长通知十几包背靠背写，固件的 chunked
+            // 重组缓冲跟不上会整条丢，手环只弹一张空卡
+            if (index > 0) delay(30)
             if (!connection.write(Gatt.CHAR_CHUNKED, chunk)) {
                 log("通知第 ${index + 1}/${chunks.size} 包写入失败，中止")
                 return false
