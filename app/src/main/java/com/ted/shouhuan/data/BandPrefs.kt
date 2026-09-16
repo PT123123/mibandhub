@@ -65,8 +65,6 @@ class BandPrefs(private val context: Context) {
         val DEDUPE_ENABLED = booleanPreferencesKey("dedupe_enabled")
         val DEDUPE_SECONDS = intPreferencesKey("dedupe_seconds")
         val NOTIFY_ONLY_LOCKED = booleanPreferencesKey("notify_only_locked")
-        val NOTIFY_SHOW_APP_NAME = booleanPreferencesKey("notify_show_app_name")
-        val NOTIFY_INCLUDE_BODY = booleanPreferencesKey("notify_include_body")
         val NOTIFY_VIBRATION = stringPreferencesKey("notify_vibration")
         val APP_RULES = stringPreferencesKey("app_rules")
 
@@ -347,13 +345,11 @@ class BandPrefs(private val context: Context) {
     val notifyOnlyLocked: Flow<Boolean> =
         context.bandDataStore.data.map { it[Keys.NOTIFY_ONLY_LOCKED] ?: false }
 
-    /** 转发内容：应用名前缀 / 正文。 */
-    val notifyShowAppName: Flow<Boolean> =
-        context.bandDataStore.data.map { it[Keys.NOTIFY_SHOW_APP_NAME] ?: true }
-    val notifyIncludeBody: Flow<Boolean> =
-        context.bandDataStore.data.map { it[Keys.NOTIFY_INCLUDE_BODY] ?: true }
-
-    /** 振动模式："standard" / "short" / "double"。 */
+    /**
+     * 通知振动的档位："standard" / "short" / "strong"。
+     * 每档映射到手环的一个告警类别（proto/Notify.kt 的 alertCategoryFor），
+     * 手环按类别自己存的振动模式来震。
+     */
     val notifyVibration: Flow<String> =
         context.bandDataStore.data.map { it[Keys.NOTIFY_VIBRATION] ?: "standard" }
 
@@ -408,13 +404,6 @@ class BandPrefs(private val context: Context) {
         context.bandDataStore.edit { it[Keys.NOTIFY_ONLY_LOCKED] = enabled }
     }
 
-    suspend fun setNotifyContent(showAppName: Boolean, includeBody: Boolean) {
-        context.bandDataStore.edit {
-            it[Keys.NOTIFY_SHOW_APP_NAME] = showAppName
-            it[Keys.NOTIFY_INCLUDE_BODY] = includeBody
-        }
-    }
-
     suspend fun setNotifyVibration(pattern: String) {
         context.bandDataStore.edit { it[Keys.NOTIFY_VIBRATION] = pattern }
     }
@@ -424,7 +413,8 @@ class BandPrefs(private val context: Context) {
             // 空列表也照写（写空串）—— 键存在就代表「用户已经动过」，
             // 不能让它再回落到出厂参考名单，否则移除过的应用会自己回来。
             prefs[Keys.APP_RULES] = rules.joinToString("\n") {
-                "${it.packageName}|${it.appName}|${if (it.enabled) 1 else 0}"
+                "${it.packageName}|${it.appName}|${if (it.enabled) 1 else 0}" +
+                    "|${if (it.showDetail) 1 else 0}"
             }
         }
     }
@@ -493,8 +483,9 @@ class BandPrefs(private val context: Context) {
         if (raw.isNullOrBlank()) return emptyList()
         return raw.lineSequence().mapNotNull { line ->
             val p = line.split('|')
-            if (p.size != 3) return@mapNotNull null
-            AppRule(p[0], p[1], p[2] == "1")
+            // 第 4 列（showDetail）是后来加的：老数据只有 3 列，默认显示详细内容
+            if (p.size !in 3..4) return@mapNotNull null
+            AppRule(p[0], p[1], p[2] == "1", p.getOrNull(3) != "0")
         }.toList()
     }
 

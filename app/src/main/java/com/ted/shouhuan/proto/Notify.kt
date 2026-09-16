@@ -25,6 +25,27 @@ object Notify {
 
     const val ALERT_CATEGORY_CUSTOM_HUAMI = 0xFA
 
+    /**
+     * 通知页「振动档位」→ 告警类别的映射。
+     *
+     * 协议里没有「下发震动强度/时长」的接口 —— 手环每个告警类别各自存着一套
+     * 振动模式（官方 App「振动模式」页里按类别配的那个），选类别就是选振动。
+     * 固件出厂时不同类别的手感不同：Schedule 偏轻短，High Priority 偏重长，
+     * CustomHuami 就是普通应用通知的那一下。
+     *
+     * "double" 是旧版档位（当时没有接到任何下发逻辑），迁移到 High Priority。
+     */
+    val VIBRATION_CATEGORIES = mapOf(
+        "standard" to ALERT_CATEGORY_CUSTOM_HUAMI,
+        "short" to 0x07, // Schedule（日程/事件提醒）
+        "strong" to 0x08, // High Priority Alert
+        "double" to 0x08,
+    )
+
+    /** 振动档位 key → 告警类别；没登记过的档位一律回落到 CustomHuami。 */
+    fun alertCategoryFor(vibration: String?): Int =
+        VIBRATION_CATEGORIES[vibration] ?: ALERT_CATEGORY_CUSTOM_HUAMI
+
     /** 通用应用图标 —— Gadgetbridge 对 UNKNOWN 类型就用它。 */
     const val ICON_GENERIC_APP = 0x0B
 
@@ -37,24 +58,33 @@ object Notify {
     /**
      * 拼一条完整的通知 payload（未分块）。
      *
+     * 长度口径和 GB 对齐：**「标题\0正文 + \0应用名\0 尾部」整体**不能超过
+     * 手环的 notificationMaxLength(230) 减去前缀(7)。之前先把消息体截到 223
+     * 再拼尾部，正文一长总载荷就冲破 230 —— 固件整条丢弃，手环只弹一张空卡。
+     * 所以尾部字节从消息体预算里预留，总长恒不超过上限。
+     *
      * @param appName 手环上显示在图标旁的应用名
+     * @param alertCategory 告警类别 —— 手环按类别套用它存的振动模式
+     *   （取值见 [VIBRATION_CATEGORIES]，默认 CustomHuami）
      */
     fun buildPacket(
         appName: String,
         title: String,
         body: String,
         icon: Int = ICON_GENERIC_APP,
+        alertCategory: Int = ALERT_CATEGORY_CUSTOM_HUAMI,
     ): ByteArray {
+        val appSuffix = ("\u0000" + truncateUtf8(appName, 30) + "\u0000").toByteArray(Charsets.UTF_8)
+        val messageBudget = (MAX_MESSAGE_BYTES - appSuffix.size).coerceAtLeast(0)
         val message = truncateUtf8(title, 32) + "\u0000" + truncateUtf8(body, 512)
-        val messageBytes = truncateUtf8(message, MAX_MESSAGE_BYTES).toByteArray(Charsets.UTF_8)
-        val appSuffix = ("\u0000$appName\u0000").toByteArray(Charsets.UTF_8)
+        val messageBytes = truncateUtf8(message, messageBudget).toByteArray(Charsets.UTF_8)
 
         val prefixLength = 2 + // 分类 + numAlerts
             (if (EXTRA_4BYTE_HEADER) 4 else 0) +
             1 // CustomHuami 的图标字节
         val packet = ByteArray(prefixLength + messageBytes.size + appSuffix.size)
         var pos = 0
-        packet[pos++] = ALERT_CATEGORY_CUSTOM_HUAMI.toByte()
+        packet[pos++] = alertCategory.toByte()
         if (EXTRA_4BYTE_HEADER) {
             repeat(4) { packet[pos++] = 0 }
         }
