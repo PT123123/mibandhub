@@ -14,21 +14,28 @@ import java.time.ZonedDateTime
 data class MinuteSample(
     val time: LocalDateTime,
 
-    /** 样本类型：[KIND_SLEEP] = 睡眠分钟，0x73 = 未佩戴，118 = 充电，其余是活动。 */
+    /** 样本类型：[KIND_SLEEP] = 睡眠分钟（仅华米新一代固件用），其余是活动 / 未佩戴 / 充电。 */
     val kind: Int,
     val intensity: Int,
     val steps: Int,
     val heartRate: Int,
 
-    /** 浅睡强度（byte5 剥掉 0x80 位）。 */
+    /** 浅睡强度（byte5，本身只有 7 位，0 = 这一分钟没有睡眠强度）。 */
     val sleepLevel: Int,
 
-    /** 深睡强度（byte6 剥掉 0x80 位）。 */
-    val deepLevel: Int,
+    /** 深睡强度原始值（byte6）—— **最高位 0x80 是标志位**，见 [ActivitySync.NO_SLEEP_STAGE]。 */
+    val deepRaw: Int,
 
-    /** REM 强度（byte7 剥掉 0x80 位）。 */
-    val remLevel: Int,
-)
+    /** REM 强度原始值（byte7），同 [deepRaw]。 */
+    val remRaw: Int,
+) {
+    val deepLevel: Int get() = deepRaw and 0x7f
+    val remLevel: Int get() = remRaw and 0x7f
+
+    /** 手环在这一分钟给了睡眠分期数据（= 手环认为「这一分钟在睡」），见 [ActivitySync.isSleepMinute]。 */
+    val hasSleepStage: Boolean get() = deepRaw != ActivitySync.NO_SLEEP_STAGE ||
+        remRaw != ActivitySync.NO_SLEEP_STAGE
+}
 
 /** 手环对「取数请求」的应答：有多少字节、从什么时候开始。 */
 data class FetchStartInfo(
@@ -49,7 +56,9 @@ data class FetchStartInfo(
  *   ③ 写 0x02 取数          → ④ 00000005 收样本到 expectedBytes
  *   ⑤ 收到「传输完成」元数据 → ⑥ 解析样本、归并成夜
  *
- * [CMD_ACK]（0x03，GB 发它让手环删掉已传数据）我们**从不发**：同步不清手环数据，
+ * 睡眠判据见 [isSleepMinute]（**不是 kind == 0x78**，那是新一代固件的格式）。
+ *
+ * [CMD_ACK]（0x03，GB 用它告诉手环「这批我拿走了」）我们**从不发**：同步不清手环数据，
  * 手环下次会把同一窗口重复推一遍，入库端按时间幂等去重。详见 syncActivity 的注释。
  */
 object ActivitySync {
@@ -68,7 +77,19 @@ object ActivitySync {
     /** 每条样本的字节数与时间步长（1 分钟）。 */
     const val SAMPLE_SIZE = 8
 
-    /** 手环的「睡眠样本」类型号 —— GB HuamiExtendedSampleProvider.TYPE_SLEEP（120）。 */
+    /**
+     * 深睡 / REM 强度字段的「这一分钟没有分期数据」哨兵值。
+     * 实测 MB5 上这两个字节**恒 ≥ 0x80**（3216 分钟原始字节里一个例外都没有），
+     * 所以最高位是标志位、低 7 位是强度。
+     */
+    const val NO_SLEEP_STAGE = 0x80
+
+    /**
+     * 华米**新一代**（Zepp OS，GTS/GTR 2+）的「睡眠分钟」类型号
+     * —— GB `HuamiExtendedSampleProvider.TYPE_SLEEP`（120）。
+     *
+     * ⚠️ **Mi Band 5 不会给这个值**。别拿它判 MB5 的睡眠，见 [isSleepMinute]。
+     */
     const val KIND_SLEEP = 0x78
 
     /**
@@ -127,9 +148,11 @@ object ActivitySync {
      * ④ 样本缓冲 → 每分钟一条。8 字节布局：
      * `[kind, 强度, 步数, 心率, 未知, 浅睡强度, 深睡强度, REM 强度]`。
      *
-     * 注意后三个字节**不是 0/1 旗标**：真机数据里清醒分钟是 `00 80 80` 这样的组合，
-     * 0x80 位是「基础值」而非「真」，强度要从 `& 0x7f` 里来 —— 当初当成旗标解析，
-     * 把整周清醒全判成了深睡+REM。分期阈值见 [stageOf]。
+     * 注意后三个字节**不是 0/1 旗标**：真机数据里清醒分钟是 `00 80 80` 这种组合 ——
+     * 浅睡强度 0、深睡/REM 都是 0x80（[NO_SLEEP_STAGE] = 这一分钟没有分期数据）。
+     * 睡着时这两个字段换成真强度（低 7 位）。0x80 是标志位而不是「真」，强度要从
+     * `& 0x7f` 里取 —— 当初当成旗标解析，把整周清醒全判成了深睡+REM。
+     * 分期阈值见 [stageOf]，睡眠判据见 [isSleepMinute]。
      */
     fun parseSamples(bytes: ByteArray, start: LocalDateTime): List<MinuteSample> {
         val out = ArrayList<MinuteSample>(bytes.size / SAMPLE_SIZE)
@@ -144,8 +167,8 @@ object ActivitySync {
                     steps = bytes[i + 2].toInt() and 0xff,
                     heartRate = bytes[i + 3].toInt() and 0xff,
                     sleepLevel = bytes[i + 5].toInt() and 0x7f,
-                    deepLevel = bytes[i + 6].toInt() and 0x7f,
-                    remLevel = bytes[i + 7].toInt() and 0x7f,
+                    deepRaw = bytes[i + 6].toInt() and 0xff,
+                    remRaw = bytes[i + 7].toInt() and 0xff,
                 ),
             )
             t = t.plusMinutes(1)
@@ -166,16 +189,40 @@ object ActivitySync {
     }
 
     /**
+     * 这一分钟算不算「睡眠」。
+     *
+     * **不是** `kind == 0x78`。0x78 是华米新一代（Zepp OS：GTS/GTR 2+）的活动数据格式，
+     * Mi Band 5 的 kind 字节从来不给这个值 —— 实测 7 天全量 10075 分钟里一个都没有，
+     * 于是睡眠页恒为 0 夜（当时的排查把锅甩给了「官方 App 抢数据」，那是误判，
+     * 详见 docs/sleep-sync.md）。
+     *
+     * MB5 把「这一分钟在睡」标在**分期字段**上：睡着时填 byte6/byte7（深睡/REM 强度），
+     * 醒着时写 [NO_SLEEP_STAGE]（0x80，无数据）。所以判据就是「分期字段有没有被填」。
+     *
+     * 实测校验（2026-09-16，3216 分钟真机原始字节）：
+     * ```
+     * 判据                       睡眠分钟  夜数   → 各夜心率有值率 / 步数非零 / 深睡占比 / REM 占比
+     * kind == 0x78（原实现）          0     0    —— 一个 0x78 都没有
+     * 分期字段被填（本实现）          648    4    → 89~100% / ≤1 分钟 / 21~27% / 9~18%
+     * 浅睡强度 byte5 != 0            1136    7    → 多出 3 段白天假睡眠（心率 0%、有步数）
+     * ```
+     * 只有「分期字段被填」这一条同时满足：心率全程有值（手环只在睡眠时每分钟测心率）、
+     * 步数为 0、深睡/REM 占比落在真实睡眠区间。
+     */
+    fun isSleepMinute(m: MinuteSample): Boolean =
+        m.kind == KIND_SLEEP || m.hasSleepStage
+
+    /**
      * 把分钟样本归并成夜。
      *
-     * 只有 kind == [KIND_SLEEP] 的分钟算睡眠（清醒/活动分钟那三个强度字节也是
+     * 只有 [isSleepMinute] 的分钟算睡眠（清醒/活动分钟那三个强度字节也是
      * 非零的，不能用强度判）。相邻的睡眠分钟聚成一觉，中间允许 ≤60 分钟的清醒
      * 间隙（夜里翻身/上厕所）；超过 60 分钟就算另一觉 —— 午睡和夜觉天然分开。
      * 不足 30 分钟的碎片当噪声丢掉。
      */
     fun nightsFromSamples(samples: List<MinuteSample>): List<SleepNightRecord> {
         val sleepMinutes = samples
-            .filter { it.kind == KIND_SLEEP }
+            .filter { isSleepMinute(it) }
             .distinctBy { it.time }
             .sortedBy { it.time }
         if (sleepMinutes.isEmpty()) return emptyList()

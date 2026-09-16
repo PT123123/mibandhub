@@ -633,12 +633,15 @@ class BandSession(
             val samples = ActivitySync.parseSamples(bytes, info.start)
             val nights = ActivitySync.nightsFromSamples(samples)
             log("⑤ 样本解析：${samples.size} 分钟（${info.start} 起），归并出 ${nights.size} 夜")
-            // kind 分布留着诊断用：睡眠样本的类型号（预期 0x78）一眼可见
+            // kind 分布留着诊断用。⚠️ MB5 的睡眠**不在这里**：不要找 0x78（那是新一代固件的
+            // 格式），判据是分期字段有没有被填，见 ActivitySync.isSleepMinute。
             val kindCounts = samples.groupingBy { it.kind }.eachCount().entries.sortedByDescending { it.value }
             log("   kind 分布：${kindCounts.joinToString(" ") { "0x%02x×%d".format(it.key, it.value) }}")
-            // 临时诊断：打印每种 (kind,浅睡,深睡,REM) 字节签名及其覆盖时段，
-            // 用于定位 Mi Band 5 真实的“睡眠分钟”判别方式（当前按 kind==0x78 过滤，真机上查不到）。
-            val sig = samples.groupingBy { Triple(it.kind, it.sleepLevel, it.deepLevel) to it.remLevel }
+            log("   判据睡眠分钟(isSleepMinute)=${samples.count { ActivitySync.isSleepMinute(it) }}")
+            // 诊断：打印每种 (kind,浅睡,深睡,REM) 原始字节签名及其出现次数。
+            // 这里用**原始字节**（不 &0x7f）—— 0x80 是「这一分钟没有分期数据」的哨兵，
+            // 掩掉就分不出「清醒(80 80)」和「强度真的是 0」了，当初就是这么看走眼的。
+            val sig = samples.groupingBy { Triple(it.kind, it.sleepLevel, it.deepRaw) to it.remRaw }
                 .eachCount()
                 .entries
                 .sortedByDescending { it.value }
@@ -647,8 +650,8 @@ class BandSession(
                 sig.joinToString(" "){ (s,c) ->
                     val (k,sleep,deep) = s.first; "k%02x s%02x d%02x r%02x×%d".format(k, sleep, deep, s.second, c) }
             }")
-            // 临时诊断2：按时间把「连续同签名」段 RLE 压缩成跑一会，看清睡眠块长啥样。
-            // 每段输出：起始时刻hmm | 持续分钟 | kind | 字节5 | 字节6 | 字节7
+            // 诊断2：按时间把「连续同签名」段 RLE 压缩，看清睡眠块长什么样。
+            // 每段输出：起始时刻(分钟) | 持续分钟 | kind | 字节5 | 字节6 | 字节7
             val runs = ArrayList<String>()
             var idx = 0
             while (idx < samples.size) {
@@ -657,37 +660,35 @@ class BandSession(
                 while (j < samples.size) {
                     val n = samples[j]
                     if (n.kind != m.kind || n.sleepLevel != m.sleepLevel ||
-                        n.deepLevel != m.deepLevel || n.remLevel != m.remLevel) break
+                        n.deepRaw != m.deepRaw || n.remRaw != m.remRaw) break
                     j++
                 }
                 if (j - idx >= 15) { // 只打足够长、连贯的段，短噪声跳过
                     runs.add("%s %04d k%02x s%02x d%02x r%02x".format(
-                        m.time.hour * 60 + m.time.minute, j - idx, m.kind, m.sleepLevel, m.deepLevel, m.remLevel))
+                        m.time.hour * 60 + m.time.minute, j - idx, m.kind, m.sleepLevel, m.deepRaw, m.remRaw))
                 }
                 idx = j
             }
             log("  ▸ 长连贯段(≥15分)：${runs.joinToString("  ")}")
-            // 临时诊断3：非清醒分钟（字节5/6/7 任一非0）按“时刻”落在几点，画一条 24h 热力带。
-            // 若睡眠标记分钟真的存在，会在夜里(≈22-08点)凝成一条浓带；日间零散 = 无睡眠通道。
+            // 诊断3：判据认定为睡眠的分钟按时段落点 —— 睡眠会在夜里凝成一条浓带。
             val hourTally = IntArray(24)
-            for (m in samples) if (m.sleepLevel != 0 || m.deepLevel != 0 || m.remLevel != 0) hourTally[m.time.hour]++
-            log("  ▷ 非清醒分钟按时段(0-23点)：${hourTally.joinToString(" ")}")
-            // 临时诊断4：按「夜」（21:00-次日09:00 算一晚）切块，打印每晚的 0x78 数量、
-            // 非零分期分钟数与分期直方图 —— 直接回答「手环这几晚到底有没有记录睡眠分期」。
+            for (m in samples) if (ActivitySync.isSleepMinute(m)) hourTally[m.time.hour]++
+            log("  ▷ 睡眠分钟按时段(0-23点)：${hourTally.joinToString(" ")}")
+            // 诊断4：按「夜」（21:00-次日09:00 算一晚）切块，直接回答「手环这几晚到底有没有记录睡眠」。
             val byNight = samples.groupBy { m ->
                 if (m.time.hour < 9) m.time.toLocalDate().minusDays(1) else m.time.toLocalDate()
             }.toSortedMap()
             log("  ░ 每晚情况(夜定义=21:00起)：")
             for ((day, mins) in byNight) {
                 val total = mins.size
-                val nonZero = mins.count { it.sleepLevel != 0 || it.deepLevel != 0 || it.remLevel != 0 }
+                val sleepCount = mins.count { ActivitySync.isSleepMinute(it) }
                 val sleepKind = mins.count { it.kind == 0x78 }
                 val nz = mins
-                    .filter { it.sleepLevel != 0 || it.deepLevel != 0 || it.remLevel != 0 }
-                    .groupingBy { "${it.sleepLevel.toString(16).padStart(2, '0')}${it.deepLevel.toString(16).padStart(2, '0')}${it.remLevel.toString(16).padStart(2, '0')}" }
+                    .filter { ActivitySync.isSleepMinute(it) }
+                    .groupingBy { "${it.sleepLevel.toString(16).padStart(2, '0')}${it.deepRaw.toString(16).padStart(2, '0')}${it.remRaw.toString(16).padStart(2, '0')}" }
                     .eachCount().entries.sortedByDescending { it.value }.take(6)
                     .joinToString(" ") { (sig, c) -> "$sig×$c" }
-                log("   #$day 分钟=$total 非零分期=$nonZero 0x78=$sleepKind 突围片段=${if (nz.isEmpty()) "-" else nz}")
+                log("   #$day 分钟=$total 判据睡眠=$sleepCount 0x78=$sleepKind 分期片段=${if (nz.isEmpty()) "-" else nz}")
             }
             // 不写 0x03 ack —— 手环保留数据，下次同一窗口会重复推；
             // 入库按醒来日期/样本时刻幂等去重，重复没有副作用（见 syncActivity 注释）。
