@@ -4,6 +4,7 @@ import android.content.Context
 import android.util.Log
 import com.ted.shouhuan.ble.BandConnection
 import com.ted.shouhuan.ble.Gatt
+import com.ted.shouhuan.proto.ActivitySync
 import com.ted.shouhuan.proto.Auth
 import com.ted.shouhuan.proto.AuthEvent
 import kotlinx.coroutines.CompletableDeferred
@@ -13,6 +14,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
 import java.io.ByteArrayOutputStream
+import java.io.File
 import java.util.Calendar
 import java.util.GregorianCalendar
 import java.util.UUID
@@ -287,6 +289,32 @@ object ActivityLab {
                 "前 64 字节 = " + hex(bytes.copyOfRange(0, minOf(64, bytes.size))),
             )
 
+            // ---- 原始字节落盘 + 逐偏移列分布（判定字段偏移用，别靠"看起来像"）----
+            dumpRaw(context, bytes, since, ack)
+            logColumns(bytes)
+
+            // ---- 走一遍正式解析链：字节 → 分钟样本 → 夜 ----
+            // 实验台只验证到「拿到字节」是不够的：判据/归并的 bug 正是死在这一步之后。
+            val startInfo = ActivitySync.parseStartResponse(ack)
+            if (startInfo == null) {
+                Log.w(TAG, "起始应答解析失败，跳过归并：${hex(ack)}")
+            } else {
+                val samples = ActivitySync.parseSamples(bytes, startInfo.start)
+                val nights = ActivitySync.nightsFromSamples(samples)
+                Log.i(TAG, "归并：${samples.size} 分钟样本（${startInfo.start} 起）→ ${nights.size} 夜")
+                nights.forEach { n ->
+                    Log.i(
+                        TAG,
+                        "   夜 醒来日=${java.time.LocalDate.ofEpochDay(n.epochDay)}" +
+                            " 总${n.totalMinutes}分 深${n.deepMinutes} 浅${n.lightMinutes}" +
+                            " REM${n.remMinutes} 评分${n.score}" +
+                            " 幅度${n.bedMinutes / 60}:%02d→${n.wakeMinutes / 60}:%02d".format(
+                                n.bedMinutes % 60, n.wakeMinutes % 60,
+                            ),
+                    )
+                }
+            }
+
             val samples = bytes.size / SAMPLE_SIZE
             val remainder = bytes.size % SAMPLE_SIZE
             Log.i(TAG, "采样数 = $samples（每个 $SAMPLE_SIZE 字节，余 $remainder 字节）")
@@ -322,6 +350,63 @@ object ActivityLab {
     }
 
     // ------------------------------------------------------------------
+
+    /**
+     * 把拼好的原始样本字节落盘，供 PC 侧离线分析（换着 stride / 字段偏移试，
+     * 比在手机上改一次编一次快得多）。路径打进日志，`adb pull` 即可。
+     *
+     * 元数据单独写一份 txt：只看 bin 无法还原「这段数据从哪一刻开始」，
+     * 而没有时间轴就没法判断哪一列是睡眠（睡眠的判据本质是"夜里连续成段"）。
+     */
+    private fun dumpRaw(context: Context, bytes: ByteArray, since: Calendar, ack: ByteArray) {
+        try {
+            val dir = context.getExternalFilesDir(null) ?: context.filesDir
+            val bin = File(dir, "activity_dump.bin")
+            bin.writeBytes(bytes)
+            File(dir, "activity_dump.txt").writeText(
+                buildString {
+                    appendLine("sinceRequested=${since.time}")
+                    appendLine("samples=${bytes.size / SAMPLE_SIZE}")
+                    appendLine("bytes=${bytes.size}")
+                    appendLine("startAckHex=${hex(ack)}")
+                    appendLine("sampleSizeGuess=$SAMPLE_SIZE")
+                },
+            )
+            Log.i(TAG, "★ 原始字节已落盘：${bin.absolutePath}（${bytes.size} 字节）")
+        } catch (t: Throwable) {
+            Log.w(TAG, "原始字节落盘失败：${t.javaClass.simpleName}: ${t.message}")
+        }
+    }
+
+    /**
+     * 逐偏移列分布 —— 一眼看出哪一列是「类型」（取值集中、只有少数几个值、
+     * 大量 0），哪一列是「强度/计数」（取值分散）。字段错位全靠它定位。
+     */
+    private fun logColumns(bytes: ByteArray) {
+        val n = bytes.size / SAMPLE_SIZE
+        if (n == 0) return
+        Log.i(TAG, "逐偏移列分布（$n 个采样，每 $SAMPLE_SIZE 字节）：")
+        for (off in 0 until SAMPLE_SIZE) {
+            val hist = HashMap<Int, Int>()
+            var zero = 0
+            var min = 255
+            var max = 0
+            for (i in 0 until n) {
+                val v = bytes[i * SAMPLE_SIZE + off].toInt() and 0xff
+                hist[v] = (hist[v] ?: 0) + 1
+                if (v == 0) zero++
+                if (v < min) min = v
+                if (v > max) max = v
+            }
+            val top = hist.entries.sortedByDescending { it.value }.take(10)
+                .joinToString(" ") { (v, c) -> "%02x×%d".format(v, c) }
+            Log.i(
+                TAG,
+                "   byte$off: 取值%3d 种  零%5d  min=%02x max=%02x | $top"
+                    .format(hist.size, zero, min, max),
+            )
+        }
+    }
 
     private suspend fun authenticate(
         conn: BandConnection,
