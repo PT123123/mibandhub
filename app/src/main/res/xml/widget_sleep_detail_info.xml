@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 「昨晚睡眠」自适应控件（主控件）的元数据。
+     尺寸按小米小部件规范给 —— 小米小部件只支持 2×2 / 4×2 / 4×4，官方建议值
+     2×2 = 110dp×110dp（4×2 = 300×110，4×4 = 300×250）。给非标尺寸（1×1 这种）
+     的组件进不了小米小部件体系，也就不会出现在「长按应用图标」的控件菜单里。
+     targetCellWidth/Height 给 Android 12+ 的桌面定初始格数。
+     拉大后 SleepDetailWidgetProvider 按实际尺寸在 1×1 / 1×2 / 2×2 布局间切换，
+     所以 resizeMode 仍然横竖都放开。 -->
+<appwidget-provider xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools"
+    android:minWidth="110dp"
+    android:minHeight="110dp"
+    android:targetCellWidth="2"
+    android:targetCellHeight="2"
+    android:resizeMode="horizontal|vertical"
+    android:widgetCategory="home_screen"
+    android:updatePeriodMillis="1800000"
+    android:initialLayout="@layout/widget_sleep_detail_2x2"
+    android:previewLayout="@layout/widget_sleep_detail_2x2"
+    android:description="@string/widget_sleep_detail_desc"
+    tools:targetApi="s" />

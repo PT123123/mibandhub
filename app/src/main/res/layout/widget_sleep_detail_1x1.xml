@@ -1,0 +1,60 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 自适应「昨晚睡眠」控件的 1×1 形态：时长 + 入睡→醒来。
+     拉成 1×2 / 2×2 后由 SleepDetailWidgetProvider 换成更详细的布局。
+
+     外层 FrameLayout 的 id 是小米小部件规范写死的 @android:id/background ——
+     系统靠这个固定 id 找根布局统一加圆角，并要求根布局有非全透明的背景色。
+     点击区仍在内层 @+id/widget_detail_root 上，不受这条规范影响。 -->
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@android:id/background"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="@drawable/widget_bg"
+    android:padding="10dp">
+
+    <LinearLayout
+        android:id="@+id/widget_detail_root"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:gravity="center"
+        android:orientation="vertical">
+
+        <TextView
+            android:id="@+id/widget_detail_value"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:autoSizeMaxTextSize="16sp"
+            android:autoSizeMinTextSize="10sp"
+            android:autoSizeTextType="uniform"
+            android:gravity="center"
+            android:maxLines="1"
+            android:text="—"
+            android:textColor="@color/widget_text_primary"
+            android:textStyle="bold" />
+
+        <TextView
+            android:id="@+id/widget_detail_bedwake"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="5dp"
+            android:autoSizeMaxTextSize="10sp"
+            android:autoSizeMinTextSize="8sp"
+            android:autoSizeTextType="uniform"
+            android:gravity="center"
+            android:maxLines="1"
+            android:text="—"
+            android:textColor="@color/widget_text_secondary" />
+
+        <TextView
+            android:id="@+id/widget_detail_label"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="2dp"
+            android:ellipsize="end"
+            android:gravity="center"
+            android:maxLines="1"
+            android:text="@string/widget_sleep_detail_label"
+            android:textColor="@color/widget_text_secondary"
+            android:textSize="9sp" />
+    </LinearLayout>
+</FrameLayout>

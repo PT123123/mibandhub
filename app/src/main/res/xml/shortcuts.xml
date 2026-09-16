@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 静态快捷方式 = 桌面「长按应用图标」菜单里的条目（Android 7.1+ 标准能力，所有桌面都读）。
+     第三方 App 的长按菜单里没有系统留的「加控件」位置，这条是我们能自己给的唯一入口：
+     点一下走 WidgetPinActivity 把主控件固定到桌面。
+     label 控制在 10 个字以内（超出各家桌面都会截断）。 -->
+<shortcuts xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <shortcut
+        android:enabled="true"
+        android:icon="@drawable/ic_widget_moon"
+        android:shortcutId="add_sleep_widget"
+        android:shortcutLongLabel="@string/shortcut_add_widget_long"
+        android:shortcutShortLabel="@string/shortcut_add_widget">
+        <intent
+            android:action="com.ted.shouhuan.action.PIN_SLEEP_WIDGET"
+            android:targetClass="com.ted.shouhuan.widget.WidgetPinActivity"
+            android:targetPackage="com.ted.shouhuan" />
+    </shortcut>
+</shortcuts>

@@ -71,6 +71,11 @@ object WidgetRenderer {
             ComponentName(context, SleepHeartWidgetProvider::class.java),
         )
         for (id in hrIds) renderSleepHeart(context, manager, id, snapshot)
+
+        val detailIds = manager.getAppWidgetIds(
+            ComponentName(context, SleepDetailWidgetProvider::class.java),
+        )
+        for (id in detailIds) renderSleepDetail(context, manager, id, snapshot)
     }
 
     /**
@@ -148,6 +153,87 @@ object WidgetRenderer {
     }
 
     // ------------------------------------------------------------------
+    // 自适应「昨晚睡眠」：1×1 时长+入睡/醒来 → 1×2 / 2×2 更多细节
+    // ------------------------------------------------------------------
+
+    private fun renderSleepDetail(
+        context: Context,
+        manager: AppWidgetManager,
+        appWidgetId: Int,
+        snapshot: Snapshot,
+    ) {
+        // 按当前格子尺寸选布局：格子估算沿用「(dp + 30) / 70」的桌面惯用公式
+        val opts = manager.getAppWidgetOptions(appWidgetId)
+        val wCells = ((opts.getInt(AppWidgetManager.OPTION_APPWIDGET_MIN_WIDTH) + 30) / 70)
+            .coerceAtLeast(1)
+        val hCells = ((opts.getInt(AppWidgetManager.OPTION_APPWIDGET_MIN_HEIGHT) + 30) / 70)
+            .coerceAtLeast(1)
+        val layout = when {
+            wCells >= 2 && hCells >= 2 -> R.layout.widget_sleep_detail_2x2
+            wCells >= 2 -> R.layout.widget_sleep_detail_1x2
+            else -> R.layout.widget_sleep_detail_1x1
+        }
+
+        val views = RemoteViews(context.packageName, layout)
+        val night = snapshot.night
+        if (night == null) {
+            views.setTextViewText(R.id.widget_detail_value, "—")
+            views.setTextViewText(R.id.widget_detail_bedwake, "—")
+            views.setTextViewText(R.id.widget_detail_label, "暂无睡眠数据")
+            views.setTextViewText(R.id.widget_detail_score, "")
+            views.setTextViewText(R.id.widget_detail_stages, "")
+            views.setTextViewText(R.id.widget_detail_awake, "")
+        } else {
+            views.setTextViewText(
+                R.id.widget_detail_value,
+                compactDuration(night.totalMinutes),
+            )
+            views.setTextViewText(R.id.widget_detail_label, nightLabel(night))
+            views.setTextViewText(
+                R.id.widget_detail_bedwake,
+                "${clockLabel(night.bedMinutes)} → ${clockLabel(night.wakeMinutes)}",
+            )
+            views.setTextViewText(R.id.widget_detail_score, "${night.score} 分")
+            views.setTextViewText(
+                R.id.widget_detail_stages,
+                "深睡 ${compactDuration(night.deepMinutes)} · " +
+                    "浅睡 ${compactDuration(night.lightMinutes)} · " +
+                    "眼动 ${compactDuration(night.remMinutes)}",
+            )
+            views.setTextViewText(
+                R.id.widget_detail_awake,
+                if (night.awakeMinutes > 0) {
+                    "夜间清醒 ${compactDuration(night.awakeMinutes)}"
+                } else {
+                    "夜间未醒"
+                },
+            )
+            // 分期占比条：以整晚（不含清醒）为满格。RemoteViews 没有直接的
+            // setProgress API，走 setInt 反射调 ProgressBar 的 @RemotableViewMethod。
+            // 先 setMax 再 setProgress，顺序反了会被旧的 max 截断。1×1 / 1×2
+            // 布局里没有这些 id —— 已核对 AOSP（RemoteViews.BaseReflectionAction.apply
+            // 里 `if (view == null) return`），找不到的 id 是静默跳过，不会中断整份刷新。
+            val total = night.totalMinutes.coerceAtLeast(1)
+            for (barId in intArrayOf(
+                R.id.widget_detail_deep_bar,
+                R.id.widget_detail_light_bar,
+                R.id.widget_detail_rem_bar,
+            )) {
+                views.setInt(barId, "setMax", total)
+            }
+            views.setInt(R.id.widget_detail_deep_bar, "setProgress", night.deepMinutes)
+            views.setInt(R.id.widget_detail_light_bar, "setProgress", night.lightMinutes)
+            views.setInt(R.id.widget_detail_rem_bar, "setProgress", night.remMinutes)
+            views.setTextViewText(R.id.widget_detail_deep_value, compactDuration(night.deepMinutes))
+            views.setTextViewText(R.id.widget_detail_light_value, compactDuration(night.lightMinutes))
+            views.setTextViewText(R.id.widget_detail_rem_value, compactDuration(night.remMinutes))
+        }
+
+        views.setOnClickPendingIntent(R.id.widget_detail_root, openAppIntent(context))
+        manager.updateAppWidget(appWidgetId, views)
+    }
+
+    // ------------------------------------------------------------------
     // 文案
     // ------------------------------------------------------------------
 
@@ -162,16 +248,20 @@ object WidgetRenderer {
         }
     }
 
-    /** 「442」→「7小时12分」，整小时不带零头。宽度交给 TextView 的 autoSize。 */
+    /** 「442」→「7H12分」，整小时不带零头。宽度交给 TextView 的 autoSize。 */
     private fun compactDuration(minutes: Int): String {
         val h = minutes / 60
         val m = minutes % 60
         return when {
-            h <= 0 -> "${m}分钟"
-            m == 0 -> "${h}小时"
-            else -> "${h}小时${m}分"
+            h <= 0 -> "${m}分"
+            m == 0 -> "${h}H"
+            else -> "${h}H${m}分"
         }
     }
+
+    /** 「1421」→「23:41」。bed/wake 存的是当天第几分钟。 */
+    private fun clockLabel(minutesOfDay: Int): String =
+        "%02d:%02d".format(minutesOfDay / 60, minutesOfDay % 60)
 
     /** 醒来那天就是今天 → 昨晚；更早就直说日期，控件挂着旧数据不能装新。 */
     private fun nightLabel(night: SleepNightRecord): String {
