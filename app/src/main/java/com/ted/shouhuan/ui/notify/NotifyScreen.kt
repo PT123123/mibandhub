@@ -55,6 +55,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.ted.shouhuan.data.BandNotification
+import com.ted.shouhuan.ui.components.CollapsibleSection
 import com.ted.shouhuan.ui.components.FilterChipRow
 import com.ted.shouhuan.ui.components.KeyValueRow
 import com.ted.shouhuan.ui.components.NoticeBanner
@@ -67,8 +68,8 @@ import com.ted.shouhuan.util.minuteOfDayToClock
 private val DEDUPE_SECONDS = listOf(10, 30, 60, 300)
 private val DEDUPE_LABELS = listOf("10秒", "30秒", "1分钟", "5分钟")
 
-private val VIBRATIONS = listOf("standard", "short", "double")
-private val VIBRATION_LABELS = listOf("标准", "短促", "双震")
+private val VIBRATIONS = listOf("standard", "short", "strong")
+private val VIBRATION_LABELS = listOf("标准", "短促", "强提醒")
 
 @Composable
 fun NotifyScreen(vm: NotifyViewModel) {
@@ -83,8 +84,6 @@ fun NotifyScreen(vm: NotifyViewModel) {
     val dedupeEnabled by vm.dedupeEnabled.collectAsStateWithLifecycle()
     val dedupeSeconds by vm.dedupeSeconds.collectAsStateWithLifecycle()
     val onlyLocked by vm.onlyLocked.collectAsStateWithLifecycle()
-    val showAppName by vm.showAppName.collectAsStateWithLifecycle()
-    val includeBody by vm.includeBody.collectAsStateWithLifecycle()
     val vibration by vm.vibration.collectAsStateWithLifecycle()
     val appRules by vm.appRules.collectAsStateWithLifecycle()
     val installedApps by vm.installedApps.collectAsStateWithLifecycle()
@@ -342,28 +341,16 @@ fun NotifyScreen(vm: NotifyViewModel) {
 
         Spacer(Modifier.height(12.dp))
 
-        // ---- 通知内容与振动 ----
-        SectionCard(title = "通知内容与振动", accent = NotifyAmber) {
-            SwitchSettingRow(
-                title = "附带应用名",
-                subtitle = "手环上先显示「微信」再显示内容",
-                checked = showAppName,
-                onCheckedChange = { vm.setNotifyContent(it, includeBody) },
-                accent = NotifyAmber,
-            )
-            SwitchSettingRow(
-                title = "包含正文",
-                subtitle = "关闭后只发标题，手环一屏能读完",
-                checked = includeBody,
-                onCheckedChange = { vm.setNotifyContent(showAppName, it) },
-                accent = NotifyAmber,
-            )
-            Spacer(Modifier.height(8.dp))
+        // ---- 振动模式 ----
+        SectionCard(title = "振动", accent = NotifyAmber) {
             Text(
-                "振动模式",
+                "转发通知到手环时的振动方式。协议没法直接下发「强度/时长」，" +
+                    "所以每一档走手环的一个告警类别，手环按该类别存的振动模式来震 —— " +
+                    "在官方 App 的「振动模式」里可以给对应类别单独调节奏。",
                 style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
-            Spacer(Modifier.height(8.dp))
+            Spacer(Modifier.height(10.dp))
             FilterChipRow(
                 options = VIBRATION_LABELS,
                 selectedIndex = VIBRATIONS.indexOf(vibration).coerceAtLeast(0),
@@ -378,7 +365,8 @@ fun NotifyScreen(vm: NotifyViewModel) {
         SectionCard(title = "允许转发的应用", accent = NotifyAmber) {
             Text(
                 "手机上的应用都能加进来：下面这份只是出厂参考名单，点「添加应用」" +
-                    "从已安装的应用里随便挑。",
+                    "从已安装的应用里随便挑。每个应用还可以单独点「含正文 / 仅标题」" +
+                    "决定它的通知要不要带上正文。",
                 style = MaterialTheme.typography.labelMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -419,6 +407,29 @@ fun NotifyScreen(vm: NotifyViewModel) {
                             overflow = TextOverflow.Ellipsis,
                         )
                     }
+                    // 单应用的「详细内容」开关：点一下在 含正文 / 仅标题 之间切换
+                    Box(
+                        Modifier
+                            .clip(RoundedCornerShape(8.dp))
+                            .background(
+                                if (rule.showDetail) NotifyAmber.copy(alpha = 0.12f) else Color.Transparent,
+                            )
+                            .clickable(enabled = forwardEnabled) {
+                                vm.setAppShowDetail(rule.packageName, !rule.showDetail)
+                            }
+                            .padding(horizontal = 8.dp, vertical = 6.dp),
+                    ) {
+                        Text(
+                            if (rule.showDetail) "含正文" else "仅标题",
+                            style = MaterialTheme.typography.labelMedium,
+                            color = if (rule.showDetail) {
+                                NotifyAmber
+                            } else {
+                                MaterialTheme.colorScheme.onSurfaceVariant
+                            },
+                        )
+                    }
+                    Spacer(Modifier.width(6.dp))
                     IconButton(
                         onClick = { vm.removeAppRule(rule.packageName) },
                         enabled = forwardEnabled,
@@ -635,14 +646,20 @@ private fun TimePickButton(label: String, modifier: Modifier = Modifier, onClick
 
 @Composable
 private fun RecentCard(recent: List<BandNotification>) {
-    SectionCard(title = "最近推送", accent = NotifyAmber) {
+    // 默认收起：记录一多整页都被它占满，点开才展开明细
+    CollapsibleSection(
+        title = "最近推送",
+        accent = NotifyAmber,
+        badge = "${recent.size} 条",
+        initiallyExpanded = false,
+    ) {
         if (recent.isEmpty()) {
             Text(
                 "还没有推送记录。发送一条「测试通知」，或等手环提醒（低电量/充满/连接）触发后，会在这里显示真实记录。",
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
-            return@SectionCard
+            return@CollapsibleSection
         }
         recent.forEachIndexed { index, item ->
             if (index > 0) Spacer(Modifier.height(14.dp))

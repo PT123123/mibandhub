@@ -500,7 +500,7 @@ class BandService : Service() {
             ConnectionState.Disconnected -> "未连接"
             is ConnectionState.Failed -> "未连接"
         }
-        // 精简正文：「电87 睡7小时12分 走6234步」。
+        // 精简正文：「电87 睡7H12分 走6234步」。
         // 拿不到的那段直接略过（断连时电量/步数留着旧值，只有从未读过才是 null），
         // 三段全空就给个占位符，正文不至于空白。
         val summary = listOfNotNull(
@@ -522,14 +522,14 @@ class BandService : Service() {
             .build()
     }
 
-    /** 「442」→「7小时22分」，通知栏精简正文用 —— 无空格，整小时不带零头。 */
+    /** 「442」→「7H12分」，通知栏精简正文用 —— 小时缩成 H，省字符。 */
     private fun compactDuration(minutes: Int): String {
         val h = minutes / 60
         val m = minutes % 60
         return when {
-            h <= 0 -> "${m}分钟"
-            m == 0 -> "${h}小时"
-            else -> "${h}小时${m}分"
+            h <= 0 -> "${m}分"
+            m == 0 -> "${h}H"
+            else -> "${h}H${m}分"
         }
     }
 
