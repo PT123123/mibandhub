@@ -1,19 +1,22 @@
 #!/usr/bin/env python3
-"""离线分析 ActivityLab 落盘的活动样本字节。
+"""离线分析 ActivityLab 落盘的活动样本字节（找字段偏移 / 判睡眠判据用）。
 
-背景：Mi Band 5 拉回来的活动明细里，我们按「8 字节/分钟 + byte0 是 kind +
-kind==0x78 是睡眠」解析，7 天全量数据里一个 0x78 都没有，睡眠页恒为 0 夜。
-本脚本不做任何假设，而是**逐列算统计**，用数据本身回答两个问题：
+不做任何假设，而是**逐列算统计、逐列看连贯段**，用数据本身回答：
 
   1. 哪一列像「类型」（取值集中、种类少、大量 0），哪一列像「强度/计数」（取值分散）？
-  2. 哪一列的哪个取值是**夜间连续成段**的（睡眠的本质特征）？
+  2. 哪一列的哪个取值是**连续成段**的？成段落在哪个钟点？
+
+2026-09-16 就是靠它定的案：Mi Band 5 的睡眠不在 kind 字节上（kind==0x78 是华米新一代
+Zepp OS 机型的格式，MB5 一个都不给），而是「深睡/REM 分期字段被填」（byte6/byte7 != 0x80）。
+复盘见 docs/sleep-sync.md。
 
 用法：
     python tools/analyze_activity_dump.py app/build/activity_dump.bin
     python tools/analyze_activity_dump.py <bin> --meta <activity_dump.txt>
+    python tools/analyze_activity_dump.py <bin> --start 2026-09-14T20:13 --stride 8 --min-run 25
 
 meta 文件（ActivityLab 同时落盘）里有 startAckHex，起始时刻从那里解出来；
-没有 meta 时用 --start "2026-09-14T20:13" 手动指定。
+没有 meta 时用 --start 手动指定。--stride 可换采样宽度（4 / 8）试字段错位。
 """
 
 import argparse
