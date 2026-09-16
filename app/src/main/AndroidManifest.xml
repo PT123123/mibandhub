@@ -29,6 +29,19 @@
 
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
+    <!-- 桌面快捷方式：launcher 的老权限，只在「把控件/快捷方式钉到桌面」这一步有意义。
+         小米/红米把它做成了「应用信息 → 权限管理 → 其他权限 → 桌面快捷方式」这个特殊权限
+         开关，关着时 requestPinAppWidget 不会把控件放上桌面。
+         注意：它跟「控件能不能被列出来」无关 —— 列表由 AppWidgetService 里 provider 的注册
+         状态决定（见 skill android-widget-visibility-rom）。曾有注释把这批权限当成
+         「长按应用图标菜单不显示控件」的原因，那是错的。 -->
+    <uses-permission android:name="com.android.launcher.permission.INSTALL_SHORTCUT" />
+    <uses-permission android:name="com.android.launcher.permission.UNINSTALL_SHORTCUT" />
+    <uses-permission android:name="com.android.launcher2.permission.INSTALL_SHORTCUT" />
+    <uses-permission android:name="com.android.launcher2.permission.UNINSTALL_SHORTCUT" />
+    <uses-permission android:name="com.android.launcher3.permission.INSTALL_SHORTCUT" />
+    <uses-permission android:name="com.android.launcher3.permission.UNINSTALL_SHORTCUT" />
+
     <!-- 健康连接（Health Connect）：从外部来源读睡眠（小米运动健康等 App 会把
          数据同步进来）。运行时通过 HealthPermission 的授权对话框申请。 -->
     <uses-permission android:name="android.permission.health.READ_SLEEP" />
@@ -58,6 +71,11 @@
         android:supportsRtl="true"
         android:theme="@style/Theme.Shouhuan">
 
+        <!-- 小米小部件版本号（小米小部件技术规范 §10，声明了才跟得上小米的迁移规则）。 -->
+        <meta-data
+            android:name="miuiWidgetVersion"
+            android:value="1" />
+
         <activity
             android:name=".MainActivity"
             android:exported="true"
@@ -67,7 +85,23 @@
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
+
+            <!-- 静态快捷方式：桌面「长按应用图标」菜单里的条目。没有它，第三方 App 的
+                 长按菜单里就只剩「应用信息/卸载」，也就没有一条「加控件」的入口
+                 （长按菜单里的控件预览只给接了小米小部件体系的 App 留位）。 -->
+            <meta-data
+                android:name="android.app.shortcuts"
+                android:resource="@xml/shortcuts" />
         </activity>
+
+        <!-- 「长按应用图标 → 添加桌面控件」的落点：无界面、无布局，进来就把控件固定到桌面
+             （见 WidgetPinActivity 里的说明）。 -->
+        <activity
+            android:name=".widget.WidgetPinActivity"
+            android:excludeFromRecents="true"
+            android:exported="true"
+            android:noHistory="true"
+            android:theme="@android:style/Theme.Translucent.NoTitleBar" />
 
         <!-- 健康连接的「数据用途说明」入口 —— 接入方必须声明，否则 SDK 建连时
              直接 IllegalStateException（真机报过 incorrect health permission states）。
@@ -117,9 +151,10 @@
             </intent-filter>
         </service>
 
-        <!-- 桌面控件：1×1 睡眠时长 / 1×2 睡眠+心率曲线。标准 RemoteViews 小部件，
-             小米澎湃OS 和联想 ZUI 的桌面都认这一种。系统投递的 APPWIDGET_UPDATE
-             就够用，exported=false 即可。 -->
+        <!-- 桌面控件：主控件「昨晚睡眠」（2×2，走小米小部件体系）+ 两个原生控件
+             （1×1 睡眠时长 / 1×2 睡眠+心率曲线，走桌面「安卓小组件」入口）。
+             都是标准 RemoteViews，系统投递的 APPWIDGET_UPDATE 就够用，
+             exported=false 即可（系统以 SYSTEM_UID 发广播，不受 exported 限制）。 -->
         <receiver
             android:name=".widget.SleepWidgetProvider"
             android:exported="false"
@@ -142,6 +177,29 @@
             <meta-data
                 android:name="android.appwidget.provider"
                 android:resource="@xml/widget_sleep_hr_1x2_info" />
+        </receiver>
+
+        <!-- 主控件「昨晚睡眠」：2×2 起步，拉大后显示得分与分期详情。
+             它是唯一按小米小部件规范配置的控件（miuiWidget 标识 + 小米认可的尺寸 +
+             根布局 @android:id/background），所以「长按应用图标」的控件菜单认的是它。 -->
+        <receiver
+            android:name=".widget.SleepDetailWidgetProvider"
+            android:exported="false"
+            android:label="@string/widget_sleep_detail_label">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+                <!-- 小米的「展现刷新」广播。不声明这条，澎湃OS 桌面刷新控件时发的广播
+                     会被 AppWidgetProvider 丢掉（它只认上面那条原生 action）。 -->
+                <action android:name="miui.appwidget.action.APPWIDGET_UPDATE" />
+            </intent-filter>
+            <meta-data
+                android:name="android.appwidget.provider"
+                android:resource="@xml/widget_sleep_detail_info" />
+            <!-- 小米小部件标识（小米小部件技术规范 §4）：没有它，系统不把这个 receiver
+                 当小米小部件，长按图标菜单的控件区就不收录。侧载 App 一样读 manifest。 -->
+            <meta-data
+                android:name="miuiWidget"
+                android:value="true" />
         </receiver>
     </application>
 

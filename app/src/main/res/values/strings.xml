@@ -16,4 +16,11 @@
     <string name="widget_sleep_desc">昨晚睡眠时长，来自手环同步</string>
     <string name="widget_sleep_hr_label">睡眠与心率</string>
     <string name="widget_sleep_hr_desc">睡眠时长和近 24 小时心率曲线</string>
+    <string name="widget_sleep_detail_label">昨晚睡眠</string>
+    <string name="widget_sleep_detail_desc">昨晚睡了多久、几点入睡几点醒；拉伸到 1×2 / 2×2 还能看到得分和分期详情</string>
+
+    <!-- 长按应用图标菜单里的静态快捷方式（res/xml/shortcuts.xml）。
+         shortLabel 控制在 10 个字符内，超出各家桌面都会截断。 -->
+    <string name="shortcut_add_widget">添加桌面控件</string>
+    <string name="shortcut_add_widget_long">添加昨晚睡眠控件到桌面</string>
 </resources>
