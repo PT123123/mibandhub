@@ -264,7 +264,7 @@ private fun NightDetailCard(night: SleepNightRecord, isLatest: Boolean) {
 
         KeyValueRow("入睡", minuteOfDayToClock(night.bedMinutes))
         KeyValueRow("醒来", minuteOfDayToClock(night.wakeMinutes))
-        KeyValueRow("已醒", formatHours(night.awakeMinutes))
+        KeyValueRow("已醒", formatDurationShort(night.awakeMinutes))
     }
 }
 

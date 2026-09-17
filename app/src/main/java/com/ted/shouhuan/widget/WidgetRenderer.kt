@@ -6,6 +6,9 @@ import android.content.BroadcastReceiver
 import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
+import android.graphics.Bitmap
+import android.graphics.Canvas
+import android.graphics.Paint
 import android.util.Log
 import android.view.View
 import android.widget.RemoteViews
@@ -19,7 +22,9 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
+import java.time.Duration
 import java.time.LocalDate
+import java.time.LocalDateTime
 import kotlin.math.roundToInt
 
 /**
@@ -41,6 +46,12 @@ object WidgetRenderer {
 
     /** 曲线位图的固定高度（dp），布局里的 ImageView 也是这个高度。 */
     private const val CURVE_HEIGHT_DP = 48
+
+    /** 2×2 里「睡眠分期」label 的宽度（dp）：分段条位图要扣掉它，免得被 ImageView 压扁。 */
+    private const val STAGE_BAR_LABEL_DP = 62
+
+    /** 分段条位图的固定高度（dp），布局里的 ImageView 也是这个高度。 */
+    private const val STAGE_BAR_HEIGHT_DP = 12
 
     /** 拿不到控件尺寸时的兜底宽度（dp），常见 1 列格子的量级。 */
     private const val FALLBACK_WIDTH_DP = 80
@@ -108,7 +119,7 @@ object WidgetRenderer {
     ) {
         val views = RemoteViews(context.packageName, R.layout.widget_sleep_1x1)
         fillSleepBlock(views, snapshot.night)
-        views.setOnClickPendingIntent(R.id.widget_sleep_root, openAppIntent(context))
+        views.setOnClickPendingIntent(R.id.widget_sleep_root, openSleepIntent(context))
         manager.updateAppWidget(appWidgetId, views)
     }
 
@@ -149,7 +160,7 @@ object WidgetRenderer {
             views.setImageViewBitmap(R.id.widget_hr_curve, curve)
         }
 
-        views.setOnClickPendingIntent(R.id.widget_sleep_hr_root, openAppIntent(context))
+        views.setOnClickPendingIntent(R.id.widget_sleep_hr_root, openSleepIntent(context))
         manager.updateAppWidget(appWidgetId, views)
     }
 
@@ -184,6 +195,7 @@ object WidgetRenderer {
             views.setTextViewText(R.id.widget_detail_score, "")
             views.setTextViewText(R.id.widget_detail_stages, "")
             views.setTextViewText(R.id.widget_detail_awake, "")
+            views.setViewVisibility(R.id.widget_detail_stages_bar, View.GONE)
         } else {
             views.setTextViewText(
                 R.id.widget_detail_value,
@@ -201,36 +213,30 @@ object WidgetRenderer {
                     "浅睡 ${compactDuration(night.lightMinutes)} · " +
                     "眼动 ${compactDuration(night.remMinutes)}",
             )
+            // 已醒 = 现在 → 最后一次起床时间（不是夜间清醒分钟：用户在控件里
+            // 要看的是「醒来后到现在清醒了多久」，比如 9/16 13:00 起醒来，到现在
+            // 就显示「已醒 50h」这种。夜间清醒不在这里展示，那是页面统计口径。）
             views.setTextViewText(
                 R.id.widget_detail_awake,
-                if (night.awakeMinutes > 0) {
-                    "已醒 ${formatHours(night.awakeMinutes)}"
-                } else {
-                    "夜间未醒"
-                },
+                "已醒 ${compactDuration(sinceWakeMinutes(night))}",
             )
-            // 分期占比条：以整晚（不含清醒）为满格。RemoteViews 没有直接的
-            // setProgress API，走 setInt 反射调 ProgressBar 的 @RemotableViewMethod。
-            // 先 setMax 再 setProgress，顺序反了会被旧的 max 截断。1×1 / 1×2
-            // 布局里没有这些 id —— 已核对 AOSP（RemoteViews.BaseReflectionAction.apply
-            // 里 `if (view == null) return`），找不到的 id 是静默跳过，不会中断整份刷新。
-            val total = night.totalMinutes.coerceAtLeast(1)
-            for (barId in intArrayOf(
-                R.id.widget_detail_deep_bar,
-                R.id.widget_detail_light_bar,
-                R.id.widget_detail_rem_bar,
-            )) {
-                views.setInt(barId, "setMax", total)
+            // 分期占比：单条三段（深睡/浅睡/眼动）彩条，一条里蕴含三个比例。
+            // 位图按当前控件宽度画，2×2 布局才渲染（1×1/1×2 没有这个 ImageView，
+            // 白画一张位图没必要）。RemoteViews 对不存在的 id 静默跳过，无副作用。
+            if (layout == R.layout.widget_sleep_detail_2x2) {
+                val widthDp = opts.getInt(AppWidgetManager.OPTION_APPWIDGET_MIN_WIDTH)
+                    .takeIf { it > 0 } ?: FALLBACK_WIDTH_DP
+                val bar = stageBarBitmap(context, night, widthDp - STAGE_BAR_LABEL_DP)
+                if (bar != null) {
+                    views.setViewVisibility(R.id.widget_detail_stages_bar, View.VISIBLE)
+                    views.setImageViewBitmap(R.id.widget_detail_stages_bar, bar)
+                } else {
+                    views.setViewVisibility(R.id.widget_detail_stages_bar, View.GONE)
+                }
             }
-            views.setInt(R.id.widget_detail_deep_bar, "setProgress", night.deepMinutes)
-            views.setInt(R.id.widget_detail_light_bar, "setProgress", night.lightMinutes)
-            views.setInt(R.id.widget_detail_rem_bar, "setProgress", night.remMinutes)
-            views.setTextViewText(R.id.widget_detail_deep_value, compactDuration(night.deepMinutes))
-            views.setTextViewText(R.id.widget_detail_light_value, compactDuration(night.lightMinutes))
-            views.setTextViewText(R.id.widget_detail_rem_value, compactDuration(night.remMinutes))
         }
 
-        views.setOnClickPendingIntent(R.id.widget_detail_root, openAppIntent(context))
+        views.setOnClickPendingIntent(R.id.widget_detail_root, openSleepIntent(context))
         manager.updateAppWidget(appWidgetId, views)
     }
 
@@ -249,14 +255,22 @@ object WidgetRenderer {
         }
     }
 
-    /** 「442」→「7H12分」，整小时不带零头。宽度交给 TextView 的 autoSize。 */
+    /** 从最后一次起床（epochDay 是醒来那天，wakeMinutes 是当天第几分钟）到现在过了多久。 */
+    private fun sinceWakeMinutes(night: SleepNightRecord): Int {
+        val wake = LocalDate.ofEpochDay(night.epochDay)
+            .atStartOfDay()
+            .plusMinutes(night.wakeMinutes.toLong())
+        return Duration.between(wake, LocalDateTime.now()).toMinutes().coerceAtLeast(0).toInt()
+    }
+
+    /** 一分半的时长：≥1h 写「Xh」或「XhYY分」，不足 1h 写「YY分」；h 小写。 */
     private fun compactDuration(minutes: Int): String {
         val h = minutes / 60
         val m = minutes % 60
         return when {
             h <= 0 -> "${m}分"
-            m == 0 -> "${h}H"
-            else -> "${h}H${m}分"
+            m == 0 -> "${h}h"
+            else -> "${h}h${m}分"
         }
     }
 
@@ -264,20 +278,60 @@ object WidgetRenderer {
     private fun clockLabel(minutesOfDay: Int): String =
         "%02d:%02d".format(minutesOfDay / 60, minutesOfDay % 60)
 
-    /** 醒来那天就是今天 → 昨晚；更早就直说日期，控件挂着旧数据不能装新。 */
+    /** 醒来那天就是今天 → 昨晚；更早就直说日期（不带「睡眠」二字，控件空间金贵）。 */
     private fun nightLabel(night: SleepNightRecord): String {
         val wakeDay = LocalDate.ofEpochDay(night.epochDay)
         return if (wakeDay == LocalDate.now()) {
             "昨晚睡眠"
         } else {
-            "${wakeDay.monthValue}月${wakeDay.dayOfMonth}日睡眠"
+            "${wakeDay.monthValue}月${wakeDay.dayOfMonth}日"
         }
     }
 
-    private fun openAppIntent(context: Context): PendingIntent = PendingIntent.getActivity(
+    /** 单条三段分期彩条（深睡/浅睡/眼动按分钟比例），颜色对齐应用内 Charts.kt 的分期配色。 */
+    private fun stageBarBitmap(context: Context, night: SleepNightRecord, widthDp: Int): Bitmap? {
+        val deep = night.deepMinutes
+        val light = night.lightMinutes
+        val rem = night.remMinutes
+        val total = deep + light + rem
+        if (total <= 0) return null
+        val density = context.resources.displayMetrics.density
+        val w = (widthDp * density).roundToInt().coerceAtLeast(2)
+        val h = (STAGE_BAR_HEIGHT_DP * density).roundToInt().coerceAtLeast(2)
+        val bmp = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
+        val canvas = Canvas(bmp)
+        val radius = h / 2f
+        val bg = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = 0x26FFFFFF.toInt() }
+        canvas.drawRoundRect(0f, 0f, w.toFloat(), h.toFloat(), radius, radius, bg)
+        // 三段按比例画，段间留 1dp 缝
+        val gap = density
+        var left = 0f
+        fun seg(minutes: Int, color: Int) {
+            if (minutes <= 0) return
+            val segW = w * minutes / total.toFloat()
+            val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply { this.color = color }
+            canvas.drawRoundRect(
+                left, 0f, (left + segW).coerceAtMost(w.toFloat()), h.toFloat(),
+                radius, radius, paint,
+            )
+            left += segW + gap
+        }
+        seg(deep, STAGE_COLOR_DEEP)
+        seg(light, STAGE_COLOR_LIGHT)
+        seg(rem, STAGE_COLOR_REM)
+        return bmp
+    }
+
+    /** 点控件进应用后落到的 tab：睡眠页（route 见 AppRoot）。 */
+    private fun openSleepIntent(context: Context): PendingIntent = PendingIntent.getActivity(
         context,
         0,
-        Intent(context, MainActivity::class.java),
+        Intent(context, MainActivity::class.java)
+            .putExtra(MainActivity.EXTRA_TARGET_ROUTE, "sleep"),
         PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
     )
+
+    private val STAGE_COLOR_DEEP = 0xFF5B4BE0.toInt()
+    private val STAGE_COLOR_LIGHT = 0xFF7C6CF7.toInt()
+    private val STAGE_COLOR_REM = 0xFF3AA0FF.toInt()
 }
