@@ -1,5 +1,6 @@
 package com.ted.shouhuan.service
 
+import android.Manifest
 import android.app.Notification
 import android.app.NotificationManager
 import android.app.PendingIntent
@@ -8,6 +9,7 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
+import android.content.pm.PackageManager
 import android.content.pm.ServiceInfo
 import android.os.BatteryManager
 import android.os.Build
@@ -178,15 +180,22 @@ class BandService : Service() {
             lastConnectedAt = lastConnectedAt.value,
         )
 
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            // targetSdk 34+ 必须把 manifest 里声明的类型再传一次，否则直接抛异常
-            startForeground(
-                NOTIFICATION_ID,
-                notification,
-                ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE,
-            )
-        } else {
-            startForeground(NOTIFICATION_ID, notification)
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                // targetSdk 34+ 必须把 manifest 里声明的类型再传一次，否则直接抛异常
+                startForeground(
+                    NOTIFICATION_ID,
+                    notification,
+                    ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE,
+                )
+            } else {
+                startForeground(NOTIFICATION_ID, notification)
+            }
+        } catch (e: SecurityException) {
+            // start() 门口已拦过 connectedDevice 权限，这里只是兜底：
+            // 真被系统拒了也不能把进程带崩，老老实实退掉，等下次授权后再拉起。
+            Log.w(TAG, "前台服务启动被系统拒绝（connectedDevice 权限缺失？）", e)
+            stopSelf()
         }
     }
 
@@ -588,14 +597,37 @@ class BandService : Service() {
         /** 自动拉取的窗口：覆盖最近的睡眠夜，实测约 3 秒传完；全量走设备页手动同步。 */
         private const val AUTO_SYNC_DAYS = 7
 
-        /** 统一的拉起入口：Activity 开屏和开机广播都走这里。 */
+        /**
+         * Android 14+ 的 connectedDevice 型前台服务要跑，必须先授予
+         * FOREGROUND_SERVICE_CONNECTED_DEVICE 这个运行时权限（跟 BLUETOOTH_CONNECT
+         * 同属「附近的设备」权限组）。没授予就 startForegroundService + startForeground，
+         * 系统直接抛 SecurityException 把进程带崩 —— 开机广播、冷启动都可能先于授权触发，
+         * 所以统一在这道门槛拦下来。Android 13 及以下没有这个权限，恒为 true。
+         */
+        fun hasConnectedDevicePermission(context: Context): Boolean {
+            if (Build.VERSION.SDK_INT < Build.VERSION_CODES.UPSIDE_DOWN_CAKE) return true
+            return ContextCompat.checkSelfPermission(
+                context,
+                Manifest.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE,
+            ) == PackageManager.PERMISSION_GRANTED
+        }
+
+        /** 统一的拉起入口：Activity 开屏和开机广播都走这里。权限没齐就跳过，不硬启。 */
         fun start(context: Context) {
+            if (!hasConnectedDevicePermission(context)) {
+                Log.w(TAG, "跳过启动保活服务：还没授予 connectedDevice 前台服务权限")
+                return
+            }
             val intent = Intent(context, BandService::class.java)
             context.startForegroundService(intent)
         }
 
         /** app 已到前台（Activity onResume）。服务已在前台时不会重置常驻通知。 */
         fun notifyAppOpen(context: Context) {
+            if (!hasConnectedDevicePermission(context)) {
+                Log.w(TAG, "跳过通知保活服务：还没授予 connectedDevice 前台服务权限")
+                return
+            }
             val intent = Intent(context, BandService::class.java).setAction(ACTION_APP_OPEN)
             context.startForegroundService(intent)
         }
