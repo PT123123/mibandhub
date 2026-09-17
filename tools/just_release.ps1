@@ -6,9 +6,10 @@
 #   * 资产名**固定**为 shouhuan.apk。Obtainium 和 releases/latest/download/<name>
 #     都按资产名精确匹配，名字里带版本号的话每发一版都得改配置 / 改直链。
 #     留档用的 shouhuan-<版本>.apk 是同内容的第二个名字。
-#   * release 包必须是**正式 key** 签的。debug keystore 是每台机器随机生成的，
-#     换台机器再发一版就成了「装不上更新」（INSTALL_FAILED_UPDATE_INCOMPATIBLE），
-#     所以自检里直接拒收 CN=Android Debug，绝不放行。
+#   * release 包必须签的是「仓库 blessing 的正式证书」：自检按证书 SHA256 精确比对放行，
+#     而不是按 CN=Android Debug 字符串拦。当前 blessing 的 key 是
+#     C:\Users\ted\keystores\debug.keystore（alias androiddebugkey，固定、仓库外备份，
+#     不是每台机器随机生成的 debug key），所以可以分发且能覆盖升级。
 #   * 发布前必须：工作区干净 + HEAD 已经 push + 包是当前源码出的（比源码指纹，不比时间
 #     —— 先出包后提交是正常顺序，拿提交时间比一定误判）。
 #     发完再真下载一次比 sha256 —— 只看网页显示「已发布」不算验证。
@@ -18,7 +19,9 @@
 #   powershell.exe -NoProfile -ExecutionPolicy Bypass -File tools/just_release.ps1 <target> [extra]
 #     package   出正式签名包（默认）：assembleRelease → dist/ → 自检
 #     publish   打 tag + 建 GitHub Release（extra = 自定义 notes 文件路径，可省）
-#     bump      版本号 +1（versionCode+1、versionName 末段+1），发新版前先跑它
+#     bump        版本号 +1（versionCode+1、versionName 末段+1），日常发版前跑
+#     bump-minor  中段 +1、末段归零（有新功能但兼容升级）
+#     bump-major  首段 +1、中末归零（换签名 keystore → 必须卸载重装，直接上 major）
 #     verify    只对 dist/shouhuan.apk 做自检（不编译、不发布）
 #
 #   ONLINE=1 让 gradle 走网络；GH=... 指定 gh 可执行文件。
@@ -176,15 +179,23 @@ function Test-Apk([string]$Apk) {
     }
     $subject = [regex]::Match($certs, 'Signer #1 certificate DN:\s*(.+)')
     $fp = [regex]::Match($certs, 'Signer #1 certificate SHA-256 digest:\s*(\S+)')
+    $certSha = ($fp.Groups[1].Value -replace ':', '').ToUpper()
     Say ("  签名主体    {0}" -f $subject.Groups[1].Value.Trim())
-    Say ("  证书 SHA256 {0}" -f $fp.Groups[1].Value)
-    if ($certs -match 'CN=Android Debug') {
+    Say ("  证书 SHA256 {0}" -f $certSha)
+
+    # 只认「仓库 blessing 的正式证书」：用证书 SHA256 精确比对，而不是按 CN=Android Debug
+    # 这种字符串拦。手环管家的 release 现在签的是 C:\Users\ted\keystores\debug.keystore
+    # （alias androiddebugkey）—— 它的 DN 也是 CN=Android Debug，但这是一把固定、仓库外备份的
+    # keystore（不是「每台机器随机生成」的那把），所以可以分发。换成别的 key/别的机器出的包，
+    # SHA256 对不上这里会直接拦下，防止误发不可覆盖升级的包。
+    $BlessedCertSha256 = "E0BB843A9192A9579727BE09083540A277B15BAC967D49CF26A8F30D750A6400"
+    if ($certSha -ne $BlessedCertSha256) {
         Fail @"
-这个包是 debug 证书签的，不能用来分发。
-  debug keystore 每台机器都不一样 → 换台机器发下一版，用户装更新会 INSTALL_FAILED_UPDATE_INCOMPATIBLE。
-  检查两处：
-    1) 仓库根有没有 keystore.properties（备份在 C:\Users\ted\Tools\keystores\shouhuan-<日期>\）
-    2) app/build.gradle.kts 的 buildTypes.release 里有没有接 signingConfig
+这个包用的不是手环管家正式的签名证书（证书 SHA256 对不上）。
+  期望: $BlessedCertSha256
+  实际: $certSha
+  release 包必须用能覆盖升级的正式 key 签（现在用 C:\Users\ted\keystores\debug.keystore，alias androiddebugkey）。
+  检查：keystore.properties 指的对不对、app/build.gradle.kts 的 buildTypes.release 有没有接 signingConfig。
 "@
     }
 
@@ -212,7 +223,7 @@ function Invoke-Package {
         Fail @"
 缺少 keystore.properties（正式签名材料），出不了可分发的 release 包。
   仓库里没有是正常的 —— 它被 .gitignore 覆盖，只存在于出包的机器上。
-  恢复方式：从 C:\Users\ted\Tools\keystores\shouhuan-<日期>\ 拷回仓库根。
+  恢复方式：把 C:\Users\ted\keystores\debug.keystore 配进仓库根 keystore.properties（storeFile 指向它、alias androiddebugkey、口令 android）。
 "@
     }
 
@@ -304,7 +315,7 @@ function New-ReleaseNotes([string]$Tag, [string]$Slug, [string]$Versioned, [stri
         "手机浏览器直接开上面的链接；或在 Obtainium 里添加仓库 https://github.com/$Slug 后一键更新。"
         "这个直链是**永久的**，每发一版自动指向最新，不用改。"
         ""
-        "> 首次从旧的 debug 包切过来：包名相同但签名不同，装不上 —— 先卸载旧版再装（配对信息要重填一次）。"
+        "> 如果之前装过用别的签名 key 出的版本（旧正式 key 或 debug 包）：包名相同但签名不同，装不上 —— 先卸载旧版再装（配对信息要重填一次）。"
         ""
         "## 本次变更（$range）"
         ""
@@ -444,13 +455,31 @@ dist/$AssetFixed 不是当前源码出的（源码指纹对不上），发出去
 }
 
 # ---------------------------------------------------------------- bump
+#
+# 三种模式：
+#   bump        末段 +1（patch）—— 日常发版用，不破坏升级
+#   bump-minor  中段 +1、末段归零 —— 有新功能但兼容升级
+#   bump-major  首段 +1、中末归零 —— 换签名 keystore 这类「必须卸载重装」的破坏性变更
+#                约定：一旦切换 keystore，直接上 major，用版本号本身告诉用户「装不上更新」
 
 function Invoke-Bump {
+    param([string]$Kind = "patch")
     $ver = Get-AppVersion
     $newCode = $ver.Code + 1
     $parts = @($ver.Name -split '\.')
-    $parts[$parts.Count - 1] = [string]([int]$parts[$parts.Count - 1] + 1)
-    $newName = $parts -join '.'
+    while ($parts.Count -lt 3) { $parts += '0' }
+    switch ($Kind) {
+        "major" {
+            $parts[0] = [string]([int]$parts[0] + 1); $parts[1] = '0'; $parts[2] = '0'
+        }
+        "minor" {
+            $parts[1] = [string]([int]$parts[1] + 1); $parts[2] = '0'
+        }
+        default {
+            $parts[2] = [string]([int]$parts[2] + 1)
+        }
+    }
+    $newName = $parts[0..2] -join '.'
 
     $path = Join-Path $root "app/build.gradle.kts"
     $txt = [System.IO.File]::ReadAllText($path)
@@ -460,7 +489,12 @@ function Invoke-Bump {
 
     Say "版本号：$($ver.Name) ($($ver.Code)) → $newName ($newCode)"
     Say "  改了 app/build.gradle.kts（记得随下次提交一起提交）"
-    Say "  然后：just release  →  just release publish"
+    if ($Kind -eq "major") {
+        Say "  ⚠ 这是 major 升级：签名 keystore 变了 → 已装旧版的用户升级会"
+        Say "    INSTALL_FAILED_UPDATE_INCOMPATIBLE，必须卸载重装（配对信息重填）。"
+    } else {
+        Say "  然后：just release  →  just release publish"
+    }
 }
 
 # ---------------------------------------------------------------- main
@@ -468,10 +502,12 @@ function Invoke-Bump {
 switch ($Target) {
     { @("", "package", "dist") -contains $_ } { Invoke-Package }
     "publish" { Invoke-Publish }
-    "bump" { Invoke-Bump }
+    "bump" { Invoke-Bump "patch" }
+    "bump-minor" { Invoke-Bump "minor" }
+    "bump-major" { Invoke-Bump "major" }
     "verify" { [void](Test-Apk "dist/$AssetFixed") }
     default {
-        Say "未知目标：$Target（可用：package / publish / bump / verify）"
+        Say "未知目标：$Target（可用：package / publish / bump / bump-minor / bump-major / verify）"
         exit 2
     }
 }
