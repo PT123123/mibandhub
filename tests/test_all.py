@@ -32,6 +32,7 @@ sys.path.insert(0, ROOT)
 
 import parse_log                      # noqa: E402
 import xiaomi_authkey as xa           # noqa: E402
+import pairing_qr as pqr              # noqa: E402
 
 PY = sys.executable
 
@@ -249,6 +250,33 @@ class TestParseLog(unittest.TestCase):
             "0x4f3a9c1e7b2d8056ae31c9f04d6b7e28"))
 
 
+class TestPairingQr(unittest.TestCase):
+    """配对二维码：载荷格式（与 App 端 PairingQr.kt 同规则）+ CLI 端到端。"""
+
+    def test_payload_roundtrip(self) -> None:
+        key = "0x" + "ab" * 16
+        payload = pqr.build_payload("AA:BB:CC:DD:EE:FF", key, "小米手环5")
+        self.assertEqual(
+            payload,
+            "SHOUHUAN1|AA:BB:CC:DD:EE:FF|%s|小米手环5" % key,
+        )
+        self.assertEqual(
+            pqr.parse_payload(payload),
+            ("AA:BB:CC:DD:EE:FF", key, "小米手环5"),
+        )
+
+    def test_name_can_be_empty(self) -> None:
+        key = "0x" + "ab" * 16
+        self.assertEqual(
+            pqr.build_payload("AA:BB:CC:DD:EE:FF", key),
+            "SHOUHUAN1|AA:BB:CC:DD:EE:FF|%s|" % key,
+        )
+
+    def test_rejects_foreign_qr_content(self) -> None:
+        self.assertIsNone(pqr.parse_payload("https://example.com/x"))
+        self.assertIsNone(pqr.parse_payload(""))
+
+
 class TestCliEndToEnd(unittest.TestCase):
     """真的开子进程跑，验证从命令行到输出的整条链路。"""
 
@@ -319,6 +347,28 @@ class TestCliEndToEnd(unittest.TestCase):
         )
         self.assertEqual(p.returncode, 0, p.stderr)
         self.assertIn("自检全部通过", p.stdout)
+
+    def test_pairing_qr_cli_selftest(self) -> None:
+        p = subprocess.run(
+            [PY, os.path.join(ROOT, "pairing_qr.py"), "--selftest"],
+            capture_output=True, text=True, encoding="utf-8", cwd=ROOT, env=self.ENV,
+        )
+        self.assertEqual(p.returncode, 0, p.stderr)
+        self.assertIn("自检全部通过", p.stdout)
+
+    def test_pairing_qr_cli_json_on_fixture(self) -> None:
+        """--log 直喂夹具日志：每台设备都带可被 App 解析的 payload。"""
+        p = subprocess.run(
+            [PY, os.path.join(ROOT, "pairing_qr.py"), "--log", FIXTURE, "--json"],
+            capture_output=True, text=True, encoding="utf-8", cwd=ROOT, env=self.ENV,
+        )
+        self.assertEqual(p.returncode, 0, p.stderr)
+        rows = json.loads(p.stdout)
+        self.assertTrue(rows)
+        for row in rows:
+            self.assertRegex(row["auth_key"], r"^0x[0-9a-f]{32}$")
+            self.assertIn("payload", row)
+            self.assertTrue(row["payload"].startswith("SHOUHUAN1|"))
 
     def test_main_tool_refuses_oauth_mode_gracefully(self) -> None:
         """--token-mode 缺参数时必须友好报错，不能抛栈。"""

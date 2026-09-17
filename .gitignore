@@ -14,6 +14,8 @@ authkey.txt
 authkeys.txt
 authkeys.json
 *.authkey
+# pairing_qr.py 生成的配对二维码（含密钥，别进库）
+pairing_qr.png
 
 # ---- 正式版签名材料 ----
 # 只在跑「just release」的机器上存在。丢了 = 所有已安装 app 的设备都无法覆盖升级，

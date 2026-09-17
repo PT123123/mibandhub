@@ -16,6 +16,15 @@ coroutines = "1.9.0"
 # alpha10 是两个约束都满足的最新版，API 面与 1.1.0 一致（getSdkStatus /
 # permissionController / readRecords 在 alpha10 已定型）。
 healthConnect = "1.1.0-alpha10"
+# 配对页「扫码填入」：CameraX 出相机预览，ZXing 直接从 YUV 帧解码二维码。
+# 1.3.4 是 compileSdk 35 下的稳妥档（1.4.x 需 targetSdk/API 面更激进，不必要）。
+camerax = "1.3.4"
+zxing = "3.5.3"
+# CameraX 的 ProcessCameraProvider.getInstance() 返回 guava 的 ListenableFuture。
+# 不能依赖 listenablefuture:1.0 空接口 jar：AGP 对该 artifact 有 strictly 约束，
+# 会强制解析到 9999.0-empty-to-avoid-conflict-with-guava（纯空占位，无任何类）。
+# 按 AGP 的意图直接用完整 guava（31.1-android 是 Android 兼容线）。
+guava = "31.1-android"
 
 [libraries]
 androidx-core-ktx = { group = "androidx.core", name = "core-ktx", version.ref = "coreKtx" }
@@ -36,6 +45,14 @@ androidx-navigation-compose = { group = "androidx.navigation", name = "navigatio
 androidx-datastore-preferences = { group = "androidx.datastore", name = "datastore-preferences", version.ref = "datastore" }
 androidx-health-connect-client = { group = "androidx.health.connect", name = "connect-client", version.ref = "healthConnect" }
 kotlinx-coroutines-android = { group = "org.jetbrains.kotlinx", name = "kotlinx-coroutines-android", version.ref = "coroutines" }
+
+# 配对页扫码：CameraX + ZXing core（纯 Java，不依赖 GMS，国产 ROM 无 Google 服务也能跑）
+androidx-camera-core = { group = "androidx.camera", name = "camera-core", version.ref = "camerax" }
+androidx-camera-camera2 = { group = "androidx.camera", name = "camera-camera2", version.ref = "camerax" }
+androidx-camera-lifecycle = { group = "androidx.camera", name = "camera-lifecycle", version.ref = "camerax" }
+androidx-camera-view = { group = "androidx.camera", name = "camera-view", version.ref = "camerax" }
+zxing-core = { group = "com.google.zxing", name = "core", version.ref = "zxing" }
+guava = { group = "com.google.guava", name = "guava", version.ref = "guava" }
 
 [plugins]
 android-application = { id = "com.android.application", version.ref = "agp" }

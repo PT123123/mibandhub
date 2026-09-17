@@ -1,5 +1,6 @@
 package com.ted.shouhuan.ui.device
 
+import android.widget.Toast
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
@@ -37,6 +38,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.input.KeyboardType
@@ -45,6 +47,7 @@ import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.ted.shouhuan.data.Pairing
+import com.ted.shouhuan.data.PairingQr
 import com.ted.shouhuan.ui.components.NoticeBanner
 import com.ted.shouhuan.ui.components.SectionCard
 import com.ted.shouhuan.ui.theme.Mint
@@ -70,6 +73,10 @@ fun PairingScreen(vm: DeviceViewModel, onDone: () -> Unit) {
     val seed by vm.pairingSeed.collectAsStateWithLifecycle()
     val scope = rememberCoroutineScope()
     val clipboard = LocalClipboardManager.current
+    val context = LocalContext.current
+
+    // 扫码覆盖层开关：点「扫码填入」打开相机，扫到本工具的配对二维码自动回填
+    var scanning by remember { mutableStateOf(false) }
 
     // 以「已存的配对信息」为初值：重新配对就是来改的，不该让用户从空白开始敲。
     // 用 seed 做 remember 的键 —— 存储还没读出来时 seed 是 null（先渲染空表单），
@@ -83,6 +90,7 @@ fun PairingScreen(vm: DeviceViewModel, onDone: () -> Unit) {
     val normalizedKey = Pairing.normalizeAuthKey(keyText)
     val canSave = normalizedMac != null && normalizedKey != null
 
+    Box(Modifier.fillMaxSize()) {
     Column(
         Modifier
             .fillMaxSize()
@@ -114,6 +122,23 @@ fun PairingScreen(vm: DeviceViewModel, onDone: () -> Unit) {
 
         // ---- 设备身份 ----
         SectionCard(title = "设备身份", accent = MaterialTheme.colorScheme.primary) {
+            // 最省事的入口：电脑上 `python pairing_qr.py` 弹出二维码，这里扫一下直填
+            Button(
+                onClick = { scanning = true },
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(14.dp),
+            ) {
+                Text("扫码填入（推荐）")
+            }
+            Spacer(Modifier.height(4.dp))
+            Text(
+                "对着电脑屏幕上的二维码扫一下，名称、MAC、AuthKey 自动填好。",
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+
+            Spacer(Modifier.height(12.dp))
+
             OutlinedTextField(
                 value = nameText,
                 onValueChange = { nameText = it },
@@ -208,7 +233,7 @@ fun PairingScreen(vm: DeviceViewModel, onDone: () -> Unit) {
         // ---- 怎么拿 AuthKey ----
         SectionCard(title = "怎么拿 AuthKey", accent = NotifyAmber) {
             Text(
-                "没有密钥就认证不过去，手环会在握手阶段直接断连。三条路，从省事到麻烦：",
+                "没有密钥就认证不过去，手环会在握手阶段直接断连。四条路，从省事到麻烦：",
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -260,8 +285,26 @@ fun PairingScreen(vm: DeviceViewModel, onDone: () -> Unit) {
             )
 
             Spacer(Modifier.height(14.dp))
+            HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.35f))
+            Spacer(Modifier.height(14.dp))
+
+            Text("④ 电脑生成二维码，扫一下直填", style = MaterialTheme.typography.bodyMedium, color = Mint)
+            Spacer(Modifier.height(6.dp))
             Text(
-                "三条路的完整说明、排障和踩过的坑都写在仓库 README 的「怎么获取 AuthKey」一节。",
+                "手机连电脑（USB 调试），电脑上跑一条命令，屏幕弹出配对二维码 —— " +
+                    "点上面的「扫码填入」扫一下，MAC 和 AuthKey 自动填好，一个字符都不用敲。",
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Spacer(Modifier.height(8.dp))
+            MonoBlock(
+                "python pairing_qr.py",
+                onCopy = { clipboard.setText(AnnotatedString("python pairing_qr.py")) },
+            )
+
+            Spacer(Modifier.height(14.dp))
+            Text(
+                "四条路的完整说明、排障和踩过的坑都写在仓库 README 的「怎么获取 AuthKey」一节。",
                 style = MaterialTheme.typography.labelMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -299,6 +342,24 @@ fun PairingScreen(vm: DeviceViewModel, onDone: () -> Unit) {
         }
 
         Spacer(Modifier.height(24.dp))
+    }
+
+    if (scanning) {
+        QrScannerOverlay(
+            onDismiss = { scanning = false },
+            onResult = { text ->
+                val payload = PairingQr.parse(text)
+                if (payload == null) {
+                    Toast.makeText(context, "不是手环管家的配对二维码", Toast.LENGTH_SHORT).show()
+                } else {
+                    nameText = payload.name ?: nameText
+                    macText = payload.mac
+                    keyText = payload.authKey
+                    scanning = false
+                }
+            },
+        )
+    }
     }
 }
 
