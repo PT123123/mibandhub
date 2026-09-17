@@ -16,6 +16,7 @@ import androidx.compose.material3.NavigationBarItemDefaults
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
@@ -55,11 +56,27 @@ private val Tabs = listOf(
     Tab("device", "设备", Icons.Rounded.Watch),
 )
 
+/**
+ * @param initialRoute 冷启动直接落在哪个 tab（桌面控件点击、deep link 用）。
+ * @param externalRoute 运行中（onNewIntent）从外部要跳去的 tab；变化即导航。
+ */
 @Composable
-fun AppRoot() {
+fun AppRoot(initialRoute: String? = null, externalRoute: String? = null) {
     val nav = rememberNavController()
     val backStack by nav.currentBackStackEntryAsState()
     val current = backStack?.destination
+
+    // 桌面控件点击：MainActivity 收到 onNewIntent 后更新 externalRoute，
+    // 这里按底部导航的标准导航参数切过去（pop 到起点不叠历史）。
+    LaunchedEffect(externalRoute) {
+        if (externalRoute != null) {
+            nav.navigate(externalRoute) {
+                popUpTo(nav.graph.findStartDestination().id) { saveState = true }
+                launchSingleTop = true
+                restoreState = true
+            }
+        }
+    }
 
     // 提到这里创建：一是切 tab 不丢测量状态，二是连接本身是「一条」长连接，
     // 让心率页和以后的设备页共用同一个会话，别各连各的。
@@ -122,7 +139,7 @@ fun AppRoot() {
     ) { inner ->
         NavHost(
             navController = nav,
-            startDestination = "home",
+            startDestination = initialRoute ?: "home",
             modifier = Modifier.padding(inner),
         ) {
             composable("home") { HomeScreen(homeVm) }

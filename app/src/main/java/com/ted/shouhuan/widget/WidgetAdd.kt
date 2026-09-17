@@ -5,10 +5,12 @@ import android.appwidget.AppWidgetProvider
 import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
 import android.provider.Settings
 import android.widget.Toast
+import androidx.core.content.ContextCompat
 
 /**
  * 主动把控件固定到桌面（API 26+ 的 requestPinAppWidget）。
@@ -18,9 +20,11 @@ import android.widget.Toast
  * 新装/更新的控件刷不出来。requestPinAppWidget 走系统 AppWidgetService 的固定流程，
  * 从应用里直接把控件钉到桌面，绕开这两个坑。
  *
- * 小米/红米上另有两处必须注意：
+ * 小米/红米/澎湃OS 上另有两处必须注意：
  *  - 它受「应用信息 → 权限管理 → 其他权限 → 桌面快捷方式」这个特殊权限管辖。权限没开
- *    时调用不弹固定界面、控件也落不到桌面 —— 光在 manifest 里声明权限不够。
+ *    时调用不弹固定界面、控件也落不到桌面 —— 光在 manifest 里声明权限不够，必须在
+ *    运行时请求（见 [hasShortcutPermission] / DeviceScreen、WidgetPinActivity 里的
+ *    请求逻辑），请求被拒后引导手动打开。
  *  - 小米小部件技术规范 §四.1 说带 `addType=appWidgetDetail` 的 extras 会去调「小米Widget
  *    商店详情页」，而详情页只列**通过小米审核上架**的组件；侧载 App 传了这套 extras 只会
  *    把用户丢进一个空页面。所以这里一律按原生方式调用，不传那套 extras。
@@ -47,6 +51,27 @@ fun pinWidgetToHome(
         Toast.makeText(context, manualHint(), Toast.LENGTH_LONG).show()
     }
     return ok
+}
+
+/** 澎湃OS 桌面包名（com.miui.home）的「桌面快捷方式」权限。老 MIUI/第三方桌面认下面那个。 */
+const val MIUI_HOME_SHORTCUT_PERMISSION = "com.miui.home.permission.INSTALL_SHORTCUT"
+
+/** 原生 launcher 的「桌面快捷方式」权限（MIUI 上显示成「其他权限」里的同一个开关）。 */
+const val LAUNCHER_SHORTCUT_PERMISSION = "com.android.launcher.permission.INSTALL_SHORTCUT"
+
+/**
+ * 「桌面快捷方式」权限是否已授予。
+ *
+ * 澎湃OS/MIUI 上它是特殊运行时权限，manifest 声明只是让开关出现在
+ * 应用信息 → 权限管理 → 其他权限，必须再运行时请求（或在设置里手动开）才有值。
+ * 两个权限字符串对应同一个开关，任一授予就算开。非小米桌面不需要它，直接放行。
+ */
+fun hasShortcutPermission(context: Context): Boolean {
+    if (!isMiui()) return true
+    return ContextCompat.checkSelfPermission(context, MIUI_HOME_SHORTCUT_PERMISSION) ==
+        PackageManager.PERMISSION_GRANTED ||
+        ContextCompat.checkSelfPermission(context, LAUNCHER_SHORTCUT_PERMISSION) ==
+        PackageManager.PERMISSION_GRANTED
 }
 
 /** 打开本应用的系统设置页 —— 小米的「桌面快捷方式」权限就藏在这里面。 */

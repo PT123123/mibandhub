@@ -37,11 +37,15 @@
         android:required="false" />
 
     <!-- 桌面快捷方式：launcher 的老权限，只在「把控件/快捷方式钉到桌面」这一步有意义。
-         小米/红米把它做成了「应用信息 → 权限管理 → 其他权限 → 桌面快捷方式」这个特殊权限
-         开关，关着时 requestPinAppWidget 不会把控件放上桌面。
+         小米/红米（含澎湃OS）把它做成了「应用信息 → 权限管理 → 其他权限 → 桌面快捷方式」
+         这个特殊权限开关，关着时 requestPinAppWidget 不会把控件放上桌面。
+         澎湃OS 桌面包名是 com.miui.home，它的「桌面快捷方式」权限字符串是
+         com.miui.home.permission.INSTALL_SHORTCUT；老 MIUI/第三方桌面认
+         com.android.launcher.permission.INSTALL_SHORTCUT。两者都声明，
+         运行时见 WidgetAdd.kt 的 hasShortcutPermission / 请求逻辑。
          注意：它跟「控件能不能被列出来」无关 —— 列表由 AppWidgetService 里 provider 的注册
-         状态决定（见 skill android-widget-visibility-rom）。曾有注释把这批权限当成
-         「长按应用图标菜单不显示控件」的原因，那是错的。 -->
+         状态决定。曾有注释把这批权限当成「长按应用图标菜单不显示控件」的原因，那是错的。 -->
+    <uses-permission android:name="com.miui.home.permission.INSTALL_SHORTCUT" />
     <uses-permission android:name="com.android.launcher.permission.INSTALL_SHORTCUT" />
     <uses-permission android:name="com.android.launcher.permission.UNINSTALL_SHORTCUT" />
     <uses-permission android:name="com.android.launcher2.permission.INSTALL_SHORTCUT" />
@@ -78,10 +82,12 @@
         android:supportsRtl="true"
         android:theme="@style/Theme.Shouhuan">
 
-        <!-- 小米小部件版本号（小米小部件技术规范 §10，声明了才跟得上小米的迁移规则）。 -->
-        <meta-data
-            android:name="miuiWidgetVersion"
-            android:value="1" />
+        <!-- 注意：不再声明 miuiWidgetVersion / miuiWidget 标识。
+             小米小部件体系（长按图标菜单的控件区、小米小部件商店）只收录通过小米审核
+             上架的小部件；侧载 App 声明了这些标识只会被系统当成「小米小部件」处理，
+             而审核列表里又没有它 —— 结果就是澎湃OS 的「添加小部件」里两个分类都找不到
+             （小米小部件只列上架的，安卓小组件又把带标识的过滤掉了）。去掉标识后三个
+             控件统一走原生 AppWidget 路径，稳落在「添加小部件 → 安卓小组件」分类。 -->
 
         <activity
             android:name=".MainActivity"
@@ -158,8 +164,9 @@
             </intent-filter>
         </service>
 
-        <!-- 桌面控件：主控件「昨晚睡眠」（2×2，走小米小部件体系）+ 两个原生控件
-             （1×1 睡眠时长 / 1×2 睡眠+心率曲线，走桌面「安卓小组件」入口）。
+        <!-- 桌面控件：主控件「昨晚睡眠」（2×2，可拉大）+ 两个原生控件
+             （1×1 睡眠时长 / 1×2 睡眠+心率曲线）。统一走原生 AppWidget 路径，
+             澎湃OS 桌面上从「添加小部件 → 安卓小组件」分类按「手环管家」分组找。
              都是标准 RemoteViews，系统投递的 APPWIDGET_UPDATE 就够用，
              exported=false 即可（系统以 SYSTEM_UID 发广播，不受 exported 限制）。 -->
         <receiver
@@ -187,8 +194,12 @@
         </receiver>
 
         <!-- 主控件「昨晚睡眠」：2×2 起步，拉大后显示得分与分期详情。
-             它是唯一按小米小部件规范配置的控件（miuiWidget 标识 + 小米认可的尺寸 +
-             根布局 @android:id/background），所以「长按应用图标」的控件菜单认的是它。 -->
+             原来是唯一按小米小部件规范配置的控件（miuiWidget 标识 + 小米认可的尺寸 +
+             根布局 @android:id/background）；侧载 App 进不了小米小部件体系，反而会被
+             澎湃OS 从「安卓小组件」分类过滤掉，所以 miuiWidget 标识已去掉，与另两个
+             控件一起走原生 AppWidget 路径。保留小米的「展现刷新」广播 action：澎湃OS
+             桌面刷新控件时发的广播不带原生 APPWIDGET_UPDATE，只认 miui 这个 action，
+             声明了它控件内容才能跟着刷新。 -->
         <receiver
             android:name=".widget.SleepDetailWidgetProvider"
             android:exported="false"
@@ -202,11 +213,6 @@
             <meta-data
                 android:name="android.appwidget.provider"
                 android:resource="@xml/widget_sleep_detail_info" />
-            <!-- 小米小部件标识（小米小部件技术规范 §4）：没有它，系统不把这个 receiver
-                 当小米小部件，长按图标菜单的控件区就不收录。侧载 App 一样读 manifest。 -->
-            <meta-data
-                android:name="miuiWidget"
-                android:value="true" />
         </receiver>
     </application>
 

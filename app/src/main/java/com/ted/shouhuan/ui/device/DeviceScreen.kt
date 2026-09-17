@@ -49,6 +49,9 @@ import com.ted.shouhuan.widget.SleepDetailWidgetProvider
 import com.ted.shouhuan.widget.SleepHeartWidgetProvider
 import com.ted.shouhuan.widget.SleepWidgetProvider
 import com.ted.shouhuan.widget.isMiui
+import com.ted.shouhuan.widget.hasShortcutPermission
+import com.ted.shouhuan.widget.LAUNCHER_SHORTCUT_PERMISSION
+import com.ted.shouhuan.widget.MIUI_HOME_SHORTCUT_PERMISSION
 import com.ted.shouhuan.widget.openAppSettings
 import com.ted.shouhuan.widget.pinWidgetToHome
 import androidx.compose.runtime.Composable
@@ -1155,12 +1158,45 @@ private fun AddItemChips(
  *
  * 为什么不能只靠长按图标菜单：长按菜单里的控件预览只给接了小米小部件体系的 App 留位
  * （第三方 App 侧载装的历史上就没有这一格），桌面自己那份小部件列表又按包名缓存。
- * 所以：主控件按小米小部件规范配置（长按图标菜单能收录）+ 静态快捷方式给一条
- * 「添加桌面控件」，再加这里的固定按钮，三条路至少有一条能走通。
+ * 所以：主控件按原生 AppWidget 配置（保证澎湃OS「添加小部件 → 安卓小组件」里找得到）+
+ * 静态快捷方式给一条「添加桌面控件」，再加这里的固定按钮，三条路至少有一条能走通。
+ *
+ * 澎湃OS/MIUI 上点「添加到桌面」前要先拿到「桌面快捷方式」权限（应用信息 → 权限管理 →
+ * 其他权限 里的那个开关）：关着时 requestPinAppWidget 不弹位置选择、控件也落不到桌面。
+ * 这里先运行时请求两个权限字符串（对应同一个开关），授权后再固定；被拒就提示手动开。
  */
 @Composable
 private fun WidgetAddCard() {
     val context = LocalContext.current
+    var pendingProvider by remember {
+        mutableStateOf<Class<out AppWidgetProvider>?>(null)
+    }
+    val shortcutPermLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestMultiplePermissions()
+    ) {
+        val provider = pendingProvider ?: return@rememberLauncherForActivityResult
+        pendingProvider = null
+        if (hasShortcutPermission(context)) {
+            pinWidgetToHome(context, provider)
+        } else {
+            Toast.makeText(
+                context,
+                "「桌面快捷方式」权限没开，没法自动放上桌面：请到 应用信息 → 权限管理 → 其他权限 打开，再试一次。",
+                Toast.LENGTH_LONG,
+            ).show()
+        }
+    }
+    // 点击「添加到桌面」：小米上先确保「桌面快捷方式」权限再钉，别家直接钉。
+    fun onAdd(provider: Class<out AppWidgetProvider>) {
+        pendingProvider = provider
+        if (isMiui() && !hasShortcutPermission(context)) {
+            shortcutPermLauncher.launch(
+                arrayOf(MIUI_HOME_SHORTCUT_PERMISSION, LAUNCHER_SHORTCUT_PERMISSION),
+            )
+        } else {
+            pinWidgetToHome(context, provider)
+        }
+    }
     Column(
         Modifier
             .fillMaxWidth()
@@ -1176,15 +1212,18 @@ private fun WidgetAddCard() {
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
         Spacer(Modifier.height(10.dp))
-        WidgetAddRow("昨晚睡眠（2×2，可拉大）", SleepDetailWidgetProvider::class.java, context)
-        WidgetAddRow("睡眠与心率", SleepHeartWidgetProvider::class.java, context)
-        WidgetAddRow("睡眠时长", SleepWidgetProvider::class.java, context)
+        WidgetAddRow("昨晚睡眠（2×2，可拉大）", context) {
+            onAdd(SleepDetailWidgetProvider::class.java)
+        }
+        WidgetAddRow("睡眠与心率", context) { onAdd(SleepHeartWidgetProvider::class.java) }
+        WidgetAddRow("睡眠时长", context) { onAdd(SleepWidgetProvider::class.java) }
         Spacer(Modifier.height(4.dp))
         if (isMiui()) {
             Text(
-                "小米/红米点了没反应？到桌面双指捏合（或长按空白处）→ 添加小部件 → 找「手环管家」，" +
-                    "没有就滑到最底部的「安卓小组件」；并确认 应用信息 → 权限管理 → 其他权限 " +
-                    "里的「桌面快捷方式」是打开的。",
+                "澎湃OS/小米：点「添加到桌面」会先弹「桌面快捷方式」授权，允许后再选位置。" +
+                    "桌面找不到控件时，到桌面双指捏合（或长按空白处）→ 添加小部件 → 滑到最底部的" +
+                    "「安卓小组件」分类，按「手环管家」分组找三个控件；没有就先在 应用信息 →" +
+                    "权限管理 → 其他权限 里把「桌面快捷方式」打开。",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -1201,14 +1240,15 @@ private fun WidgetAddCard() {
     }
 }
 
+/** 点击「添加到桌面」按钮行。 */
 @Composable
 private fun WidgetAddRow(
     label: String,
-    provider: Class<out AppWidgetProvider>,
     context: Context,
+    onAdd: () -> Unit,
 ) {
     OutlinedButton(
-        onClick = { pinWidgetToHome(context, provider) },
+        onClick = onAdd,
         modifier = Modifier
             .fillMaxWidth()
             .padding(vertical = 4.dp),
