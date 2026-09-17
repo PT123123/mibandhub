@@ -96,5 +96,15 @@ dependencies {
     implementation(libs.androidx.health.connect.client)
     implementation(libs.kotlinx.coroutines.android)
 
+    // 配对页「扫码填入」：相机预览 + 二维码解码
+    implementation(libs.androidx.camera.core)
+    implementation(libs.androidx.camera.camera2)
+    implementation(libs.androidx.camera.lifecycle)
+    implementation(libs.androidx.camera.view)
+    implementation(libs.zxing.core)
+    // CameraX 的 ProcessCameraProvider 暴露 guava ListenableFuture（AGP 禁止空接口 jar，
+    // 必须带完整 guava）
+    implementation(libs.guava)
+
     debugImplementation(libs.androidx.ui.tooling)
 }

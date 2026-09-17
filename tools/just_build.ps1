@@ -100,7 +100,7 @@ function Invoke-BashChecked([string[]]$BashArgs) {
 
 if ($doTools) {
     Write-Host "[1/5] Python 语法检查"
-    foreach ($src in @("xiaomi_authkey.py", "parse_log.py", "tools/package.py")) {
+    foreach ($src in @("xiaomi_authkey.py", "parse_log.py", "pairing_qr.py", "tools/package.py")) {
         if (Test-Path $src) {
             Invoke-PyChecked -m py_compile $src
             Write-Host "      OK  $src"
