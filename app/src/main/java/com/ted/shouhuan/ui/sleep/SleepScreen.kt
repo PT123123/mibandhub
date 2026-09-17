@@ -58,8 +58,8 @@ import com.ted.shouhuan.ui.components.displayColor
 import com.ted.shouhuan.ui.components.label
 import com.ted.shouhuan.ui.theme.SleepIndigo
 import com.ted.shouhuan.ui.theme.StepBlue
-import com.ted.shouhuan.util.formatDuration
 import com.ted.shouhuan.util.formatDurationShort
+import com.ted.shouhuan.util.formatHours
 import com.ted.shouhuan.util.formatEpochDay
 import com.ted.shouhuan.util.formatEpochDayShort
 import com.ted.shouhuan.util.minuteOfDayToClock
@@ -113,6 +113,25 @@ fun SleepScreen(vm: SleepViewModel) {
                 "导出失败：文件选择器打不开，剪贴板也放不下"
             }
             Toast.makeText(context, msg, Toast.LENGTH_LONG).show()
+        }
+    }
+
+    // ---- 导入：和导出一一对应，走系统「打开文件」对话框，选回刚导出的 CSV ----
+    val importLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenDocument(),
+    ) { uri ->
+        if (uri != null) {
+            scope.launch {
+                val res = vm.importFromFile(uri)
+                Toast.makeText(context, res.message, Toast.LENGTH_LONG).show()
+            }
+        }
+    }
+    val onImport: () -> Unit = {
+        try {
+            importLauncher.launch(arrayOf("text/csv", "*/*"))
+        } catch (e: Exception) {
+            Toast.makeText(context, "系统文件选择器不可用，无法导入", Toast.LENGTH_LONG).show()
         }
     }
 
@@ -199,6 +218,7 @@ fun SleepScreen(vm: SleepViewModel) {
             nights = nights,
             rangeIndex = rangeIndex,
             onExport = onExport,
+            onImport = onImport,
         )
 
         Spacer(Modifier.height(24.dp))
@@ -219,7 +239,7 @@ private fun NightDetailCard(night: SleepNightRecord, isLatest: Boolean) {
         ) {
             Column {
                 Text(
-                    formatDuration(night.totalMinutes),
+                    formatHours(night.totalMinutes),
                     style = MaterialTheme.typography.titleLarge,
                 )
                 if (!isLatest) {
@@ -244,7 +264,7 @@ private fun NightDetailCard(night: SleepNightRecord, isLatest: Boolean) {
 
         KeyValueRow("入睡", minuteOfDayToClock(night.bedMinutes))
         KeyValueRow("醒来", minuteOfDayToClock(night.wakeMinutes))
-        KeyValueRow("夜间清醒", formatDurationShort(night.awakeMinutes))
+        KeyValueRow("已醒", formatHours(night.awakeMinutes))
     }
 }
 
@@ -392,6 +412,7 @@ private fun DetailedDataSection(
     nights: List<SleepNightRecord>,
     rangeIndex: Int,
     onExport: () -> Unit,
+    onImport: () -> Unit,
 ) {
     val days = RANGE_OPTIONS[rangeIndex]
     val todayEpoch = remember { LocalDate.now().toEpochDay() }
@@ -407,8 +428,13 @@ private fun DetailedDataSection(
         badge = "${rangeNights.size} 晚",
         initiallyExpanded = false, // 统计 + 每晚明细都收进来，进页面先看主卡和趋势
         headerTrailing = {
-            TextButton(onClick = onExport) {
-                Text("导出 CSV", color = SleepIndigo)
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                TextButton(onClick = onImport) {
+                    Text("导入 CSV", color = SleepIndigo)
+                }
+                TextButton(onClick = onExport) {
+                    Text("导出 CSV", color = SleepIndigo)
+                }
             }
         },
     ) {

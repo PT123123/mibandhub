@@ -293,9 +293,9 @@ just android-clean    # 清理 Android 构建产物
 
 | 东西 | 位置 |
 |---|---|
-| 密钥 + 口令（工作副本） | 仓库根 `shouhuan-release.p12` + `keystore.properties`，已被 `.gitignore` 覆盖 |
-| 备份（唯一无法补救的资产） | `仓库外的密钥库备份目录（按日期分目录）` |
-| 证书 SHA256 | `75:0C:2C:B8:E4:8E:CC:C4:55:E4:3D:F8:65:71:41:4C:53:D5:69:69:8C:F7:77:FC:89:21:D8:97:16:91:33:3D` |
+| 密钥 + 口令（工作副本） | 仓库外的密钥库文件（alias `androiddebugkey`）+ 仓库根 `keystore.properties`，口令等参数都写在这个文件里，二者均被 `.gitignore` 覆盖 |
+| 备份（唯一无法补救的资产） | 仓库外的密钥库目录（keystore 本体，另在密码管理器存一份） |
+| 证书 SHA256 | `E0:BB:84:3A:91:92:A9:57:97:27:BE:09:08:35:40:A2:77:B1:5B:AC:96:7D:49:CF:26:A8:F3:0D:75:0A:64:00` |
 
 **这把 key 丢了 = 所有已安装的设备以后都装不上更新**，只能卸载重装。请另外往密码管理器里存一份。
 `keystore.properties` 不存在时 gradle 依然能编 debug / 跑测试，只是出不了可分发的 release 包
@@ -310,7 +310,7 @@ git push              # 代码先上去（publish 会拦下没 push 的情况）
 just release publish  # 打 tag v<版本> + gh release create + 真下载一次比 sha256
 ```
 
-`just release` 的自检是硬门槛：**拒收 `CN=Android Debug` 签的包**、校验包名与
+`just release` 的自检是硬门槛：**只认证书 SHA256 白名单里的正式 key**（仓库外备份的那把固定 keystore）、校验包名与
 `versionCode/versionName` 和 `build.gradle.kts` 一致、包不能比最后一次提交旧。
 
 `just release publish` 的四道闸：① 工作区必须干净 ② HEAD 必须已 push

@@ -31,7 +31,9 @@
 #  —— 发正式版（给别人装 / Obtainium 在线升级）——
 #   just release            出正式签名包 → dist/shouhuan.apk，并自检签名与版本
 #   just release verify     只对 dist 里现成的包做自检（不编译）
-#   just release bump       版本号 +1（发新版前先跑，不然用户更新装不上）
+#   just release bump         版本号 +1（patch，日常发版前先跑，不然用户更新装不上）
+#   just release bump-minor    中段 +1（有新功能但兼容升级）
+#   just release bump-major    首段 +1（换签名 keystore → 必须卸载重装，直接上 major）
 #   just release publish    打 tag + 建 GitHub Release 挂上 APK（要先 push 代码）
 #
 #  —— 环境变量 ——
@@ -126,8 +128,8 @@ android-clean:
 #
 # 为什么要有这套：debug 包签的是每台机器随机生成的 debug key，给别人装、或者
 # 换台机器再发一版，用户点安装会 INSTALL_FAILED_UPDATE_INCOMPATIBLE —— 只能卸载
-# 重装。所以对外分发的包必须是仓库外备份的那把正式 key（keystore.properties，
-# 被 .gitignore 覆盖，备份在 仓库外的密钥库备份目录（按日期分目录））。
+# 重装。所以对外分发的包由仓库根 keystore.properties 指定的那把正式 key 签（被 .gitignore 覆盖），
+# keystore 本体在仓库外（debug.keystore，alias androiddebugkey），路径见 keystore.properties。
 #
 # 资产名固定为 shouhuan.apk（Obtainium 和 releases/latest/download/<name>
 # 都按资产名精确匹配）。所以永久直链是：

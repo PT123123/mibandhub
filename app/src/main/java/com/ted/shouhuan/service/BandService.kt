@@ -20,6 +20,7 @@ import com.ted.shouhuan.R
 import com.ted.shouhuan.ShouhuanApp
 import com.ted.shouhuan.ble.ConnectionState
 import com.ted.shouhuan.data.BandNotification
+import com.ted.shouhuan.util.formatHours
 import com.ted.shouhuan.data.BandPrefs
 import com.ted.shouhuan.data.SleepNightRecord
 import com.ted.shouhuan.proto.BandSettings
@@ -35,6 +36,9 @@ import kotlinx.coroutines.flow.firstOrNull
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
+import java.time.Instant
+import java.time.LocalDateTime
+import java.time.ZoneId
 
 /**
  * 前台服务：一条常驻的状态通知 + START_STICKY。
@@ -58,6 +62,9 @@ class BandService : Service() {
 
     /** 每分钟跳一格：驱动睡眠日期越过零点、电量定时重读这类「没有流变化」的刷新。 */
     private val tick = MutableStateFlow(0)
+
+    /** 上次成功连上手环的时间（epoch 毫秒），断连时通知栏回显「上次连接 HH:MM」。 */
+    private val lastConnectedAt = MutableStateFlow(0L)
 
     /** onStartCommand 会被反复调用（开屏、开机广播……），状态订阅只能挂一份。 */
     private var watching = false
@@ -164,11 +171,11 @@ class BandService : Service() {
      */
     private fun startAsForeground() {
         val notification = buildNotification(
-            name = null,
             state = session.connectionState.value,
             battery = session.battery.value,
             steps = session.steps.value,
             sleep = null,
+            lastConnectedAt = lastConnectedAt.value,
         )
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
@@ -185,6 +192,9 @@ class BandService : Service() {
 
     /** 订阅状态流刷新通知；顺手做每分钟一次的电量重读。 */
     private fun watchState() {
+        // 先把上次连接时间从存储读进来，断连时通知栏才能回显
+        scope.launch { prefs.lastConnectedAt.firstOrNull()?.let { lastConnectedAt.value = it } }
+
         scope.launch {
             while (isActive) {
                 delay(60_000)
@@ -236,6 +246,10 @@ class BandService : Service() {
                     if (reminderConfig?.onConnect == true) {
                         sendBandReminder("已连接", "$BAND_APP_NAME 已连上手环")
                     }
+                    // 记一次成功连接，断连后通知栏好回显「上次连接 HH:MM」
+                    val now = System.currentTimeMillis()
+                    lastConnectedAt.value = now
+                    runCatching { prefs.recordConnectedAt(now) }
                     // 打开 app 时还没连上的场景：这次连接是替「自动拉取」连的，
                     // 认证一过就把数据拉下来。
                     if (syncAfterAuth) {
@@ -258,8 +272,8 @@ class BandService : Service() {
         ) { name, sleep -> name to sleep.firstOrNull() }
 
         scope.launch {
-            combine(connection, context, tick) { (state, battery, steps), (name, sleep), _ ->
-                buildNotification(name, state, battery, steps, sleep)
+            combine(connection, context, tick, lastConnectedAt) { (state, battery, steps), (_, sleep), _, last ->
+                buildNotification(state, battery, steps, sleep, last)
             }.collect { notification ->
                 getSystemService(NotificationManager::class.java)?.notify(NOTIFICATION_ID, notification)
             }
@@ -485,33 +499,39 @@ class BandService : Service() {
     }
 
     private fun buildNotification(
-        name: String?,
         state: ConnectionState,
         battery: Int?,
         steps: Int?,
         sleep: SleepNightRecord?,
+        lastConnectedAt: Long,
     ): Notification {
-        val deviceName = name?.takeIf { it.isNotBlank() } ?: "手环管家"
         val stateLabel = when (state) {
             // Authenticated = 认证过的长连接，才是真正「在线」
             ConnectionState.Authenticated -> "已连接"
-            ConnectionState.Connected -> "连接中"
-            ConnectionState.Connecting, ConnectionState.Discovering -> "连接中"
-            ConnectionState.Disconnected -> "未连接"
-            is ConnectionState.Failed -> "未连接"
+            // 正在连：只在本次重连尝试开头的短暂窗口里显示「连接中」，
+            // 之后回到「上次连接」时间 —— 别让通知栏一直挂着「连接中」（后台反复重连尤其明显）。
+            ConnectionState.Connecting, ConnectionState.Discovering, ConnectionState.Connected -> {
+                if (System.currentTimeMillis() - lastAutoConnectAt < CONNECTING_LABEL_WINDOW_MS) {
+                    "连接中"
+                } else {
+                    lastConnLabel(lastConnectedAt)
+                }
+            }
+            // 断连 / 失败：回显上次连上的时间，没连上过就显示「未连接」
+            ConnectionState.Disconnected, is ConnectionState.Failed -> lastConnLabel(lastConnectedAt)
         }
-        // 精简正文：「电87 睡7H12分 走6234步」。
+        // 精简正文：「电87 睡4.5h 走6234步」。
         // 拿不到的那段直接略过（断连时电量/步数留着旧值，只有从未读过才是 null），
         // 三段全空就给个占位符，正文不至于空白。
         val summary = listOfNotNull(
             battery?.let { "电$it" },
-            sleep?.let { "睡${compactDuration(it.totalMinutes)}" },
+            sleep?.let { "睡${formatHours(it.totalMinutes)}" },
             steps?.let { "走${it}步" },
         ).joinToString(" ").ifEmpty { "—" }
 
         return NotificationCompat.Builder(this, ShouhuanApp.CHANNEL_KEEP_ALIVE)
             .setSmallIcon(R.drawable.ic_stat_band)
-            .setContentTitle("$deviceName · $stateLabel")
+            .setContentTitle("手环管家 · $stateLabel")
             .setContentText(summary)
             .setStyle(NotificationCompat.BigTextStyle().bigText(summary))
             .setContentIntent(openAppIntent())
@@ -522,17 +542,14 @@ class BandService : Service() {
             .build()
     }
 
-    /** 「442」→「7H12分」，通知栏精简正文用 —— 小时缩成 H，省字符。 */
-    private fun compactDuration(minutes: Int): String {
-        val h = minutes / 60
-        val m = minutes % 60
-        return when {
-            h <= 0 -> "${m}分"
-            m == 0 -> "${h}H"
-            else -> "${h}H${m}分"
-        }
+    /** 断连状态栏文案：连上过就回显「上次连接 HH:MM」，否则「未连接」。 */
+    private fun lastConnLabel(lastConnectedAt: Long): String {
+        if (lastConnectedAt <= 0L) return "未连接"
+        val t = LocalDateTime.ofInstant(Instant.ofEpochMilli(lastConnectedAt), ZoneId.systemDefault())
+        return "上次连接 %02d:%02d".format(t.hour, t.minute)
     }
 
+    /** 「442」→「7H12分」，通知栏精简正文用 —— 小时缩成 H，省字符。 */
     private fun openAppIntent(): PendingIntent = PendingIntent.getActivity(
         this,
         0,
@@ -558,6 +575,9 @@ class BandService : Service() {
 
         /** 连接 + 认证的总兜底（底层每一步自己还有 15 秒超时）。 */
         private const val AUTO_CONNECT_TIMEOUT_MS = 35_000L
+
+        /** 状态栏「连接中」只在每次重连尝试开头这么长（毫秒）内显示，过后回显上次连接时间。 */
+        private const val CONNECTING_LABEL_WINDOW_MS = 8_000L
 
         /** 两次自动连接尝试的最小间隔：onStartCommand 反复触发时不至于连番轰炸。 */
         private const val AUTO_CONNECT_MIN_INTERVAL_MS = 10_000L

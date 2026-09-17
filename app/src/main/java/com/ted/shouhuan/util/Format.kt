@@ -4,6 +4,7 @@ import java.time.Instant
 import java.time.LocalDate
 import java.time.LocalDateTime
 import java.time.ZoneId
+import java.util.Locale
 
 private val WEEKDAY_NAMES = listOf("周一", "周二", "周三", "周四", "周五", "周六", "周日")
 
@@ -19,6 +20,23 @@ fun formatDurationShort(minutes: Int): String {
     val h = minutes / 60
     val m = minutes % 60
     return if (h <= 0) "${m}m" else "${h}h${m}m"
+}
+
+/**
+ * "270" -> "4.5h"；睡眠/清醒这种主打数字用小数小时更紧凑。
+ *
+ * 整小时不显小数（"7h"）；不足 0.1h 的零头进位成 "0.1h"（避免 1 分钟显示成 "0.0h"）。
+ * 小数点用 Locale.US，别让某些区域设置把 "." 渲染成 ","。
+ */
+fun formatHours(minutes: Int): String {
+    val hours = minutes / 60.0
+    var rounded = Math.round(hours * 10.0) / 10.0
+    if (minutes > 0 && rounded < 0.1) rounded = 0.1
+    return if (rounded == rounded.toInt().toDouble()) {
+        "${rounded.toInt()}h"
+    } else {
+        String.format(Locale.US, "%.1f", rounded) + "h"
+    }
 }
 
 /** "23:41" 风格时钟，从「当天第几分钟」换算。 */
