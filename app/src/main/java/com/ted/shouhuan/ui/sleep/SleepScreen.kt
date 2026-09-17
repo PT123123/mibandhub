@@ -63,7 +63,9 @@ import com.ted.shouhuan.util.formatHours
 import com.ted.shouhuan.util.formatEpochDay
 import com.ted.shouhuan.util.formatEpochDayShort
 import com.ted.shouhuan.util.minuteOfDayToClock
+import java.time.Duration
 import java.time.LocalDate
+import java.time.LocalDateTime
 import kotlin.math.roundToInt
 import kotlin.math.sqrt
 import kotlinx.coroutines.launch
@@ -262,10 +264,30 @@ private fun NightDetailCard(night: SleepNightRecord, isLatest: Boolean) {
         )
         Spacer(Modifier.height(16.dp))
 
-        KeyValueRow("入睡", minuteOfDayToClock(night.bedMinutes))
-        KeyValueRow("醒来", minuteOfDayToClock(night.wakeMinutes))
-        KeyValueRow("已醒", formatDurationShort(night.awakeMinutes))
+        // 夜间睡眠基本都跨天（入睡 23:41、醒来次日 08:00），入睡和醒来各标日期，
+        // 一眼能分清是哪两天；已醒与桌面控件同口径 = 现在 − 该夜起床时间。
+        KeyValueRow(
+            "入睡",
+            "${formatEpochDay(bedDayEpoch(night))} ${minuteOfDayToClock(night.bedMinutes)}",
+        )
+        KeyValueRow(
+            "醒来",
+            "${formatEpochDay(night.epochDay)} ${minuteOfDayToClock(night.wakeMinutes)}",
+        )
+        KeyValueRow("已醒", formatDurationShort(sinceWakeMinutes(night)))
     }
+}
+
+/** 入睡那天：醒来那天的第几分钟还没到起床分钟数 → 跨到前一天（23:41 入睡、08:00 醒来）。 */
+private fun bedDayEpoch(night: SleepNightRecord): Long =
+    if (night.bedMinutes > night.wakeMinutes) night.epochDay - 1 else night.epochDay
+
+/** 从该夜起床时刻到现在过了多久（分钟）。epochDay 是醒来那天。 */
+private fun sinceWakeMinutes(night: SleepNightRecord): Int {
+    val wake = LocalDate.ofEpochDay(night.epochDay)
+        .atStartOfDay()
+        .plusMinutes(night.wakeMinutes.toLong())
+    return Duration.between(wake, LocalDateTime.now()).toMinutes().coerceAtLeast(0).toInt()
 }
 
 @Composable
