@@ -25,11 +25,12 @@ App 连手环只需要两样东西：**手环的 MAC** 和 **AuthKey**（32 位�
 
 ### 第 1 步：取 AuthKey
 
-三条路，从省事到麻烦：
+四条路，从省事到麻烦：
 
 | 方式 | 前提 | 命令 | 说明 |
 |---|---|---|---|
-| **adb 直读**（推荐） | 手机能连电脑的 adb | `just fetch` | **手机端零操作**。官方 App 一启动就把密钥写进日志，从 adb 拉下来解析即可 |
+| **扫码直填**（最省事） | 手机能连电脑的 adb | `python pairing_qr.py` | 屏幕上弹出配对二维码，App 配对页「扫码填入」扫一下，MAC/AuthKey 自动填好 |
+| **adb 直读** | 手机能连电脑的 adb | `just fetch` | **手机端零操作**。官方 App 一启动就把密钥写进日志，从 adb 拉下来解析即可 |
 | 手动解析日志 | 手上有日志文件 | `python parse_log.py XiaomiFit.device.log` | 没有电脑时用：MT 管理器把日志导出到 Download 再跑 |
 | 登录小米接口 | 只有账号密码 | `python xiaomi_authkey.py -e 你的账号` | 完全不碰日志；会触发风控，别连续重试 |
 
@@ -45,7 +46,8 @@ App 连手环只需要两样东西：**手环的 MAC** 和 **AuthKey**（32 位�
 ### 第 2 步：在 App 里配对
 
 1. 底部 **「设备」页** → 点「填 MAC 与 AuthKey」（已配对过则是「重新配对」）；
-2. 名称随便起，MAC 与 AuthKey 直接粘 —— `0x` 前缀、冒号、横杠、大小写都不挑，
+2. 想省事就点「扫码填入」扫电脑屏幕上的二维码（`python pairing_qr.py` 生成的）；
+   或者名称随便起，MAC 与 AuthKey 直接粘 —— `0x` 前缀、冒号、横杠、大小写都不挑，
    位数对上就行（界面上会实时告诉你哪里不对）；
 3. 保存后回到设备页点「连接手环」，出现「已连接」和电量就通了。
 
@@ -410,6 +412,7 @@ GET  https://api-mifit.huami.com/v1/users/<id>/devices  → additionalInfo.auth_
 |---|---|
 | `xiaomi_authkey.py` | 路线 B 主程序。**零第三方依赖**，只用 Python 标准库（上游要 requests/loguru/pycryptodome，Termux 上装起来很烦，这里全部用 urllib + 手写 RC4 替代） |
 | `parse_log.py` | 路线 A：从官方 App 调试日志里解析 AuthKey。支持多文件、跨文件去重、带出设备名/型号 |
+| `pairing_qr.py` | 路线 A 的延伸：adb 拉日志解析后生成**配对二维码**，App「扫码填入」扫一下自动填 MAC/AuthKey（载荷格式 `SHOUHUAN1|MAC|KEY|NAME`，依赖 segno） |
 | `tools/adb_fetch.sh` | **最省事的一条路**：手机连着 adb 时，直接把日志拉到本地解析，手机端零操作（`just fetch`） |
 | `tests/` | 37 个离线测试 + 模拟日志夹具，含上游抓包向量与真实日志格式 |
 | `termux/` | Termux 一键部署：桌面小部件脚本 + 安装器 |
