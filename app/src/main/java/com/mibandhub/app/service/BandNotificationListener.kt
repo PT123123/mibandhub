@@ -130,13 +130,17 @@ class BandNotificationListener : NotificationListenerService() {
             }
         }
 
-        // ---- 应用规则（黑名单模式）----
-        // 在名单里且 enabled=false → 明确禁用，跳过
-        // 在名单里且 enabled=true → 明确允许
-        // 不在名单里 → 也放行（用户没管过，默认允许转发）
+        // ---- 应用白名单：默认拒绝，只有「在名单里且用户明确允许」才转发 ----
+        // 不在名单里 → 不转发（用户没加过的应用不替他决定转发）
+        // 在名单里但被禁用 → 不转发
+        // 在名单里且启用 → 转发
         val rules = prefs.appRules.first()
         val rule = rules.firstOrNull { it.packageName == pkg }
-        if (rule != null && !rule.enabled) {
+        if (rule == null) {
+            Log.d(TAG, "包 $pkg 不在转发白名单，跳过")
+            return
+        }
+        if (!rule.enabled) {
             Log.d(TAG, "包 $pkg 已被用户禁用，跳过")
             return
         }

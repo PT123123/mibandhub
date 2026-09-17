@@ -14,6 +14,7 @@ import com.mibandhub.app.R
 import com.mibandhub.app.data.BandPrefs
 import com.mibandhub.app.data.HeartRateSample
 import com.mibandhub.app.data.SleepNightRecord
+import com.mibandhub.app.util.formatHours
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.first
@@ -186,7 +187,7 @@ object WidgetRenderer {
         } else {
             views.setTextViewText(
                 R.id.widget_detail_value,
-                compactDuration(night.totalMinutes),
+                formatHours(night.totalMinutes),
             )
             views.setTextViewText(R.id.widget_detail_label, nightLabel(night))
             views.setTextViewText(
@@ -203,7 +204,7 @@ object WidgetRenderer {
             views.setTextViewText(
                 R.id.widget_detail_awake,
                 if (night.awakeMinutes > 0) {
-                    "夜间清醒 ${compactDuration(night.awakeMinutes)}"
+                    "已醒 ${formatHours(night.awakeMinutes)}"
                 } else {
                     "夜间未醒"
                 },
@@ -243,7 +244,7 @@ object WidgetRenderer {
             views.setTextViewText(R.id.widget_sleep_value, "—")
             views.setTextViewText(R.id.widget_sleep_label, "暂无睡眠数据")
         } else {
-            views.setTextViewText(R.id.widget_sleep_value, compactDuration(night.totalMinutes))
+            views.setTextViewText(R.id.widget_sleep_value, formatHours(night.totalMinutes))
             views.setTextViewText(R.id.widget_sleep_label, nightLabel(night))
         }
     }
