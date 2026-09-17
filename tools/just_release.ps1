@@ -29,6 +29,15 @@
 param([string]$Target = "package", [string]$Extra = "")
 $ErrorActionPreference = "Stop"
 
+# 环境自愈：Store 版 PowerShell 7 会把它的 Modules 目录塞进 PSModulePath（本进程
+# 从 pwsh 继承父进程环境时最常见）。Windows PowerShell 5.1 看到"更高版本"的
+# Microsoft.PowerShell.Utility 会误加载 PS7 的二进制模块 —— 表现是 Get-FileHash /
+# Invoke-WebRequest 这类命令凭空消失（CommandNotFoundException）。把 PS7 的目录
+# 剔除，让 5.1 用回自带模块（3.1.0.0）。
+$env:PSModulePath = ((($env:PSModulePath -split ';') | Where-Object {
+    $_ -and $_ -notmatch 'PowerShell[\\/]7|microsoft\.powershell_'
+}) -join ';')
+
 # 管道/重定向场景下的中文编码：直接写控制台用 WriteConsoleW 不受影响，
 # 但被 bash/CI 捕获时走 [Console]::OutputEncoding，默认是 GBK 会变乱码
 try { [Console]::OutputEncoding = [System.Text.Encoding]::UTF8 } catch { }
