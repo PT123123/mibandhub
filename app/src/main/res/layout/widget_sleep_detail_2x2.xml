@@ -1,9 +1,10 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!-- 自适应「昨晚睡眠」控件的 2×2 形态（也是这个控件的主形态）：时长 + 得分 +
-     入睡→醒来 + 分期占比条 + 夜间清醒。占比条用 ProgressBar（远程视图白名单内），
-     颜色对齐应用内的分期配色。
+     入睡→醒来 + 单条三段分期彩条（深睡/浅睡/眼动）+ 夜间清醒。
+     彩条由 WidgetRenderer 画成位图（RemoteViews 只认 ImageView 收位图），
+     颜色对齐应用内的分期配色；旁边一行文字是三个分期的分钟数。
 
-     根布局 id 见 1×1 那份文件的说明（小米小部件规范要求 @android:id/background）。 -->
+     根布局 id 见 1×1 那份文件的说明（沿用 @android:id/background 标准 id）。 -->
 <FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
     android:id="@android:id/background"
     android:layout_width="match_parent"
@@ -55,33 +56,27 @@
                 android:textSize="10sp" />
         </LinearLayout>
 
-        <LinearLayout
+        <TextView
+            android:id="@+id/widget_detail_bedwake"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:layout_marginTop="2dp"
-            android:orientation="horizontal">
+            android:ellipsize="end"
+            android:maxLines="1"
+            android:text="—"
+            android:textColor="@color/widget_text_primary"
+            android:textSize="10sp" />
 
-            <TextView
-                android:id="@+id/widget_detail_bedwake"
-                android:layout_width="0dp"
-                android:layout_height="wrap_content"
-                android:layout_weight="1"
-                android:ellipsize="end"
-                android:maxLines="1"
-                android:text="—"
-                android:textColor="@color/widget_text_primary"
-                android:textSize="10sp" />
-
-            <TextView
-                android:id="@+id/widget_detail_label"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:layout_marginStart="4dp"
-                android:maxLines="1"
-                android:text="@string/widget_sleep_detail_label"
-                android:textColor="@color/widget_text_secondary"
-                android:textSize="9sp" />
-        </LinearLayout>
+        <TextView
+            android:id="@+id/widget_detail_label"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="1dp"
+            android:ellipsize="end"
+            android:maxLines="1"
+            android:text="@string/widget_sleep_detail_label"
+            android:textColor="@color/widget_text_secondary"
+            android:textSize="9sp" />
 
         <TextView
             android:layout_width="match_parent"
@@ -100,113 +95,30 @@
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
                 android:layout_marginEnd="6dp"
-                android:text="深睡"
+                android:text="睡眠分期"
                 android:textColor="@color/widget_text_secondary"
                 android:textSize="9sp" />
 
-            <ProgressBar
-                android:id="@+id/widget_detail_deep_bar"
-                style="?android:attr/progressBarStyleHorizontal"
+            <ImageView
+                android:id="@+id/widget_detail_stages_bar"
                 android:layout_width="0dp"
-                android:layout_height="10dp"
+                android:layout_height="12dp"
                 android:layout_weight="1"
-                android:max="100"
-                android:progress="0"
-                android:progressDrawable="@drawable/widget_stage_deep" />
-
-            <TextView
-                android:id="@+id/widget_detail_deep_value"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:layout_marginStart="6dp"
-                android:ellipsize="end"
-                android:gravity="end"
-                android:maxLines="1"
-                android:minWidth="46dp"
-                android:text="—"
-                android:textColor="@color/widget_text_primary"
-                android:textSize="9sp" />
+                android:contentDescription="@null" />
         </LinearLayout>
 
-        <LinearLayout
+        <TextView
+            android:id="@+id/widget_detail_stages"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:layout_marginTop="5dp"
-            android:gravity="center_vertical"
-            android:orientation="horizontal">
+            android:layout_marginTop="4dp"
+            android:ellipsize="end"
+            android:maxLines="1"
+            android:text="—"
+            android:textColor="@color/widget_text_secondary"
+            android:textSize="9sp" />
 
-            <TextView
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:layout_marginEnd="6dp"
-                android:text="浅睡"
-                android:textColor="@color/widget_text_secondary"
-                android:textSize="9sp" />
-
-            <ProgressBar
-                android:id="@+id/widget_detail_light_bar"
-                style="?android:attr/progressBarStyleHorizontal"
-                android:layout_width="0dp"
-                android:layout_height="10dp"
-                android:layout_weight="1"
-                android:max="100"
-                android:progress="0"
-                android:progressDrawable="@drawable/widget_stage_light" />
-
-            <TextView
-                android:id="@+id/widget_detail_light_value"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:layout_marginStart="6dp"
-                android:ellipsize="end"
-                android:gravity="end"
-                android:maxLines="1"
-                android:minWidth="46dp"
-                android:text="—"
-                android:textColor="@color/widget_text_primary"
-                android:textSize="9sp" />
-        </LinearLayout>
-
-        <LinearLayout
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="5dp"
-            android:gravity="center_vertical"
-            android:orientation="horizontal">
-
-            <TextView
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:layout_marginEnd="6dp"
-                android:text="快速眼动"
-                android:textColor="@color/widget_text_secondary"
-                android:textSize="9sp" />
-
-            <ProgressBar
-                android:id="@+id/widget_detail_rem_bar"
-                style="?android:attr/progressBarStyleHorizontal"
-                android:layout_width="0dp"
-                android:layout_height="10dp"
-                android:layout_weight="1"
-                android:max="100"
-                android:progress="0"
-                android:progressDrawable="@drawable/widget_stage_rem" />
-
-            <TextView
-                android:id="@+id/widget_detail_rem_value"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:layout_marginStart="6dp"
-                android:ellipsize="end"
-                android:gravity="end"
-                android:maxLines="1"
-                android:minWidth="46dp"
-                android:text="—"
-                android:textColor="@color/widget_text_primary"
-                android:textSize="9sp" />
-        </LinearLayout>
-
-        <!-- 弹性空隙：把清醒行压到底部 -->
+        <!-- 弹性空隙：把已醒行压到底部 -->
         <LinearLayout
             android:layout_width="match_parent"
             android:layout_height="0dp"

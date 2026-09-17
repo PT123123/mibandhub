@@ -1,6 +1,7 @@
 package com.ted.shouhuan
 
 import android.Manifest
+import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
@@ -8,6 +9,9 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
 import androidx.core.content.ContextCompat
 import com.ted.shouhuan.service.BandService
 import com.ted.shouhuan.ui.AppRoot
@@ -22,17 +26,29 @@ class MainActivity : ComponentActivity() {
             BandService.start(this)
         }
 
+    /** 桌面控件点进来要落到的 tab；null = 正常启动进首页。
+     *  onNewIntent 会更新它，AppRoot 里 LaunchedEffect 监听到就去导航。 */
+    private var targetRoute by mutableStateOf<String?>(null)
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
 
         ensurePermissionsAndStartService()
 
+        val initial = intent.getStringExtra(EXTRA_TARGET_ROUTE)
         setContent {
             ShouhuanTheme {
-                AppRoot()
+                AppRoot(initialRoute = initial, externalRoute = targetRoute)
             }
         }
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        // singleTop：应用已在栈顶时点桌面控件走这条，而不是 onCreate。
+        intent.getStringExtra(EXTRA_TARGET_ROUTE)?.let { targetRoute = it }
     }
 
     override fun onResume() {
@@ -40,6 +56,11 @@ class MainActivity : ComponentActivity() {
         // 从后台切回也算「打开应用」：让服务再跑一遍自动拉取的判断
         // （服务里带 10 分钟去抖，反复进出不会连番轰炸手环）。
         BandService.notifyAppOpen(this)
+    }
+
+    companion object {
+        /** 桌面控件 PendingIntent 里的目标 tab 名（AppRoot 的 route，如 "sleep"）。 */
+        const val EXTRA_TARGET_ROUTE = "com.ted.shouhuan.target_route"
     }
 
     /**

@@ -2,8 +2,9 @@
 <!-- 自适应「昨晚睡眠」控件的 1×1 形态：时长 + 入睡→醒来。
      拉成 1×2 / 2×2 后由 SleepDetailWidgetProvider 换成更详细的布局。
 
-     外层 FrameLayout 的 id 是小米小部件规范写死的 @android:id/background ——
-     系统靠这个固定 id 找根布局统一加圆角，并要求根布局有非全透明的背景色。
+     外层 FrameLayout 沿用 @android:id/background 这个标准 id（当初按小米小部件
+     规范要求加的，系统靠这个固定 id 找根布局统一加圆角，并要求根布局有非全透明的
+     背景色；原生 AppWidget 里它也只是个普通 id，保留无副作用）。
      点击区仍在内层 @+id/widget_detail_root 上，不受这条规范影响。 -->
 <FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
     android:id="@android:id/background"

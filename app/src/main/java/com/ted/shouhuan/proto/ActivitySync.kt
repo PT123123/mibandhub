@@ -221,11 +221,11 @@ object ActivitySync {
      * 不足 30 分钟的碎片当噪声丢掉。
      */
     fun nightsFromSamples(samples: List<MinuteSample>): List<SleepNightRecord> {
-        val sleepMinutes = samples
-            .filter { isSleepMinute(it) }
-            .distinctBy { it.time }
-            .sortedBy { it.time }
+        val distinct = samples.distinctBy { it.time }.sortedBy { it.time }
+        val sleepMinutes = distinct.filter { isSleepMinute(it) }
         if (sleepMinutes.isEmpty()) return emptyList()
+        // 全量样本（含清醒分钟）按时间索引，供「已醒」统计睡眠时段内的真实分钟数。
+        val samplesByTime = distinct.associateBy { it.time }
 
         val nights = ArrayList<SleepNightRecord>()
         val cluster = ArrayList<MinuteSample>()
@@ -233,17 +233,20 @@ object ActivitySync {
         for (m in sleepMinutes) {
             val prev = last
             if (prev != null && Duration.between(prev.time, m.time).toMinutes() > MAX_AWAKE_GAP_MINUTES) {
-                clusterToNight(cluster)?.let(nights::add)
+                clusterToNight(cluster, samplesByTime)?.let(nights::add)
                 cluster.clear()
             }
             cluster.add(m)
             last = m
         }
-        clusterToNight(cluster)?.let(nights::add)
+        clusterToNight(cluster, samplesByTime)?.let(nights::add)
         return nights
     }
 
-    private fun clusterToNight(cluster: List<MinuteSample>): SleepNightRecord? {
+    private fun clusterToNight(
+        cluster: List<MinuteSample>,
+        samplesByTime: Map<LocalDateTime, MinuteSample>,
+    ): SleepNightRecord? {
         if (cluster.size < MIN_NIGHT_MINUTES) return null
         val bed = cluster.first().time
         val wake = cluster.last().time.plusMinutes(1)
@@ -251,7 +254,12 @@ object ActivitySync {
         val deep = cluster.count { stageOf(it) == SleepStage.DEEP }
         val rem = cluster.count { stageOf(it) == SleepStage.REM }
         val light = (total - deep - rem).coerceAtLeast(0)
-        val awake = (Duration.between(bed, wake).toMinutes() - total).coerceAtLeast(0).toInt()
+        // 清醒 = 睡眠时段里「有样本、但不是睡眠」的分钟：手环每分钟一个样本，
+        // 清醒分钟以 `00 80 80` 形态留在流里，数它们就行。
+        // 注意不能拿「跨度 - 睡眠分钟」来算 —— 被官方 App 同步删除过的时段在流里
+        // 是**真空洞**（没有样本），那不是清醒，算进去会让「已醒」虚高几十分钟。
+        val awake = (samplesByTime.keys.count { it >= bed && it < wake } - total)
+            .coerceAtLeast(0)
         return SleepNightRecord(
             epochDay = wake.toLocalDate().toEpochDay(),   // 记账口径：醒来那天
             totalMinutes = total,
