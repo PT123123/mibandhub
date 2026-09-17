@@ -29,6 +29,13 @@
 
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
+    <!-- 配对页「扫码填入」：扫码自动填 MAC/AuthKey。运行时申请；没有相机也能
+         装 App，只是扫码功能不可用（仍可手动输入）。 -->
+    <uses-permission android:name="android.permission.CAMERA" />
+    <uses-feature
+        android:name="android.hardware.camera"
+        android:required="false" />
+
     <!-- 桌面快捷方式：launcher 的老权限，只在「把控件/快捷方式钉到桌面」这一步有意义。
          小米/红米把它做成了「应用信息 → 权限管理 → 其他权限 → 桌面快捷方式」这个特殊权限
          开关，关着时 requestPinAppWidget 不会把控件放上桌面。
