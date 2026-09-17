@@ -6,6 +6,7 @@ import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.intPreferencesKey
+import androidx.datastore.preferences.core.longPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import kotlinx.coroutines.flow.Flow
@@ -73,6 +74,9 @@ class BandPrefs(private val context: Context) {
 
         /** 手环电量读数历史（时间点 + 电量）。永久保存，不清理。 */
         val BATTERY_HISTORY = stringPreferencesKey("battery_history")
+
+        /** 上次成功连上（认证通过）手环的时间，epoch 毫秒。通知栏在断连时回显用。 */
+        val LAST_CONNECTED_AT = longPreferencesKey("last_connected_at")
 
         // ---- 睡眠监测（手机侧开关）：控制应用打开时是否自动拉取睡眠。手环睡眠是
         // 硬件常开的，协议层没有关闭命令，所以这里只管应用自己的自动同步行为。----
@@ -229,6 +233,21 @@ class BandPrefs(private val context: Context) {
         }
     }
 
+    /**
+     * 批量并入多晚记录（CSV 导入用）。与 [replaceSleepNight] 同款「按醒来日合并、取总分钟多者」，
+     * 但一次性落盘 —— 几百行也只触发一次 DataStore 写，避免逐行 replace 的 N 次写。
+     */
+    suspend fun mergeSleepNights(records: List<SleepNightRecord>) {
+        if (records.isEmpty()) return
+        context.bandDataStore.edit { prefs ->
+            val next = (records + decodeSleepHistory(prefs[Keys.SLEEP_HISTORY]))
+                .groupBy { it.epochDay }
+                .map { (_, sameDay) -> sameDay.maxBy { it.totalMinutes } }
+                .sortedByDescending { it.epochDay }
+            prefs[Keys.SLEEP_HISTORY] = encodeSleepHistory(next)
+        }
+    }
+
     /** 清空睡眠史。 */
     suspend fun clearSleepHistory() {
         context.bandDataStore.edit { it.remove(Keys.SLEEP_HISTORY) }
@@ -366,6 +385,15 @@ class BandPrefs(private val context: Context) {
     /** 手环电量读数历史，按时间从早到晚。**永不清理** —— 攒着才看得出耗电速度。 */
     val batteryHistory: Flow<List<BatterySample>> =
         context.bandDataStore.data.map { decodeBatteryHistory(it[Keys.BATTERY_HISTORY]) }
+
+    /** 上次成功连上手环的时间（epoch 毫秒），0 表示从未连上过。 */
+    val lastConnectedAt: Flow<Long> =
+        context.bandDataStore.data.map { it[Keys.LAST_CONNECTED_AT] ?: 0L }
+
+    /** 记一次成功连接的时间戳。 */
+    suspend fun recordConnectedAt(atMillis: Long) {
+        context.bandDataStore.edit { it[Keys.LAST_CONNECTED_AT] = atMillis }
+    }
 
     /** 真实推到手环的通知记录，新的在前（无记录时为空，不放演示条目）。 */
     val recentNotifications: Flow<List<BandNotification>> =
