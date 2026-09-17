@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!-- 自适应「昨晚睡眠」控件的 1×2 形态：时长 + 入睡→醒来 + 得分 + 一行分期摘要。
 
-     根布局 id 见 1×1 那份文件的说明（小米小部件规范要求 @android:id/background）。 -->
+     根布局 id 见 1×1 那份文件的说明（沿用 @android:id/background 标准 id）。 -->
 <FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
     android:id="@android:id/background"
     android:layout_width="match_parent"
