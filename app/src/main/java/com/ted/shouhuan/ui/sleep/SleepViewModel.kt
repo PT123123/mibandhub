@@ -8,6 +8,7 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.ted.shouhuan.data.BandPrefs
 import com.ted.shouhuan.data.SleepNightRecord
+import com.ted.shouhuan.service.SleepSyncManager
 import com.ted.shouhuan.util.minuteOfDayToClock
 import com.ted.shouhuan.util.weekdayOf
 import java.time.LocalDate
@@ -34,9 +35,21 @@ class SleepViewModel(app: Application) : AndroidViewModel(app) {
     val nights: StateFlow<List<SleepNightRecord>> = prefs.sleepHistory
         .stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
 
+    /**
+     * 睡眠同步状态 —— 进程级共享（service/SleepSyncManager），设备页的
+     * 「同步手环数据」看的是同一份：在哪边拉，两边进度都动。
+     */
+    val sleepSync = SleepSyncManager.phase
+
     init {
         viewModelScope.launch { prefs.removeDemoSleep() }
     }
+
+    /** 进入页面时自动拉一次（带去抖：2 分钟内切出去再进来不重复折腾手环）。 */
+    fun syncOnEnter() = SleepSyncManager.syncAuto(getApplication())
+
+    /** 手动同步（下拉刷新 / 同步按钮）：总是真的跑。 */
+    fun syncNow() = SleepSyncManager.sync(getApplication())
 
     // ------------------------------------------------------------------
     // 数据导出：小数据进剪贴板，大了写文件（CSV，Excel/Numbers 直接打开）

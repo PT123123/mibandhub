@@ -10,6 +10,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -54,6 +55,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.ted.shouhuan.data.AppRule
 import com.ted.shouhuan.data.BandNotification
 import com.ted.shouhuan.ui.components.CollapsibleSection
 import com.ted.shouhuan.ui.components.FilterChipRow
@@ -81,6 +83,7 @@ fun NotifyScreen(vm: NotifyViewModel) {
     val dndEnd by vm.dndEnd.collectAsStateWithLifecycle()
     val keywordBlacklist by vm.keywordBlacklist.collectAsStateWithLifecycle()
     val keywords by vm.keywords.collectAsStateWithLifecycle()
+    val appFilterBlacklist by vm.appFilterBlacklist.collectAsStateWithLifecycle()
     val dedupeEnabled by vm.dedupeEnabled.collectAsStateWithLifecycle()
     val dedupeSeconds by vm.dedupeSeconds.collectAsStateWithLifecycle()
     val onlyLocked by vm.onlyLocked.collectAsStateWithLifecycle()
@@ -91,7 +94,11 @@ fun NotifyScreen(vm: NotifyViewModel) {
     val testSend by vm.testSend.collectAsStateWithLifecycle()
 
     // 每次进入页面都刷新一次权限状态（从系统设置授权回来也能看到最新状态）
-    LaunchedEffect(Unit) { vm.refreshNotifyPermission() }
+    LaunchedEffect(Unit) {
+        vm.refreshNotifyPermission()
+        // 「最近推送」的快捷加名单按钮要对老记录按应用名反查包名，顺手把应用列表备好
+        vm.loadInstalledApps()
+    }
 
     // 弹层状态：勿扰时间选择 / 关键词新增 / 添加转发应用
     var editingDndEdge by remember { mutableStateOf<String?>(null) }
@@ -361,8 +368,28 @@ fun NotifyScreen(vm: NotifyViewModel) {
 
         Spacer(Modifier.height(12.dp))
 
-        // ---- 应用白名单 ----
-        SectionCard(title = "允许转发的应用", accent = NotifyAmber) {
+        // ---- 应用名单（白名单 / 黑名单两种模式）----
+        SectionCard(
+            title = if (appFilterBlacklist) "不转发的应用（黑名单）" else "允许转发的应用（白名单）",
+            accent = NotifyAmber,
+        ) {
+            Text(
+                if (appFilterBlacklist) {
+                    "黑名单模式：名单内的应用不转发，其余应用的通知都推到手环。"
+                } else {
+                    "白名单模式：只有名单内的应用才转发，其余应用一律不打扰。"
+                },
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Spacer(Modifier.height(10.dp))
+            FilterChipRow(
+                options = listOf("白名单（名单内才转发）", "黑名单（名单内不转发）"),
+                selectedIndex = if (appFilterBlacklist) 1 else 0,
+                accent = NotifyAmber,
+                onSelect = { vm.setAppFilterMode(it == 1) },
+            )
+            Spacer(Modifier.height(12.dp))
             Text(
                 "手机上的应用都能加进来：下面这份只是出厂参考名单，点「添加应用」" +
                     "从已安装的应用里随便挑。每个应用还可以单独点「含正文 / 仅标题」" +
@@ -468,7 +495,12 @@ fun NotifyScreen(vm: NotifyViewModel) {
         Spacer(Modifier.height(12.dp))
 
         // ---- 最近推送 ----
-        RecentCard(recent = recent)
+        RecentCard(
+            recent = recent,
+            appRules = appRules,
+            blacklistMode = appFilterBlacklist,
+            vm = vm,
+        )
 
         Spacer(Modifier.height(24.dp))
     }
@@ -645,7 +677,12 @@ private fun TimePickButton(label: String, modifier: Modifier = Modifier, onClick
 }
 
 @Composable
-private fun RecentCard(recent: List<BandNotification>) {
+private fun RecentCard(
+    recent: List<BandNotification>,
+    appRules: List<AppRule>,
+    blacklistMode: Boolean,
+    vm: NotifyViewModel,
+) {
     // 默认收起：记录一多整页都被它占满，点开才展开明细
     CollapsibleSection(
         title = "最近推送",
@@ -663,6 +700,11 @@ private fun RecentCard(recent: List<BandNotification>) {
         }
         recent.forEachIndexed { index, item ->
             if (index > 0) Spacer(Modifier.height(14.dp))
+            // 快捷加名单：应用不在名单里时给一个按钮 —— 白名单模式加白、黑名单模式加黑。
+            // 已经在名单里（无论哪种模式）就不显示，避免重复添加。
+            val pkg = vm.resolvePackageName(item)
+            val inList = pkg != null && appRules.any { it.packageName == pkg }
+            val canQuickAdd = pkg != null && !inList
             Row(Modifier.fillMaxWidth()) {
                 Box(
                     Modifier
@@ -708,6 +750,18 @@ private fun RecentCard(recent: List<BandNotification>) {
                             style = MaterialTheme.typography.labelMedium,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
+                    }
+                    if (canQuickAdd) {
+                        TextButton(
+                            onClick = { vm.addAppRule(pkg!!, item.appName) },
+                            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp),
+                        ) {
+                            Text(
+                                if (blacklistMode) "+ 加入黑名单" else "+ 加入白名单",
+                                style = MaterialTheme.typography.labelMedium,
+                                color = NotifyAmber,
+                            )
+                        }
                     }
                 }
             }

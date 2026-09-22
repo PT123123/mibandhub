@@ -63,6 +63,9 @@ class BandPrefs(private val context: Context) {
         val DND_END = intPreferencesKey("dnd_end")
         val KEYWORD_BLACKLIST = booleanPreferencesKey("keyword_blacklist")
         val KEYWORDS = stringPreferencesKey("keywords")
+
+        /** 应用名单模式：false = 白名单（名单内才转发），true = 黑名单（名单内不转发）。 */
+        val APP_FILTER_BLACKLIST = booleanPreferencesKey("app_filter_blacklist")
         val DEDUPE_ENABLED = booleanPreferencesKey("dedupe_enabled")
         val DEDUPE_SECONDS = intPreferencesKey("dedupe_seconds")
         val NOTIFY_ONLY_LOCKED = booleanPreferencesKey("notify_only_locked")
@@ -346,9 +349,16 @@ class BandPrefs(private val context: Context) {
     val dndStart: Flow<Int> = context.bandDataStore.data.map { it[Keys.DND_START] ?: 22 * 60 }
     val dndEnd: Flow<Int> = context.bandDataStore.data.map { it[Keys.DND_END] ?: 7 * 60 + 30 }
 
-    /** 关键词模式：true = 黑名单（命中不转发），false = 白名单（命中才转发）。 */
+    /**
+     * 关键词模式：true = 黑名单（命中不转发），false = 白名单（命中才转发）。
+     * 默认黑名单 —— 关键词是「不想被吵」的排除项，比「必须命中才转发」更符合直觉。
+     */
     val keywordBlacklist: Flow<Boolean> =
-        context.bandDataStore.data.map { it[Keys.KEYWORD_BLACKLIST] ?: false }
+        context.bandDataStore.data.map { it[Keys.KEYWORD_BLACKLIST] ?: true }
+
+    /** 应用名单模式：true = 黑名单（名单内不转发，其余转发），默认白名单。 */
+    val appFilterBlacklist: Flow<Boolean> =
+        context.bandDataStore.data.map { it[Keys.APP_FILTER_BLACKLIST] ?: false }
 
     /** 关键词列表，保持添加顺序。 */
     val keywords: Flow<List<String>> =
@@ -412,6 +422,11 @@ class BandPrefs(private val context: Context) {
 
     suspend fun setKeywordBlacklist(blacklist: Boolean) {
         context.bandDataStore.edit { it[Keys.KEYWORD_BLACKLIST] = blacklist }
+    }
+
+    /** 切应用名单模式（白名单 / 黑名单）。 */
+    suspend fun setAppFilterBlacklist(blacklist: Boolean) {
+        context.bandDataStore.edit { it[Keys.APP_FILTER_BLACKLIST] = blacklist }
     }
 
     suspend fun setKeywords(keywords: List<String>) {
@@ -485,7 +500,8 @@ class BandPrefs(private val context: Context) {
                         .put("title", n.title)
                         .put("body", n.body)
                         .put("time", n.timeLabel)
-                        .put("ok", n.forwarded),
+                        .put("ok", n.forwarded)
+                        .put("pkg", n.packageName),
                 )
             }
         }.toString()
@@ -502,6 +518,8 @@ class BandPrefs(private val context: Context) {
                     body = o.getString("body"),
                     timeLabel = o.getString("time"),
                     forwarded = o.getBoolean("ok"),
+                    // 老记录没有 pkg 字段，optString 回空串（界面按应用名兜底反查）
+                    packageName = o.optString("pkg"),
                 )
             }
         }.getOrElse { emptyList() }

@@ -1,3 +1,5 @@
+@file:OptIn(androidx.compose.material3.ExperimentalMaterial3Api::class)
+
 package com.ted.shouhuan.ui.sleep
 
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -25,9 +27,12 @@ import androidx.compose.material.icons.rounded.ExpandMore
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -45,6 +50,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.ted.shouhuan.data.SleepNightRecord
 import com.ted.shouhuan.data.SleepStage
 import com.ted.shouhuan.data.SleepStageShare
+import com.ted.shouhuan.service.SleepSyncPhase
 import com.ted.shouhuan.ui.components.CollapsibleSection
 import com.ted.shouhuan.ui.components.FilterChipRow
 import com.ted.shouhuan.ui.components.KeyValueRow
@@ -56,6 +62,8 @@ import com.ted.shouhuan.ui.components.SleepStageBar
 import com.ted.shouhuan.ui.components.SleepStageSegment
 import com.ted.shouhuan.ui.components.displayColor
 import com.ted.shouhuan.ui.components.label
+import com.ted.shouhuan.ui.theme.Mint
+import com.ted.shouhuan.ui.theme.PulseRed
 import com.ted.shouhuan.ui.theme.SleepIndigo
 import com.ted.shouhuan.ui.theme.StepBlue
 import com.ted.shouhuan.util.formatDurationShort
@@ -80,6 +88,11 @@ private const val GOOD_NIGHT_MINUTES = 7 * 60
 @Composable
 fun SleepScreen(vm: SleepViewModel) {
     val nights by vm.nights.collectAsStateWithLifecycle()
+    val sleepSync by vm.sleepSync.collectAsStateWithLifecycle()
+
+    // 进页面自动拉一次睡眠（SleepSyncManager 内部带去抖，反复切 tab 不折腾手环）
+    LaunchedEffect(Unit) { vm.syncOnEnter() }
+    val syncing = sleepSync is SleepSyncPhase.Syncing
 
     var rangeIndex by remember { mutableStateOf(0) }
     // null = 最新一晚；点了柱子之后才是具体某天
@@ -140,15 +153,25 @@ fun SleepScreen(vm: SleepViewModel) {
     val latest = nights.firstOrNull()
     val selected = selectedEpochDay?.let { day -> nights.firstOrNull { it.epochDay == day } } ?: latest
 
-    Column(
-        Modifier
-            .fillMaxSize()
-            .verticalScroll(rememberScrollState())
-            .padding(horizontal = 18.dp),
+    // 顶部下拉 = 触发一次手动同步（总是真的跑），同步期间转圈
+    PullToRefreshBox(
+        isRefreshing = syncing,
+        onRefresh = { vm.syncNow() },
+        modifier = Modifier.fillMaxSize(),
     ) {
-        Spacer(Modifier.height(14.dp))
-        Text("睡眠", style = MaterialTheme.typography.titleLarge)
-        Spacer(Modifier.height(16.dp))
+        Column(
+            Modifier
+                .fillMaxSize()
+                .verticalScroll(rememberScrollState())
+                .padding(horizontal = 18.dp),
+        ) {
+            Spacer(Modifier.height(14.dp))
+            Text("睡眠", style = MaterialTheme.typography.titleLarge)
+            Spacer(Modifier.height(12.dp))
+
+            // ---- 同步手环数据：和设备页的按钮同一套流程与状态（SleepSyncManager）----
+            SyncCard(sleepSync = sleepSync, onSync = { vm.syncNow() })
+            Spacer(Modifier.height(12.dp))
 
         if (selected == null) {
             NoticeBanner(
@@ -224,6 +247,45 @@ fun SleepScreen(vm: SleepViewModel) {
         )
 
         Spacer(Modifier.height(24.dp))
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// 同步手环数据（与设备页「同步手环数据」共用 SleepSyncManager 的流程和状态）
+// ---------------------------------------------------------------------------
+
+@Composable
+private fun SyncCard(sleepSync: SleepSyncPhase, onSync: () -> Unit) {
+    OutlinedButton(
+        onClick = onSync,
+        enabled = sleepSync !is SleepSyncPhase.Syncing,
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(14.dp),
+    ) {
+        Text(if (sleepSync is SleepSyncPhase.Syncing) "同步中…" else "同步手环数据")
+    }
+    when (val phase = sleepSync) {
+        is SleepSyncPhase.Syncing -> Text(
+            "接收中 ${phase.received} / ${phase.expected} 字节" +
+                if (phase.expected <= 0) "（等待手环应答…）" else "",
+            style = MaterialTheme.typography.labelMedium,
+            color = StepBlue,
+        )
+
+        is SleepSyncPhase.Done -> Text(
+            "完成：解析出 ${phase.nights} 晚睡眠（${phase.sampleMinutes} 分钟样本）",
+            style = MaterialTheme.typography.labelMedium,
+            color = Mint,
+        )
+
+        is SleepSyncPhase.Failed -> Text(
+            "失败：${phase.message}",
+            style = MaterialTheme.typography.labelMedium,
+            color = PulseRed,
+        )
+
+        SleepSyncPhase.Idle -> {}
     }
 }
 

@@ -49,13 +49,15 @@ object DemoData {
         BandNotification("日程", "日历", "16:00 项目周会 · 会议室 A", "10:15", false),
     )
 
+    /**
+     * 出厂默认的转发应用名单（白名单模式用）：美团、微信、短信、来电、日历。
+     * 用户只要动过名单（哪怕存成空），就完全照用户存的来（见 BandPrefs.appRules）。
+     */
     fun appRules(): List<AppRule> = listOf(
+        AppRule("com.sankuai.meituan", "美团", true),
         AppRule("com.tencent.mm", "微信", true),
         AppRule("com.android.mms", "短信", true),
         AppRule("com.android.dialer", "来电", true),
         AppRule("com.android.calendar", "日历", true),
-        AppRule("com.tencent.mobileqq", "QQ", false),
-        AppRule("com.taobao.taobao", "淘宝", false),
-        AppRule("com.zhihu.android", "知乎", false),
     )
 }

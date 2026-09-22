@@ -19,7 +19,8 @@ import com.ted.shouhuan.proto.BandSettings
 import com.ted.shouhuan.proto.FULL_HISTORY_DAYS
 import com.ted.shouhuan.service.ActivityDataImport
 import com.ted.shouhuan.service.BandSessionProvider
-import com.ted.shouhuan.service.HeartMeasureController
+import com.ted.shouhuan.service.SleepSyncManager
+import com.ted.shouhuan.service.SleepSyncPhase
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -48,17 +49,8 @@ data class DeviceError(
     val canGrantPermission: Boolean = false,
 )
 
-/** 睡眠同步走到哪一步了。 */
-sealed interface SleepSyncPhase {
-    data object Idle : SleepSyncPhase
-
-    /** received/expected 是样本字节数（手环全量约几十万字节）。 */
-    data class Syncing(val received: Int, val expected: Int) : SleepSyncPhase
-
-    data class Done(val nights: Int, val sampleMinutes: Int) : SleepSyncPhase
-
-    data class Failed(val message: String) : SleepSyncPhase
-}
+// 睡眠同步的阶段定义挪到了 service/SleepSyncManager（睡眠页也要看同一份状态），
+// 本文件与 DeviceScreen 直接 import 使用。
 
 /**
  * 已存下来的配对信息，用来给配对页做初值。
@@ -143,11 +135,13 @@ class DeviceViewModel(app: Application) : AndroidViewModel(app) {
     private val _error = MutableStateFlow<DeviceError?>(null)
     val error: StateFlow<DeviceError?> = _error.asStateFlow()
 
-    private val _sleepSync = MutableStateFlow<SleepSyncPhase>(SleepSyncPhase.Idle)
-    val sleepSync: StateFlow<SleepSyncPhase> = _sleepSync.asStateFlow()
+    /**
+     * 睡眠同步状态 —— 进程级共享（service/SleepSyncManager）：在这里点同步，
+     * 睡眠页的进度条也跟着动；睡眠页自动拉取时，这里的进度也看得到。
+     */
+    val sleepSync: StateFlow<SleepSyncPhase> = SleepSyncManager.phase
 
     private var linking: Job? = null
-    private var syncing: Job? = null
 
     // ------------------------------------------------------------------
     // 对外动作
@@ -230,49 +224,11 @@ class DeviceViewModel(app: Application) : AndroidViewModel(app) {
     /**
      * 从手环同步全部可拉的活动明细，解析成睡眠夜写进本地（设备页的「同步手环数据」按钮）。
      *
-     * 同步不清手环数据（从不 ack，手环收到 ack 才删），所以同一窗口会重复推，
-     * 入库按醒来日期/样本时刻幂等去重；起点给十年前 = 手环保留多少拉多少，
-     * 比 app 打开时的自动拉取（近 7 天，见 BandService）拉得更远也更久。
-     * 没连着就先走一遍连接流程；测心率进行中不让动（共用一条 GATT，互相干扰）。
+     * 具体编排抽在 [SleepSyncManager]（睡眠页自动拉取/下拉刷新共用同一条流程与状态）：
+     * 同步不清手环数据、没连就先走连接流程、心率测量进行中让路。
      */
     fun syncSleep() {
-        if (syncing?.isActive == true) return
-        val controller = HeartMeasureController.get(getApplication())
-        if (controller.busy) {
-            _sleepSync.value = SleepSyncPhase.Failed("心率测量进行中，等它跑完再同步")
-            return
-        }
-        _sleepSync.value = SleepSyncPhase.Syncing(0, 0)
-        syncing = viewModelScope.launch {
-            try {
-                if (!session.authenticated.value) {
-                    val mac = prefs.mac.first()
-                    val key = prefs.authKey.first()
-                    if (mac.isNullOrBlank() || key.isNullOrBlank()) {
-                        _sleepSync.value = SleepSyncPhase.Failed("还没配对手环")
-                        return@launch
-                    }
-                    preflight()?.let {
-                        _sleepSync.value = SleepSyncPhase.Failed("${it.title}。${it.detail}")
-                        return@launch
-                    }
-                    val ok = withTimeoutOrNull(CONNECT_TIMEOUT_MS) {
-                        session.connectAndAuthenticate(mac, key)
-                    } ?: false
-                    if (!ok) {
-                        _sleepSync.value = SleepSyncPhase.Failed("连接失败，先在上方手动连一次看原因")
-                        return@launch
-                    }
-                }
-                val result = session.syncActivity(sinceDays = FULL_HISTORY_DAYS) { p ->
-                    _sleepSync.value = SleepSyncPhase.Syncing(p.receivedBytes, p.expectedBytes)
-                }
-                ActivityDataImport.import(getApplication(), prefs, result.nights, result.samples)
-                _sleepSync.value = SleepSyncPhase.Done(result.nights.size, result.sampleMinutes)
-            } catch (e: Exception) {
-                _sleepSync.value = SleepSyncPhase.Failed(e.message ?: e.javaClass.simpleName)
-            }
-        }
+        SleepSyncManager.sync(getApplication())
     }
 
     /** 健康连接外部数据源 —— 界面先查可用性/权限，再拉这里。 */
@@ -280,23 +236,15 @@ class DeviceViewModel(app: Application) : AndroidViewModel(app) {
 
     /**
      * 从健康连接导睡眠（小米运动健康等 App 同步进去的数据）。
-     * 与手环同步共用 [_sleepSync] 状态和统一的落库入口（[ActivityDataImport]）。
+     * 与手环同步共用 SleepSyncManager 的状态和统一的落库入口（[ActivityDataImport]）。
      */
     fun importSleepFromHealthConnect() {
-        if (syncing?.isActive == true) return
-        _sleepSync.value = SleepSyncPhase.Syncing(0, 0)
-        syncing = viewModelScope.launch {
-            try {
-                val nights = healthConnect.readNights(
-                    ZonedDateTime.now().minusDays(FULL_HISTORY_DAYS.toLong()),
-                )
-                ActivityDataImport.import(getApplication(), prefs, nights)
-                _sleepSync.value =
-                    SleepSyncPhase.Done(nights.size, nights.sumOf { it.totalMinutes })
-            } catch (e: Exception) {
-                _sleepSync.value =
-                    SleepSyncPhase.Failed("健康连接导入失败：${e.message ?: e.javaClass.simpleName}")
-            }
+        SleepSyncManager.importExternal(getApplication(), "健康连接导入失败") { app ->
+            val nights = healthConnect.readNights(
+                ZonedDateTime.now().minusDays(FULL_HISTORY_DAYS.toLong()),
+            )
+            ActivityDataImport.import(app, prefs, nights)
+            nights.size to nights.sumOf { it.totalMinutes }
         }
     }
 
