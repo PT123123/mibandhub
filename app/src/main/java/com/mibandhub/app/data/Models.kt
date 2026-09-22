@@ -56,6 +56,11 @@ data class BandNotification(
     val body: String,
     val timeLabel: String,
     val forwarded: Boolean,
+    /**
+     * 来源应用的包名 —— 「最近推送」快捷加入白/黑名单要靠它精确定位应用。
+     * 老记录没有这个字段（存的时候还没加），为空时界面按应用名兜底反查。
+     */
+    val packageName: String = "",
 )
 
 /** 可被转发的应用。 */

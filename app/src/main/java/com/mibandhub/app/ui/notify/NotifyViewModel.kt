@@ -78,9 +78,13 @@ class NotifyViewModel(app: Application) : AndroidViewModel(app) {
     val dndEnd: StateFlow<Int> = prefs.dndEnd.stateIn(viewModelScope, SharingStarted.Eagerly, 7 * 60 + 30)
 
     val keywordBlacklist: StateFlow<Boolean> =
-        prefs.keywordBlacklist.stateIn(viewModelScope, SharingStarted.Eagerly, false)
+        prefs.keywordBlacklist.stateIn(viewModelScope, SharingStarted.Eagerly, true)
     val keywords: StateFlow<List<String>> =
         prefs.keywords.stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
+
+    /** 应用名单模式：true = 黑名单（名单内不转发），false = 白名单（名单内才转发）。 */
+    val appFilterBlacklist: StateFlow<Boolean> =
+        prefs.appFilterBlacklist.stateIn(viewModelScope, SharingStarted.Eagerly, false)
 
     val dedupeEnabled: StateFlow<Boolean> =
         prefs.dedupeEnabled.stateIn(viewModelScope, SharingStarted.Eagerly, true)
@@ -180,6 +184,9 @@ class NotifyViewModel(app: Application) : AndroidViewModel(app) {
 
     fun setKeywordMode(blacklist: Boolean) = launch { prefs.setKeywordBlacklist(blacklist) }
 
+    /** 切应用名单模式（白名单 / 黑名单）。名单内容不变，只是语义反过来。 */
+    fun setAppFilterMode(blacklist: Boolean) = launch { prefs.setAppFilterBlacklist(blacklist) }
+
     fun addKeyword(keyword: String) = launch {
         val trimmed = keyword.trim()
         if (trimmed.isEmpty()) return@launch
@@ -226,6 +233,16 @@ class NotifyViewModel(app: Application) : AndroidViewModel(app) {
     /** 从白名单里移除某个应用 —— 不再关心它的通知，也不占列表位置。 */
     fun removeAppRule(packageName: String) = launch {
         prefs.setAppRules(prefs.appRules.first().filterNot { it.packageName == packageName })
+    }
+
+    /**
+     * 「最近推送」条目对应的包名：新记录自带 packageName；老记录只有应用名，
+     * 按已加载的安装应用列表按名反查（查不到返回 null，界面就不显示快捷按钮）。
+     */
+    fun resolvePackageName(item: BandNotification): String? {
+        if (item.packageName.isNotBlank()) return item.packageName
+        if (item.appName.isBlank()) return null
+        return installedApps.value.firstOrNull { it.label == item.appName }?.packageName
     }
 
     /** 勿扰时段展示成 "22:00 – 07:30"。 */

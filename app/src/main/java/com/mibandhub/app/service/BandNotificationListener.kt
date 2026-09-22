@@ -130,19 +130,26 @@ class BandNotificationListener : NotificationListenerService() {
             }
         }
 
-        // ---- 应用白名单：默认拒绝，只有「在名单里且用户明确允许」才转发 ----
-        // 不在名单里 → 不转发（用户没加过的应用不替他决定转发）
-        // 在名单里但被禁用 → 不转发
-        // 在名单里且启用 → 转发
+        // ---- 应用名单过滤：白名单 / 黑名单两种模式 ----
+        // 白名单模式（默认）：不在名单里 → 不转发（用户没加过的应用不替他决定转发）；
+        //                     在名单里但被禁用 → 不转发；在名单里且启用 → 转发。
+        // 黑名单模式：名单内且启用 → 不转发，其余应用一律转发。
         val rules = prefs.appRules.first()
         val rule = rules.firstOrNull { it.packageName == pkg }
-        if (rule == null) {
-            Log.d(TAG, "包 $pkg 不在转发白名单，跳过")
-            return
-        }
-        if (!rule.enabled) {
-            Log.d(TAG, "包 $pkg 已被用户禁用，跳过")
-            return
+        if (prefs.appFilterBlacklist.first()) {
+            if (rule != null && rule.enabled) {
+                Log.d(TAG, "包 $pkg 命中转发黑名单，跳过")
+                return
+            }
+        } else {
+            if (rule == null) {
+                Log.d(TAG, "包 $pkg 不在转发白名单，跳过")
+                return
+            }
+            if (!rule.enabled) {
+                Log.d(TAG, "包 $pkg 已被用户禁用，跳过")
+                return
+            }
         }
 
         // ---- 提取通知内容 ----
@@ -221,6 +228,7 @@ class BandNotificationListener : NotificationListenerService() {
                 body = effectiveBody,
                 timeLabel = timeLabel,
                 forwarded = sent,
+                packageName = pkg,
             ),
         )
 
