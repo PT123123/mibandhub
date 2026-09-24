@@ -60,17 +60,39 @@ class RecentNotificationsViewModel(
     val selectedApp: StateFlow<String?> = _selectedApp.asStateFlow()
 
     /**
-     * 过滤后的通知列表（选中的应用或全部）。
+     * 当前搜索关键词：按应用名 / 包名 / 标题 / 正文模糊匹配。空 = 不搜。
+     */
+    private val _query = MutableStateFlow("")
+    val query: StateFlow<String> = _query.asStateFlow()
+
+    /**
+     * 过滤后的通知列表（选中的应用 + 搜索关键词，两个都为空 = 全部）。
      */
     val filteredNotifications: StateFlow<List<BandNotification>> = combine(
         allNotifications,
         _selectedApp,
-    ) { all, selected ->
-        if (selected == null) all else all.filter { it.appName == selected }
+        _query,
+    ) { all, selected, q ->
+        var list = if (selected == null) all else all.filter { it.appName == selected }
+        val kw = q.trim()
+        if (kw.isNotEmpty()) {
+            list = list.filter {
+                it.appName.contains(kw, ignoreCase = true) ||
+                    it.packageName.contains(kw, ignoreCase = true) ||
+                    it.title.contains(kw, ignoreCase = true) ||
+                    it.body.contains(kw, ignoreCase = true)
+            }
+        }
+        list
     }.stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
 
     fun selectApp(appName: String?) {
         _selectedApp.value = appName
+    }
+
+    /** 更新搜索关键词。 */
+    fun setQuery(q: String) {
+        _query.value = q
     }
 
     /** 来自父级 ViewModel 的已安装应用列表（用于快捷加名单反查）。 */
