@@ -17,12 +17,13 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
+import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.History
+import androidx.compose.material.icons.rounded.Search
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.AssistChipDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -31,8 +32,10 @@ import androidx.compose.material3.FilterChipDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
@@ -61,6 +64,7 @@ fun RecentNotificationsScreen(
     val appStats by vm.appStats.collectAsStateWithLifecycle()
     val selectedApp by vm.selectedApp.collectAsStateWithLifecycle()
     val filteredNotifications by vm.filteredNotifications.collectAsStateWithLifecycle()
+    val query by vm.query.collectAsStateWithLifecycle()
     val appRules by vm.appRules.collectAsStateWithLifecycle()
     val blacklistMode by vm.blacklistMode.collectAsStateWithLifecycle()
 
@@ -69,17 +73,12 @@ fun RecentNotificationsScreen(
         vm.installedApps.value // 触发父级加载
     }
 
-    // 分页加载状态
+    // 分页：一次 50 条，列表末尾放「加载更多」按钮（用户偏好按钮，不用滚动触发）
     var displayedCount by androidx.compose.runtime.remember { androidx.compose.runtime.mutableIntStateOf(PAGE_SIZE) }
-    val listState = rememberLazyListState()
 
-    // 滚动到底部时加载更多
-    LaunchedEffect(listState, filteredNotifications.size) {
-        if (!listState.isScrollInProgress) return@LaunchedEffect
-        val lastVisible = listState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: -1
-        if (lastVisible >= displayedCount - 10 && displayedCount < filteredNotifications.size) {
-            displayedCount = (displayedCount + PAGE_SIZE).coerceAtMost(filteredNotifications.size)
-        }
+    // 筛选/搜索条件一变就回到第一页
+    LaunchedEffect(selectedApp, query) {
+        displayedCount = PAGE_SIZE
     }
 
     val displayed = filteredNotifications.take(displayedCount)
@@ -118,14 +117,44 @@ fun RecentNotificationsScreen(
                         style = MaterialTheme.typography.labelMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
-                    if (selectedApp != null) {
-                        Text(
-                            "筛选：$selectedApp · ${filteredNotifications.size} 条",
-                            style = MaterialTheme.typography.labelMedium,
-                            color = NotifyAmber,
-                        )
+                    when {
+                        selectedApp != null -> {
+                            Text(
+                                "筛选：$selectedApp · ${filteredNotifications.size} 条",
+                                style = MaterialTheme.typography.labelMedium,
+                                color = NotifyAmber,
+                            )
+                        }
+                        query.isNotBlank() -> {
+                            Text(
+                                "搜索：$query · ${filteredNotifications.size} 条",
+                                style = MaterialTheme.typography.labelMedium,
+                                color = NotifyAmber,
+                            )
+                        }
                     }
                 }
+            }
+
+            // ---- 搜索框：按应用 / 标题 / 正文模糊过滤 ----
+            if (allNotifications.isNotEmpty()) {
+                OutlinedTextField(
+                    value = query,
+                    onValueChange = { vm.setQuery(it) },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp, vertical = 4.dp),
+                    placeholder = { Text("搜索应用 / 标题 / 正文") },
+                    leadingIcon = { Icon(Icons.Rounded.Search, contentDescription = null) },
+                    trailingIcon = {
+                        if (query.isNotEmpty()) {
+                            IconButton(onClick = { vm.setQuery("") }) {
+                                Icon(Icons.Rounded.Close, contentDescription = "清除搜索")
+                            }
+                        }
+                    },
+                    singleLine = true,
+                )
             }
 
             // ---- 按应用统计筛选（横向滚动）----
@@ -190,7 +219,6 @@ fun RecentNotificationsScreen(
                 }
             } else {
                 LazyColumn(
-                    state = listState,
                     contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp),
                     verticalArrangement = Arrangement.spacedBy(12.dp),
                     modifier = Modifier.fillMaxSize(),
@@ -208,19 +236,21 @@ fun RecentNotificationsScreen(
                         )
                     }
 
-                    // 加载更多提示
+                    // 加载更多按钮（点一下多 50 条）
                     if (displayedCount < filteredNotifications.size) {
                         item {
-                            Box(
+                            TextButton(
+                                onClick = {
+                                    displayedCount = (displayedCount + PAGE_SIZE).coerceAtMost(filteredNotifications.size)
+                                },
                                 modifier = Modifier
                                     .fillMaxWidth()
-                                    .padding(vertical = 16.dp),
-                                contentAlignment = Alignment.Center,
+                                    .padding(vertical = 8.dp),
                             ) {
                                 Text(
-                                    "向下滚动加载更多（${displayedCount}/${filteredNotifications.size}）",
+                                    "加载更多（${displayedCount}/${filteredNotifications.size}）",
                                     style = MaterialTheme.typography.labelMedium,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    color = NotifyAmber,
                                 )
                             }
                         }

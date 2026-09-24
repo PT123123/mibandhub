@@ -704,20 +704,19 @@ private fun RecentCard(
             return@CollapsibleSection
         }
 
-        // 只展示前 20 条入口；完整历史在新页面里
-        if (recent.size > 20) {
-            TextButton(
-                onClick = onOpenRecentNotifications,
-                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp),
-            ) {
-                Text(
-                    "查看全部 ${recent.size} 条 →",
-                    style = MaterialTheme.typography.labelMedium,
-                    color = NotifyAmber,
-                )
-            }
-            Spacer(modifier = Modifier.height(8.dp))
+        // 完整历史在新页面里：只要有记录就给「查看全部」入口，
+        // 保证浏览页（含筛选/搜索/快捷加名单）永远可达，不依赖记录数超过 20。
+        TextButton(
+            onClick = onOpenRecentNotifications,
+            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp),
+        ) {
+            Text(
+                "查看全部 ${recent.size} 条 →",
+                style = MaterialTheme.typography.labelMedium,
+                color = NotifyAmber,
+            )
         }
+        Spacer(modifier = Modifier.height(8.dp))
 
         recent.take(20).forEachIndexed { index, item ->
             if (index > 0) Spacer(Modifier.height(14.dp))
