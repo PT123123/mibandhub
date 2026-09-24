@@ -767,7 +767,7 @@ private fun RecentCard(
                     if (!item.forwarded) {
                         Spacer(Modifier.height(3.dp))
                         Text(
-                            "未推送（被规则拦下）",
+                            "未推送",
                             style = MaterialTheme.typography.labelMedium,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )

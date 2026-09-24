@@ -26,11 +26,11 @@ import java.util.concurrent.ConcurrentHashMap
  * 通知转发的来源：手机上的通知在这里被读到，过滤后推到手环。
  *
  * 流程：
- *   1. 跳过自己、系统噪音（常驻通知/前台服务通知）
+ *   1. 跳过自己、常驻/前台服务通知（系统提示、噪音包会记入「最近推送」但不转发）
  *   2. 读用户偏好：总开关、勿扰、应用白名单、关键词、去重、振动档位
  *   3. 确保手环连着（没连就尝试自动连接）
  *   4. 调用协议层 sendNotification 下发
- *   5. 记入「最近推送」
+ *   5. 记入「最近推送」（系统提示和名单拦下的也记，标 forwarded=false）
  *
  * 线程模型：
  *   onNotificationPosted 在系统 Binder 线程回调，不能阻塞。所有数据操作
@@ -82,18 +82,8 @@ class BandNotificationListener : NotificationListenerService() {
             return
         }
 
-        // 3. 跳过系统通知：包名为空（如 Android 系统内置通知）或 android 系统包。
-        //    这类通知不是应用发出的，默认不应该转发给手环。
-        if (pkg.isEmpty() || pkg.startsWith("android")) {
-            Log.d(TAG, "跳过系统通知：$pkg")
-            return
-        }
-
-        // 4. 跳过系统 UI 包名（MIUI/HyperOS 自己的通知一般是装饰性的）
-        if (isNoisePackage(pkg)) {
-            Log.d(TAG, "跳过系统噪音包：$pkg")
-            return
-        }
+        // 3. 系统提示/噪音包不直接丢 —— 交给 handleNotification：记入「最近推送」但不转发，
+        //    这样系统提示也能在最近推送里看到、一键加白/黑名单。
 
         scope.launch {
             try {
@@ -110,6 +100,26 @@ class BandNotificationListener : NotificationListenerService() {
     private suspend fun handleNotification(sbn: StatusBarNotification) {
         val pkg = sbn.packageName
         val notification = sbn.notification
+
+        // ---- 提取通知内容（记录和转发都要用，先提出来）----
+        val extras = notification?.extras ?: Bundle.EMPTY
+        val title = extras.getCharSequence(android.app.Notification.EXTRA_TITLE)?.toString().orEmpty()
+            .ifBlank { notification?.tickerText?.toString().orEmpty() }
+        val body = extractBody(notification, extras)
+
+        if (title.isBlank() && body.isBlank()) {
+            Log.d(TAG, "通知标题和正文都是空的，跳过")
+            return
+        }
+
+        // ---- 系统提示 / 系统 UI 噪音：记入「最近推送」但不转发 ----
+        // 这类通知不是应用发出的（如「哪个 APP 正在使用通知栏」的系统提示），
+        // 默认不上手环，但要在最近推送里可见、可一键加白/黑名单。
+        if (pkg.isEmpty() || pkg.startsWith("android") || isNoisePackage(pkg)) {
+            Log.d(TAG, "系统提示/噪音包，只记录不转发：$pkg")
+            recordNotForwarded(pkg, title, body)
+            return
+        }
 
         // ---- 读偏好（一次性读齐，避免多轮 DataStore 访问）----
         val forwardEnabled = prefs.forwardNotifications.first()
@@ -141,33 +151,26 @@ class BandNotificationListener : NotificationListenerService() {
         // 白名单模式（默认）：不在名单里 → 不转发（用户没加过的应用不替他决定转发）；
         //                     在名单里但被禁用 → 不转发；在名单里且启用 → 转发。
         // 黑名单模式：名单内且启用 → 不转发，其余应用一律转发。
+        // 被拦下的也记入「最近推送」（forwarded=false），方便在列表里发现并加名单。
         val rules = prefs.appRules.first()
         val rule = rules.firstOrNull { it.packageName == pkg }
         if (prefs.appFilterBlacklist.first()) {
             if (rule != null && rule.enabled) {
                 Log.d(TAG, "包 $pkg 命中转发黑名单，跳过")
+                recordNotForwarded(pkg, title, body)
                 return
             }
         } else {
             if (rule == null) {
                 Log.d(TAG, "包 $pkg 不在转发白名单，跳过")
+                recordNotForwarded(pkg, title, body)
                 return
             }
             if (!rule.enabled) {
                 Log.d(TAG, "包 $pkg 已被用户禁用，跳过")
+                recordNotForwarded(pkg, title, body)
                 return
             }
-        }
-
-        // ---- 提取通知内容 ----
-        val extras = notification?.extras ?: Bundle.EMPTY
-        val title = extras.getCharSequence(android.app.Notification.EXTRA_TITLE)?.toString().orEmpty()
-            .ifBlank { notification?.tickerText?.toString().orEmpty() }
-        val body = extractBody(notification, extras)
-
-        if (title.isBlank() && body.isBlank()) {
-            Log.d(TAG, "通知标题和正文都是空的，跳过")
-            return
         }
 
         // ---- 关键词过滤 ----
@@ -202,13 +205,7 @@ class BandNotificationListener : NotificationListenerService() {
         }
 
         // ---- 组装要推的内容（应用名 + 标题 + 正文，全量照发）----
-        val appLabel = try {
-            packageManager.getApplicationLabel(
-                packageManager.getApplicationInfo(pkg, 0),
-            ).toString()
-        } catch (_: Exception) {
-            pkg
-        }
+        val appLabel = resolveAppLabel(pkg)
 
         // ---- 应用级「详细内容」开关：该应用关掉了就只推标题，正文不上手环 ----
         val effectiveBody = if (rule != null && !rule.showDetail) "" else body
@@ -241,6 +238,38 @@ class BandNotificationListener : NotificationListenerService() {
 
         Log.d(TAG, "通知${if (sent) "已转发" else "转发失败"}：$appLabel / ${title.take(40)}" +
             if (rule != null && !rule.showDetail) "（该应用仅标题）" else "")
+    }
+
+    /**
+     * 记一条「未转发」的通知 —— 系统提示、被名单拦下的通知都走这里。
+     * 让它们在「最近推送」里可见，并支持一键加白/黑名单。
+     */
+    private suspend fun recordNotForwarded(pkg: String, title: String, body: String) {
+        val timeLabel = "%02d:%02d".format(LocalTime.now().hour, LocalTime.now().minute)
+        prefs.recordNotification(
+            BandNotification(
+                appName = resolveAppLabel(pkg),
+                title = title.ifBlank { "(无标题)" },
+                body = body,
+                timeLabel = timeLabel,
+                forwarded = false,
+                packageName = pkg,
+            ),
+        )
+    }
+
+    /**
+     * 应用显示名：解析不到就用包名；空包名（系统内置通知）给个可读兜底名。
+     */
+    private fun resolveAppLabel(pkg: String): String {
+        if (pkg.isEmpty()) return "系统通知"
+        return try {
+            packageManager.getApplicationLabel(
+                packageManager.getApplicationInfo(pkg, 0),
+            ).toString()
+        } catch (_: Exception) {
+            pkg
+        }
     }
 
     /**
