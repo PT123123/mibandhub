@@ -753,7 +753,13 @@ private fun RecentCard(
                     }
                     if (canQuickAdd) {
                         TextButton(
-                            onClick = { vm.addAppRule(pkg!!, item.appName) },
+                            onClick = {
+                                if (blacklistMode) {
+                                    vm.addToBlacklist(pkg!!, item.appName)
+                                } else {
+                                    vm.addAppRule(pkg!!, item.appName)
+                                }
+                            },
                             contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp),
                         ) {
                             Text(

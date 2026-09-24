@@ -223,11 +223,24 @@ class NotifyViewModel(app: Application) : AndroidViewModel(app) {
         )
     }
 
-    /** 把手机上的某个应用加进白名单（加进来默认允许转发）。 */
+    /**
+     * 把手机上的某个应用加进名单（加进来默认允许转发）。
+     * 用于白名单模式：加进来 = 要转发它。
+     */
     fun addAppRule(packageName: String, appName: String) = launch {
         val current = prefs.appRules.first()
         if (current.any { it.packageName == packageName }) return@launch
         prefs.setAppRules(current + AppRule(packageName, appName, enabled = true))
+    }
+
+    /**
+     * 把手机上的某个应用加进黑名单（加进来默认禁止转发）。
+     * 用于黑名单模式：加进来 = 要拦截它。
+     */
+    fun addToBlacklist(packageName: String, appName: String) = launch {
+        val current = prefs.appRules.first()
+        if (current.any { it.packageName == packageName }) return@launch
+        prefs.setAppRules(current + AppRule(packageName, appName, enabled = false))
     }
 
     /** 从白名单里移除某个应用 —— 不再关心它的通知，也不占列表位置。 */
