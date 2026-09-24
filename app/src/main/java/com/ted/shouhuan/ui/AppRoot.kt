@@ -18,6 +18,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.unit.dp
@@ -40,6 +41,8 @@ import com.ted.shouhuan.ui.market.MarketScreen
 import com.ted.shouhuan.ui.market.MarketViewModel
 import com.ted.shouhuan.ui.notify.NotifyScreen
 import com.ted.shouhuan.ui.notify.NotifyViewModel
+import com.ted.shouhuan.ui.notify.RecentNotificationsScreen
+import com.ted.shouhuan.ui.notify.RecentNotificationsViewModel
 import com.ted.shouhuan.ui.sleep.SleepScreen
 import com.ted.shouhuan.ui.sleep.SleepViewModel
 import com.ted.shouhuan.ui.watchface.WatchFaceScreen
@@ -101,6 +104,9 @@ fun AppRoot(initialRoute: String? = null, externalRoute: String? = null) {
     // 通知页：设置全部落在 BandPrefs，VM 就是「改设置 = 落盘」的薄封装
     val notifyVm: NotifyViewModel = viewModel()
 
+    // 最近推送浏览页：直接实例化（需要传 parentVm，viewModel() 无法自动注入）
+    val recentNotificationsVm = RecentNotificationsViewModel(LocalContext.current.applicationContext as android.app.Application, notifyVm)
+
     // 首页：全部数据来自共享会话与存储，提到这里切 tab 不重算
     val homeVm: HomeViewModel = viewModel()
 
@@ -145,7 +151,13 @@ fun AppRoot(initialRoute: String? = null, externalRoute: String? = null) {
             composable("home") { HomeScreen(homeVm) }
             composable("heart") { HeartRateScreen(heartVm) }
             composable("sleep") { SleepScreen(sleepVm) }
-            composable("notify") { NotifyScreen(notifyVm) }
+            composable("notify") { NotifyScreen(notifyVm, onOpenRecentNotifications = { nav.navigate("recent-notifications") }) }
+            composable("recent-notifications") {
+                RecentNotificationsScreen(
+                    vm = recentNotificationsVm,
+                    onBack = { nav.popBackStack() },
+                )
+            }
             composable("watchface") {
                 WatchFaceScreen(
                     vm = watchFaceVm,

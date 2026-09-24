@@ -74,7 +74,10 @@ private val VIBRATIONS = listOf("standard", "short", "strong")
 private val VIBRATION_LABELS = listOf("标准", "短促", "强提醒")
 
 @Composable
-fun NotifyScreen(vm: NotifyViewModel) {
+fun NotifyScreen(
+    vm: NotifyViewModel,
+    onOpenRecentNotifications: () -> Unit,
+) {
     val context = LocalContext.current
     val forwardEnabled by vm.forwardEnabled.collectAsStateWithLifecycle()
     val notifyPermission by vm.notifyPermission.collectAsStateWithLifecycle()
@@ -500,6 +503,7 @@ fun NotifyScreen(vm: NotifyViewModel) {
             appRules = appRules,
             blacklistMode = appFilterBlacklist,
             vm = vm,
+            onOpenRecentNotifications = onOpenRecentNotifications,
         )
 
         Spacer(Modifier.height(24.dp))
@@ -682,6 +686,7 @@ private fun RecentCard(
     appRules: List<AppRule>,
     blacklistMode: Boolean,
     vm: NotifyViewModel,
+    onOpenRecentNotifications: () -> Unit,
 ) {
     // 默认收起：记录一多整页都被它占满，点开才展开明细
     CollapsibleSection(
@@ -698,7 +703,23 @@ private fun RecentCard(
             )
             return@CollapsibleSection
         }
-        recent.forEachIndexed { index, item ->
+
+        // 只展示前 20 条入口；完整历史在新页面里
+        if (recent.size > 20) {
+            TextButton(
+                onClick = onOpenRecentNotifications,
+                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp),
+            ) {
+                Text(
+                    "查看全部 ${recent.size} 条 →",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = NotifyAmber,
+                )
+            }
+            Spacer(modifier = Modifier.height(8.dp))
+        }
+
+        recent.take(20).forEachIndexed { index, item ->
             if (index > 0) Spacer(Modifier.height(14.dp))
             // 快捷加名单：应用不在名单里时给一个按钮 —— 白名单模式加白、黑名单模式加黑。
             // 已经在名单里（无论哪种模式）就不显示，避免重复添加。
