@@ -82,7 +82,14 @@ class BandNotificationListener : NotificationListenerService() {
             return
         }
 
-        // 3. 跳过系统 UI 包名（MIUI/HyperOS 自己的通知一般是装饰性的）
+        // 3. 跳过系统通知：包名为空（如 Android 系统内置通知）或 android 系统包。
+        //    这类通知不是应用发出的，默认不应该转发给手环。
+        if (pkg.isEmpty() || pkg.startsWith("android")) {
+            Log.d(TAG, "跳过系统通知：$pkg")
+            return
+        }
+
+        // 4. 跳过系统 UI 包名（MIUI/HyperOS 自己的通知一般是装饰性的）
         if (isNoisePackage(pkg)) {
             Log.d(TAG, "跳过系统噪音包：$pkg")
             return

@@ -295,8 +295,8 @@ class BandPrefs(private val context: Context) {
     /** 心率样本的保留天数：曲线窗口 24 小时 + 一天余量。 */
     private val hrKeepDays = 3L
 
-    /** 「最近推送」最多留的记录条数。 */
-    private val recentKeep = 20
+    /** 「最近推送」最多留的记录条数。存上千条通知，每条不过几十字节，总量可控。 */
+    private val recentKeep = 2000
 
     /** 全部心率样本，按时间升序。 */
     val heartRateSamples: Flow<List<HeartRateSample>> =
