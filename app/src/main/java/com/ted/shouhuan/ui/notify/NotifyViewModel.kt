@@ -234,13 +234,14 @@ class NotifyViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     /**
-     * 把手机上的某个应用加进黑名单（加进来默认禁止转发）。
-     * 用于黑名单模式：加进来 = 要拦截它。
+     * 把某个应用加进黑名单（加进来默认生效，黑名单模式下名单内启用才拦截）。
+     * 用于黑名单模式：加进来 = 要拦它。enabled 必须为 true，
+     * 监听器只在 rule.enabled 时命中拦截，写 false 等于加了不拦。
      */
     fun addToBlacklist(packageName: String, appName: String) = launch {
         val current = prefs.appRules.first()
         if (current.any { it.packageName == packageName }) return@launch
-        prefs.setAppRules(current + AppRule(packageName, appName, enabled = false))
+        prefs.setAppRules(current + AppRule(packageName, appName, enabled = true))
     }
 
     /** 从白名单里移除某个应用 —— 不再关心它的通知，也不占列表位置。 */
