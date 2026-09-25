@@ -720,11 +720,10 @@ private fun RecentCard(
 
         recent.take(20).forEachIndexed { index, item ->
             if (index > 0) Spacer(Modifier.height(14.dp))
-            // 快捷加名单：应用不在名单里时给一个按钮 —— 白名单模式加白、黑名单模式加黑。
-            // 已经在名单里（无论哪种模式）就不显示，避免重复添加。
+            // 快捷加名单：应用不在名单里时给一个按钮 —— 白名单模式加白、黑名单模式加黑；
+            // 已在名单里则显示状态，两种都保证有可点的入口/反馈。
             val pkg = vm.resolvePackageName(item)
-            val inList = pkg != null && appRules.any { it.packageName == pkg }
-            val canQuickAdd = pkg != null && !inList
+            val rule = pkg?.let { p -> appRules.firstOrNull { it.packageName == p } }
             Row(Modifier.fillMaxWidth()) {
                 Box(
                     Modifier
@@ -771,21 +770,34 @@ private fun RecentCard(
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
                     }
-                    if (canQuickAdd) {
-                        TextButton(
-                            onClick = {
-                                if (blacklistMode) {
-                                    vm.addToBlacklist(pkg!!, item.appName)
-                                } else {
-                                    vm.addAppRule(pkg!!, item.appName)
-                                }
-                            },
-                            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp),
-                        ) {
+                    if (pkg != null) {
+                        if (rule == null) {
+                            TextButton(
+                                onClick = {
+                                    if (blacklistMode) {
+                                        vm.addToBlacklist(pkg, item.appName)
+                                    } else {
+                                        vm.addAppRule(pkg, item.appName)
+                                    }
+                                },
+                                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp),
+                            ) {
+                                Text(
+                                    if (blacklistMode) "+ 加入黑名单" else "+ 加入白名单",
+                                    style = MaterialTheme.typography.labelMedium,
+                                    color = NotifyAmber,
+                                )
+                            }
+                        } else {
+                            Spacer(Modifier.height(2.dp))
                             Text(
-                                if (blacklistMode) "+ 加入黑名单" else "+ 加入白名单",
+                                when {
+                                    blacklistMode && rule.enabled -> "已在黑名单 ✓"
+                                    rule.enabled -> "已在白名单 ✓"
+                                    else -> "已禁用 ✓"
+                                },
                                 style = MaterialTheme.typography.labelMedium,
-                                color = NotifyAmber,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
                             )
                         }
                     }

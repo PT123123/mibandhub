@@ -223,10 +223,9 @@ fun RecentNotificationsScreen(
                     verticalArrangement = Arrangement.spacedBy(12.dp),
                     modifier = Modifier.fillMaxSize(),
                 ) {
-                    items(
-                        items = displayed,
-                        key = { "${it.packageName}|${it.title}|${it.timeLabel}|${it.body.hashCode()}" },
-                    ) { item ->
+                    // 不用自定义 key：筛选/搜索后的子集里同应用同标题同分钟的重复记录
+                    // 会让 key 撞车，Compose 直接崩。默认的按位置定位在这里足够安全。
+                    items(items = displayed) { item ->
                         NotificationItem(
                             item = item,
                             appRules = appRules,
@@ -270,8 +269,7 @@ private fun NotificationItem(
     onQuickAdd: (String, String) -> Unit,
 ) {
     val pkg = resolvePackageName(item)
-    val inList = pkg != null && appRules.any { it.packageName == pkg }
-    val canQuickAdd = pkg != null && !inList
+    val rule = pkg?.let { p -> appRules.firstOrNull { it.packageName == p } }
 
     Row(
         modifier = Modifier.fillMaxWidth(),
@@ -326,24 +324,43 @@ private fun NotificationItem(
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
-            if (canQuickAdd) {
+            // 快捷加名单：包名能解析出来就给一个 chip —— 不在名单显示「加入」，
+            // 已在名单显示状态，避免用户以为按钮丢了。
+            if (pkg != null) {
                 Spacer(Modifier.height(4.dp))
-                AssistChip(
-                    onClick = { onQuickAdd(pkg!!, item.appName) },
-                    label = {
-                        Text(
-                            if (blacklistMode) "+ 加入黑名单" else "+ 加入白名单",
-                            style = MaterialTheme.typography.labelMedium,
-                        )
-                    },
-                    colors = AssistChipDefaults.assistChipColors(
-                        labelColor = NotifyAmber,
-                    ),
-                    border = AssistChipDefaults.assistChipBorder(
-                        enabled = true,
-                        borderColor = NotifyAmber.copy(alpha = 0.5f),
-                    ),
-                )
+                if (rule == null) {
+                    AssistChip(
+                        onClick = { onQuickAdd(pkg, item.appName) },
+                        label = {
+                            Text(
+                                if (blacklistMode) "+ 加入黑名单" else "+ 加入白名单",
+                                style = MaterialTheme.typography.labelMedium,
+                            )
+                        },
+                        colors = AssistChipDefaults.assistChipColors(
+                            labelColor = NotifyAmber,
+                        ),
+                        border = AssistChipDefaults.assistChipBorder(
+                            enabled = true,
+                            borderColor = NotifyAmber.copy(alpha = 0.5f),
+                        ),
+                    )
+                } else {
+                    AssistChip(
+                        onClick = {},
+                        enabled = false,
+                        label = {
+                            Text(
+                                when {
+                                    blacklistMode && rule.enabled -> "已在黑名单 ✓"
+                                    rule.enabled -> "已在白名单 ✓"
+                                    else -> "已禁用 ✓"
+                                },
+                                style = MaterialTheme.typography.labelMedium,
+                            )
+                        },
+                    )
+                }
             }
         }
     }
