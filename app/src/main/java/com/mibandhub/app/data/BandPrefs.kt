@@ -70,6 +70,12 @@ class BandPrefs(private val context: Context) {
         val DEDUPE_SECONDS = intPreferencesKey("dedupe_seconds")
         val NOTIFY_ONLY_LOCKED = booleanPreferencesKey("notify_only_locked")
         val NOTIFY_VIBRATION = stringPreferencesKey("notify_vibration")
+
+        /**
+         * 转发常驻/前台服务通知：默认关（音乐播放器、下载进度这类常驻卡是噪音）。
+         * 打开后这类通知继续走白名单等其余过滤。
+         */
+        val FORWARD_ONGOING = booleanPreferencesKey("forward_ongoing")
         val APP_RULES = stringPreferencesKey("app_rules")
 
         /** 真实推到手环的通知记录（最近推送页），新的在前。 */
@@ -382,6 +388,10 @@ class BandPrefs(private val context: Context) {
     val notifyVibration: Flow<String> =
         context.bandDataStore.data.map { it[Keys.NOTIFY_VIBRATION] ?: "standard" }
 
+    /** 转发常驻/前台服务通知，默认关。 */
+    val forwardOngoing: Flow<Boolean> =
+        context.bandDataStore.data.map { it[Keys.FORWARD_ONGOING] ?: false }
+
     /** 应用白名单。没存过时给一份出厂参考名单；只要存过一次（哪怕存的是空），就照存的来。 */
     val appRules: Flow<List<AppRule>> =
         context.bandDataStore.data.map { prefs ->
@@ -451,6 +461,10 @@ class BandPrefs(private val context: Context) {
         context.bandDataStore.edit { it[Keys.NOTIFY_VIBRATION] = pattern }
     }
 
+    suspend fun setForwardOngoing(enabled: Boolean) {
+        context.bandDataStore.edit { it[Keys.FORWARD_ONGOING] = enabled }
+    }
+
     suspend fun setAppRules(rules: List<AppRule>) {
         context.bandDataStore.edit { prefs ->
             // 空列表也照写（写空串）—— 键存在就代表「用户已经动过」，
@@ -501,7 +515,8 @@ class BandPrefs(private val context: Context) {
                         .put("body", n.body)
                         .put("time", n.timeLabel)
                         .put("ok", n.forwarded)
-                        .put("pkg", n.packageName),
+                        .put("pkg", n.packageName)
+                        .put("reason", n.dropReason),
                 )
             }
         }.toString()
@@ -520,6 +535,8 @@ class BandPrefs(private val context: Context) {
                     forwarded = o.getBoolean("ok"),
                     // 老记录没有 pkg 字段，optString 回空串（界面按应用名兜底反查）
                     packageName = o.optString("pkg"),
+                    // 老记录没有 reason 字段，回空串（界面回退显示「未推送」）
+                    dropReason = o.optString("reason"),
                 )
             }
         }.getOrElse { emptyList() }

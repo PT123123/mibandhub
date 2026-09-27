@@ -94,6 +94,10 @@ class NotifyViewModel(app: Application) : AndroidViewModel(app) {
     val onlyLocked: StateFlow<Boolean> =
         prefs.notifyOnlyLocked.stateIn(viewModelScope, SharingStarted.Eagerly, false)
 
+    /** 转发常驻/前台服务通知（骑手位置、音乐播放器等），默认关。 */
+    val forwardOngoing: StateFlow<Boolean> =
+        prefs.forwardOngoing.stateIn(viewModelScope, SharingStarted.Eagerly, false)
+
     val vibration: StateFlow<String> =
         prefs.notifyVibration.stateIn(viewModelScope, SharingStarted.Eagerly, "standard")
 
@@ -203,6 +207,8 @@ class NotifyViewModel(app: Application) : AndroidViewModel(app) {
     fun setDedupe(enabled: Boolean, seconds: Int) = launch { prefs.setDedupe(enabled, seconds) }
 
     fun setOnlyLocked(enabled: Boolean) = launch { prefs.setNotifyOnlyLocked(enabled) }
+
+    fun setForwardOngoing(enabled: Boolean) = launch { prefs.setForwardOngoing(enabled) }
 
     fun setVibration(pattern: String) = launch { prefs.setNotifyVibration(pattern) }
 

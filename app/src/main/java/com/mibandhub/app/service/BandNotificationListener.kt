@@ -26,11 +26,12 @@ import java.util.concurrent.ConcurrentHashMap
  * 通知转发的来源：手机上的通知在这里被读到，过滤后推到手环。
  *
  * 流程：
- *   1. 跳过自己、常驻/前台服务通知（系统提示、噪音包会记入「最近推送」但不转发）
- *   2. 读用户偏好：总开关、勿扰、应用白名单、关键词、去重、振动档位
+ *   1. 跳过自己；常驻/前台服务通知默认拦下（「转发常驻通知」开关打开才放行）
+ *   2. 读用户偏好：总开关、仅锁屏、勿扰、应用白名单、关键词、去重、振动档位
  *   3. 确保手环连着（没连就尝试自动连接）
  *   4. 调用协议层 sendNotification 下发
- *   5. 记入「最近推送」（系统提示和名单拦下的也记，标 forwarded=false）
+ *   5. 记入「最近推送」（系统提示、名单拦下、勿扰、常驻等丢弃的也记，
+ *      标 forwarded=false 并带上丢弃原因，用户能在列表里看到每条死在哪一关）
  *
  * 线程模型：
  *   onNotificationPosted 在系统 Binder 线程回调，不能阻塞。所有数据操作
@@ -39,6 +40,11 @@ import java.util.concurrent.ConcurrentHashMap
 class BandNotificationListener : NotificationListenerService() {
 
     private val TAG = "BandNotifyListener"
+
+    private companion object {
+        /** 同一条丢弃（包名+标题+原因相同）记录进「最近推送」的最小间隔。 */
+        const val DROP_RECORD_THROTTLE_MS = 60_000L
+    }
 
     private lateinit var prefs: BandPrefs
     private lateinit var session: BandSession
@@ -49,6 +55,14 @@ class BandNotificationListener : NotificationListenerService() {
      * 进程活着就不丢；进程重启后清零，算不了「历史重复」—— 能接受。
      */
     private val dedupeTable = ConcurrentHashMap<String, Long>()
+
+    /**
+     * 丢弃记录的节流表：key = "包名|标题|原因"，value = 上次记录时间戳（毫秒）。
+     * 常驻通知每几秒更新一次就会回调一次 onNotificationPosted，不节流会把
+     * 「最近推送」刷爆 —— 同一条丢弃 60 秒内只记一次。只约束丢弃记录，
+     * 不影响正常转发（那边有自己的去重）。
+     */
+    private val dropRecordAt = ConcurrentHashMap<String, Long>()
 
     /** 正在跑的连接尝试：同一个时刻只发一波，后到的通知等它收尾。 */
     @Volatile
@@ -72,18 +86,9 @@ class BandNotificationListener : NotificationListenerService() {
             return
         }
 
-        // 2. 过滤系统噪音：常驻通知、前台服务通知、正在进行的事件
-        val notification = sbn.notification
-        val flags = notification?.flags ?: 0
-        if ((flags and android.app.Notification.FLAG_ONGOING_EVENT) != 0 ||
-            (flags and android.app.Notification.FLAG_FOREGROUND_SERVICE) != 0
-        ) {
-            Log.d(TAG, "跳过常驻/前台服务通知：$pkg")
-            return
-        }
-
-        // 3. 系统提示/噪音包不直接丢 —— 交给 handleNotification：记入「最近推送」但不转发，
-        //    这样系统提示也能在最近推送里看到、一键加白/黑名单。
+        // 2. 其余一律交给 handleNotification：常驻/前台服务通知在那里默认拦下并记录原因
+        //    （「转发常驻通知」开关打开才放行），系统提示/噪音包记入「最近推送」但不转发，
+        //    这样它们都能在最近推送里看到、一键加白/黑名单。
 
         scope.launch {
             try {
@@ -117,7 +122,7 @@ class BandNotificationListener : NotificationListenerService() {
         // 默认不上手环，但要在最近推送里可见、可一键加白/黑名单。
         if (pkg.isEmpty() || pkg.startsWith("android") || isNoisePackage(pkg)) {
             Log.d(TAG, "系统提示/噪音包，只记录不转发：$pkg")
-            recordNotForwarded(pkg, title, body)
+            recordDropped(pkg, title, body, "系统提示/噪音包")
             return
         }
 
@@ -128,10 +133,26 @@ class BandNotificationListener : NotificationListenerService() {
             return
         }
 
+        // ---- 常驻/前台服务通知 ----
+        // 默认不转发（音乐播放器、下载进度这类常驻卡是噪音）；「转发常驻通知」
+        // 打开后继续走白名单等其余过滤。美团骑手位置这类通知此前就死在这一关
+        // 且一条记录不留，用户无从排查 —— 拦下时必须记入「最近推送」带原因。
+        val flags = notification?.flags ?: 0
+        if ((flags and android.app.Notification.FLAG_ONGOING_EVENT) != 0 ||
+            (flags and android.app.Notification.FLAG_FOREGROUND_SERVICE) != 0
+        ) {
+            if (!prefs.forwardOngoing.first()) {
+                Log.d(TAG, "常驻/前台服务通知且未开转发开关，跳过：$pkg")
+                recordDropped(pkg, title, body, "常驻/前台服务通知")
+                return
+            }
+        }
+
         // ---- 仅锁屏时转发 ----
         // 开着时，亮屏使用手机期间的通知不打扰（人正在看手机，手环再震一遍是噪音）。
         if (prefs.notifyOnlyLocked.first() && !isDeviceLocked()) {
             Log.d(TAG, "仅锁屏转发已开但手机未锁屏，跳过：$pkg")
+            recordDropped(pkg, title, body, "手机未锁屏（仅锁屏转发已开）")
             return
         }
 
@@ -143,6 +164,7 @@ class BandNotificationListener : NotificationListenerService() {
             val nowMinute = LocalTime.now().toSecondOfDay() / 60
             if (inDndWindow(nowMinute, dndStart, dndEnd)) {
                 Log.d(TAG, "勿扰时段内，跳过转发")
+                recordDropped(pkg, title, body, "勿扰时段内")
                 return
             }
         }
@@ -157,18 +179,18 @@ class BandNotificationListener : NotificationListenerService() {
         if (prefs.appFilterBlacklist.first()) {
             if (rule != null && rule.enabled) {
                 Log.d(TAG, "包 $pkg 命中转发黑名单，跳过")
-                recordNotForwarded(pkg, title, body)
+                recordDropped(pkg, title, body, "命中转发黑名单")
                 return
             }
         } else {
             if (rule == null) {
                 Log.d(TAG, "包 $pkg 不在转发白名单，跳过")
-                recordNotForwarded(pkg, title, body)
+                recordDropped(pkg, title, body, "不在转发白名单")
                 return
             }
             if (!rule.enabled) {
                 Log.d(TAG, "包 $pkg 已被用户禁用，跳过")
-                recordNotForwarded(pkg, title, body)
+                recordDropped(pkg, title, body, "应用在名单中被禁用")
                 return
             }
         }
@@ -182,10 +204,12 @@ class BandNotificationListener : NotificationListenerService() {
             }
             if (blacklist && hit) {
                 Log.d(TAG, "命中关键词黑名单，跳过")
+                recordDropped(pkg, title, body, "命中关键词黑名单")
                 return
             }
             if (!blacklist && !hit) {
                 Log.d(TAG, "未命中关键词白名单，跳过")
+                recordDropped(pkg, title, body, "未命中关键词白名单")
                 return
             }
         }
@@ -216,7 +240,10 @@ class BandNotificationListener : NotificationListenerService() {
         // ---- 确保手环连着 ----
         val session = BandSessionProvider.get(this@BandNotificationListener)
         if (session.connectionState.value != ConnectionState.Authenticated) {
-            if (!ensureConnected()) return
+            if (!ensureConnected()) {
+                recordDropped(pkg, title, body, "手环未连接，自动连接失败")
+                return
+            }
         }
 
         // ---- 发送 ----
@@ -241,10 +268,10 @@ class BandNotificationListener : NotificationListenerService() {
     }
 
     /**
-     * 记一条「未转发」的通知 —— 系统提示、被名单拦下的通知都走这里。
-     * 让它们在「最近推送」里可见，并支持一键加白/黑名单。
+     * 记一条「未转发」的通知，带丢弃原因（"勿扰时段内"、"不在转发白名单"等）。
+     * 让它们在「最近推送」里可见、死在哪一关一目了然，并支持一键加白/黑名单。
      */
-    private suspend fun recordNotForwarded(pkg: String, title: String, body: String) {
+    private suspend fun recordNotForwarded(pkg: String, title: String, body: String, reason: String) {
         val timeLabel = "%02d:%02d".format(LocalTime.now().hour, LocalTime.now().minute)
         prefs.recordNotification(
             BandNotification(
@@ -254,8 +281,22 @@ class BandNotificationListener : NotificationListenerService() {
                 timeLabel = timeLabel,
                 forwarded = false,
                 packageName = pkg,
+                dropReason = reason,
             ),
         )
+    }
+
+    /**
+     * 记一条被丢弃的通知，60 秒内同一条（同包名 + 标题 + 原因）只记一次。
+     * 所有丢弃点统一走这里，常驻通知反复更新也不会把「最近推送」刷爆。
+     */
+    private suspend fun recordDropped(pkg: String, title: String, body: String, reason: String) {
+        val key = "$pkg|$title|$reason"
+        val now = System.currentTimeMillis()
+        val last = dropRecordAt[key]
+        if (last != null && (now - last) < DROP_RECORD_THROTTLE_MS) return
+        dropRecordAt[key] = now
+        recordNotForwarded(pkg, title, body, reason)
     }
 
     /**

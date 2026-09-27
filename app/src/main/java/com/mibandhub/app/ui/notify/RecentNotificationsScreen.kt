@@ -319,7 +319,7 @@ private fun NotificationItem(
             if (!item.forwarded) {
                 Spacer(Modifier.height(3.dp))
                 Text(
-                    "未推送",
+                    if (item.dropReason.isBlank()) "未推送" else "未推送 · ${item.dropReason}",
                     style = MaterialTheme.typography.labelMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
