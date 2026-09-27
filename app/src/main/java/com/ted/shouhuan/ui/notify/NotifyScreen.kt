@@ -90,6 +90,7 @@ fun NotifyScreen(
     val dedupeEnabled by vm.dedupeEnabled.collectAsStateWithLifecycle()
     val dedupeSeconds by vm.dedupeSeconds.collectAsStateWithLifecycle()
     val onlyLocked by vm.onlyLocked.collectAsStateWithLifecycle()
+    val forwardOngoing by vm.forwardOngoing.collectAsStateWithLifecycle()
     val vibration by vm.vibration.collectAsStateWithLifecycle()
     val appRules by vm.appRules.collectAsStateWithLifecycle()
     val installedApps by vm.installedApps.collectAsStateWithLifecycle()
@@ -268,6 +269,15 @@ fun NotifyScreen(
                 subtitle = "亮屏使用手机期间的通知不推到手环，锁屏后才转发",
                 checked = onlyLocked,
                 onCheckedChange = vm::setOnlyLocked,
+                accent = NotifyAmber,
+            )
+            Spacer(Modifier.height(4.dp))
+            SwitchSettingRow(
+                title = "转发常驻通知",
+                subtitle = "常驻/前台服务通知（骑手位置、音乐播放器等）默认不上手环；" +
+                    "打开后这类通知也要过白名单等其余过滤",
+                checked = forwardOngoing,
+                onCheckedChange = vm::setForwardOngoing,
                 accent = NotifyAmber,
             )
         }
@@ -765,7 +775,7 @@ private fun RecentCard(
                     if (!item.forwarded) {
                         Spacer(Modifier.height(3.dp))
                         Text(
-                            "未推送",
+                            if (item.dropReason.isBlank()) "未推送" else "未推送 · ${item.dropReason}",
                             style = MaterialTheme.typography.labelMedium,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
