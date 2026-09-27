@@ -40,3 +40,4 @@ captures/
 
 # 会话工作目录（与 flowtary / capswriter 保持一致：不进库）
 .workbuddy/
+.zcode/
