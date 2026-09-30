@@ -14,34 +14,50 @@ import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.rounded.ArrowBack
+import androidx.compose.material.icons.rounded.ChevronRight
 import androidx.compose.material.icons.rounded.ExpandMore
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.FilterChipDefaults
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Switch
 import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.material3.TopAppBar
+import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.MutableState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import kotlinx.coroutines.delay
 
 /** 统一的卡片容器：左侧一条强调色竖线 + 小标题，内容放下面。 */
 @Composable
@@ -382,4 +398,251 @@ fun SwitchSettingRow(
             ),
         )
     }
+}
+
+/**
+ * 子页面外壳：顶部返回栏 + 可滚动内容。
+ *
+ * 目录页只放入口行，具体设置全在这道门后面 —— 多点一下才进得来。
+ * 一屏铺满开关的页面，手指在列表上滑一下就可能改掉配置；拆成子页面之后，
+ * 每次改动都必然来自一次「主动点进来的」操作。
+ */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun SubPage(
+    title: String,
+    onBack: () -> Unit,
+    status: String? = null,
+    statusAccent: Color? = null,
+    content: @Composable ColumnScope.() -> Unit,
+) {
+    Scaffold(
+        containerColor = MaterialTheme.colorScheme.background,
+        topBar = {
+            TopAppBar(
+                title = { Text(title) },
+                navigationIcon = {
+                    IconButton(onClick = onBack) {
+                        Icon(
+                            Icons.AutoMirrored.Rounded.ArrowBack,
+                            contentDescription = "返回",
+                        )
+                    }
+                },
+                colors = TopAppBarDefaults.topAppBarColors(
+                    containerColor = MaterialTheme.colorScheme.surface,
+                ),
+            )
+        },
+    ) { inner ->
+        Column(Modifier.fillMaxSize().padding(inner)) {
+            // 状态条钉在顶栏下面、不跟着内容滚 —— 弹窗确认完那一句「已下发到手环」
+            // 必须还在眼睛看得见的地方，不然要往上翻才知道刚才那下算不算数。
+            AnimatedVisibility(visible = status != null) {
+                val tint = statusAccent ?: MaterialTheme.colorScheme.primary
+                Text(
+                    status.orEmpty(),
+                    style = MaterialTheme.typography.labelMedium,
+                    color = tint,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .background(tint.copy(alpha = 0.10f))
+                        .padding(horizontal = 18.dp, vertical = 10.dp),
+                )
+            }
+            Column(
+                Modifier
+                    .fillMaxSize()
+                    .verticalScroll(rememberScrollState())
+                    .padding(horizontal = 18.dp),
+            ) {
+                Spacer(Modifier.height(14.dp))
+                content()
+                Spacer(Modifier.height(24.dp))
+            }
+        }
+    }
+}
+
+/**
+ * 目录页的一行入口：标题 + 当前状态（副标题 / 徽标）+ 右箭头。
+ *
+ * 副标题不是装饰 —— 它是「不点进去也能看见的那部分状态」，
+ * 比如「已开启 · 30 秒去重」，够用来判断要不要再点进那一页。
+ */
+@Composable
+fun NavRow(
+    title: String,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+    subtitle: String? = null,
+    badge: String? = null,
+    accent: Color? = null,
+) {
+    Row(
+        modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(20.dp))
+            .background(MaterialTheme.colorScheme.surface, RoundedCornerShape(20.dp))
+            .clickable(onClick = onClick)
+            .padding(horizontal = 16.dp, vertical = 14.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        if (accent != null) {
+            Box(
+                Modifier
+                    .size(width = 3.dp, height = 32.dp)
+                    .background(accent, RoundedCornerShape(2.dp)),
+            )
+            Spacer(Modifier.width(10.dp))
+        }
+        Column(Modifier.weight(1f)) {
+            Text(title, style = MaterialTheme.typography.bodyMedium)
+            if (subtitle != null) {
+                Spacer(Modifier.height(3.dp))
+                Text(
+                    subtitle,
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+        }
+        if (badge != null) {
+            Spacer(Modifier.width(8.dp))
+            Text(
+                badge,
+                style = MaterialTheme.typography.labelMedium,
+                color = accent ?: MaterialTheme.colorScheme.primary,
+            )
+        }
+        Spacer(Modifier.width(4.dp))
+        Icon(
+            Icons.Rounded.ChevronRight,
+            contentDescription = null,
+            tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f),
+        )
+    }
+}
+
+/**
+ * 需要额外点一次的确认弹窗。
+ *
+ * 开关、删除这类「一下就生效」的操作统一过这道门：先把要点什么、影响多大
+ * 说清楚，再由用户点 [confirmLabel] 才执行。多这一步，滑动列表时手一抖
+ * 不至于直接改掉配置。
+ */
+@Composable
+fun ConfirmActionDialog(
+    title: String,
+    message: String,
+    confirmLabel: String,
+    onConfirm: () -> Unit,
+    onDismiss: () -> Unit,
+    accent: Color = MaterialTheme.colorScheme.primary,
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(title) },
+        text = {
+            Text(
+                message,
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        },
+        confirmButton = {
+            TextButton(onClick = onConfirm) { Text(confirmLabel, color = accent) }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text("取消") }
+        },
+    )
+}
+
+/** 一次待确认的操作：问什么、怎么答、答了执行什么。 */
+class ConfirmSpec internal constructor(
+    val title: String,
+    val message: String,
+    val confirmLabel: String,
+    val accent: Color?,
+    internal val action: () -> Unit,
+)
+
+/**
+ * 「先问一句再执行」的控制器：页面里 `confirm.ask(...)` 提问，
+ * [ConfirmHost] 负责把弹窗画出来。整个页面共用一个，避免每处删除各挂一份状态。
+ */
+class ConfirmController internal constructor(private val spec: MutableState<ConfirmSpec?>) {
+    val current: ConfirmSpec? get() = spec.value
+
+    fun ask(
+        title: String,
+        message: String,
+        confirmLabel: String,
+        accent: Color? = null,
+        action: () -> Unit,
+    ) {
+        spec.value = ConfirmSpec(title, message, confirmLabel, accent, action)
+    }
+
+    fun dismiss() {
+        spec.value = null
+    }
+}
+
+/** 建一个确认控制器（配合 [ConfirmHost] 使用）。 */
+@Composable
+fun rememberConfirm(): ConfirmController {
+    val spec = remember { mutableStateOf<ConfirmSpec?>(null) }
+    return remember { ConfirmController(spec) }
+}
+
+/** 把 [rememberConfirm] 挂着的那次提问画出来。没有提问时什么都不画。 */
+@Composable
+fun ConfirmHost(controller: ConfirmController) {
+    val spec = controller.current ?: return
+    ConfirmActionDialog(
+        title = spec.title,
+        message = spec.message,
+        confirmLabel = spec.confirmLabel,
+        accent = spec.accent ?: MaterialTheme.colorScheme.primary,
+        onConfirm = {
+            controller.dismiss()
+            spec.action()
+        },
+        onDismiss = { controller.dismiss() },
+    )
+}
+
+/**
+ * 短暂的状态提示：[StatusHint.show] 一句，过几秒自己消失。
+ *
+ * 用来给「确认过了才执行」的操作一个落点 —— 弹窗关掉之后界面要能说出
+ * 「已经生效了」，不然用户会怀疑刚才那下到底算不算数。
+ */
+class StatusHint internal constructor(private val state: MutableState<String?>) {
+    val value: String? get() = state.value
+
+    fun show(text: String) {
+        state.value = text
+    }
+
+    fun clear() {
+        state.value = null
+    }
+}
+
+/** 建一个会自动过期的状态提示（默认 4 秒后消失）。 */
+@Composable
+fun rememberStatusHint(durationMillis: Long = 4_000): StatusHint {
+    val state = remember { mutableStateOf<String?>(null) }
+    val shown = state.value
+    LaunchedEffect(shown) {
+        if (shown == null) return@LaunchedEffect
+        delay(durationMillis)
+        if (state.value == shown) state.value = null
+    }
+    return remember { StatusHint(state) }
 }
