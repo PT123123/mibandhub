@@ -60,4 +60,25 @@ object DemoData {
         AppRule("com.android.dialer", "来电", true),
         AppRule("com.android.calendar", "日历", true),
     )
+
+    /**
+     * 出厂默认的关键词**黑名单**。
+     *
+     * 系统 / ROM 自己会发「短信正在运行，点按即可了解详情或停止应用」这类提示卡 ——
+     * 它不是用户关心的消息，但包名往往是应用自己的（短信、音乐），躲不过系统包过滤，
+     * 只能靠关键词兜住。这里只放最典型的几条；用户只要动过关键词列表（哪怕删空），
+     * 就完全照用户存的来（见 BandPrefs.keywordBlacklistRules）。
+     */
+    fun defaultKeywordBlacklist(): List<KeywordRule> = listOf(
+        KeywordRule("正在运行"),
+        KeywordRule("点按即可了解详情或停止应用"),
+        KeywordRule("点按即可停止"),
+    )
+
+    /**
+     * 出厂默认的敏感信息识别规则：内置类型全部启用、不限应用。
+     * 总开关默认关，所以这份默认值只有在用户打开「敏感信息过滤」后才起作用。
+     */
+    fun defaultSensitiveRules(): List<SensitiveRule> =
+        SensitiveKind.entries.map { SensitiveRule(kind = it) }
 }

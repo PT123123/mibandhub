@@ -17,6 +17,9 @@ import com.ted.shouhuan.data.BandNotification
 import com.ted.shouhuan.data.BandPrefs
 import com.ted.shouhuan.data.DemoData
 import com.ted.shouhuan.data.InstalledApp
+import com.ted.shouhuan.data.KeywordRule
+import com.ted.shouhuan.data.SensitiveKind
+import com.ted.shouhuan.data.SensitiveRule
 import com.ted.shouhuan.service.BandNotificationListener
 import com.ted.shouhuan.service.BandSessionProvider
 import com.ted.shouhuan.service.HeartMeasureController
@@ -77,10 +80,37 @@ class NotifyViewModel(app: Application) : AndroidViewModel(app) {
     val dndStart: StateFlow<Int> = prefs.dndStart.stateIn(viewModelScope, SharingStarted.Eagerly, 22 * 60)
     val dndEnd: StateFlow<Int> = prefs.dndEnd.stateIn(viewModelScope, SharingStarted.Eagerly, 7 * 60 + 30)
 
-    val keywordBlacklist: StateFlow<Boolean> =
-        prefs.keywordBlacklist.stateIn(viewModelScope, SharingStarted.Eagerly, true)
-    val keywords: StateFlow<List<String>> =
-        prefs.keywords.stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
+    /**
+     * 关键词黑名单：命中（且规则作用于该应用）就不转发。
+     *
+     * 默认给一份出厂黑名单 —— 系统「短信正在运行，点按即可了解详情或停止应用」这类提示卡
+     * 就是靠它拦下的；用户只要动过（哪怕删空）就照用户的来。
+     */
+    val keywordBlacklist: StateFlow<List<KeywordRule>> =
+        prefs.keywordBlacklistRules.stateIn(
+            viewModelScope,
+            SharingStarted.Eagerly,
+            DemoData.defaultKeywordBlacklist(),
+        )
+
+    /**
+     * 关键词白名单：命中才转发。和黑名单**同时生效**（不像应用名单那样白/黑二选一），
+     * 而且只对「生效应用」里出现过规则的应用形成约束。
+     */
+    val keywordWhitelist: StateFlow<List<KeywordRule>> =
+        prefs.keywordWhitelistRules.stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
+
+    /** 敏感信息过滤总开关，默认关（属于额外要开的设置）。 */
+    val sensitiveEnabled: StateFlow<Boolean> =
+        prefs.sensitiveEnabled.stateIn(viewModelScope, SharingStarted.Eagerly, false)
+
+    /** 敏感信息规则：内置识别（可逐条开关）+ 自定义敏感词。 */
+    val sensitiveRules: StateFlow<List<SensitiveRule>> =
+        prefs.sensitiveRules.stateIn(
+            viewModelScope,
+            SharingStarted.Eagerly,
+            DemoData.defaultSensitiveRules(),
+        )
 
     /** 应用名单模式：true = 黑名单（名单内不转发），false = 白名单（名单内才转发）。 */
     val appFilterBlacklist: StateFlow<Boolean> =
@@ -186,22 +216,78 @@ class NotifyViewModel(app: Application) : AndroidViewModel(app) {
     fun setDndWindow(startMinute: Int, endMinute: Int) =
         launch { prefs.setDndWindow(startMinute, endMinute) }
 
-    fun setKeywordMode(blacklist: Boolean) = launch { prefs.setKeywordBlacklist(blacklist) }
-
     /** 切应用名单模式（白名单 / 黑名单）。名单内容不变，只是语义反过来。 */
     fun setAppFilterMode(blacklist: Boolean) = launch { prefs.setAppFilterBlacklist(blacklist) }
 
-    fun addKeyword(keyword: String) = launch {
+    /**
+     * 往关键词白名单 / 黑名单里加一条（[packages] 空 = 对所有应用生效）。
+     * 两份名单同时存在、同时生效，所以要用 [blacklist] 指明加进哪一份。
+     */
+    fun addKeyword(blacklist: Boolean, keyword: String, packages: List<String> = emptyList()) = launch {
         val trimmed = keyword.trim()
         if (trimmed.isEmpty()) return@launch
-        val current = prefs.keywords.first()
-        if (current.none { it.equals(trimmed, ignoreCase = true) }) {
-            prefs.setKeywords(current + trimmed)
-        }
+        val current = keywordRules(blacklist)
+        if (current.any { it.keyword.equals(trimmed, ignoreCase = true) }) return@launch
+        saveKeywordRules(blacklist, current + KeywordRule(trimmed, packages.distinct()))
     }
 
-    fun removeKeyword(keyword: String) = launch {
-        prefs.setKeywords(prefs.keywords.first().filterNot { it == keyword })
+    fun removeKeyword(blacklist: Boolean, keyword: String) = launch {
+        saveKeywordRules(blacklist, keywordRules(blacklist).filterNot { it.keyword == keyword })
+    }
+
+    /** 改一条关键词的生效应用（空列表 = 对所有应用生效）。 */
+    fun setKeywordApps(blacklist: Boolean, keyword: String, packages: List<String>) = launch {
+        saveKeywordRules(
+            blacklist,
+            keywordRules(blacklist).map {
+                if (it.keyword == keyword) it.copy(packages = packages.distinct()) else it
+            },
+        )
+    }
+
+    private suspend fun keywordRules(blacklist: Boolean): List<KeywordRule> =
+        if (blacklist) prefs.keywordBlacklistRules.first() else prefs.keywordWhitelistRules.first()
+
+    private suspend fun saveKeywordRules(blacklist: Boolean, rules: List<KeywordRule>) {
+        if (blacklist) prefs.setKeywordBlacklistRules(rules) else prefs.setKeywordWhitelistRules(rules)
+    }
+
+    /** 敏感信息过滤总开关，默认关 —— 属于要额外打开的设置。 */
+    fun setSensitiveEnabled(enabled: Boolean) = launch { prefs.setSensitiveEnabled(enabled) }
+
+    /** 内置敏感识别类型的开关（逐条独立，可以只留验证码、关掉手机号）。 */
+    fun setSensitiveKindEnabled(kind: SensitiveKind, enabled: Boolean) = launch {
+        val builtin = prefs.sensitiveRules.first().filter { it.kind != null }
+        prefs.setSensitiveBuiltin(builtin.map { if (it.kind == kind) it.copy(enabled = enabled) else it })
+    }
+
+    /**
+     * 改一条敏感信息规则的生效应用：内置按类型（[SensitiveRule.id] = 类型名）、
+     * 自定义按敏感词定位。两份都写一遍，谁命中就改谁。
+     */
+    fun setSensitiveApps(id: String, packages: List<String>) = launch {
+        val all = prefs.sensitiveRules.first()
+        val distinct = packages.distinct()
+        prefs.setSensitiveBuiltin(
+            all.filter { it.kind != null }.map { if (it.id == id) it.copy(packages = distinct) else it },
+        )
+        prefs.setSensitiveCustom(
+            all.filter { it.kind == null }.map { if (it.id == id) it.copy(packages = distinct) else it },
+        )
+    }
+
+    /** 自定义敏感词：新增（[packages] 空 = 对所有应用生效）。 */
+    fun addSensitiveKeyword(keyword: String, packages: List<String> = emptyList()) = launch {
+        val trimmed = keyword.trim()
+        if (trimmed.isEmpty()) return@launch
+        val custom = prefs.sensitiveRules.first().filter { it.kind == null }
+        if (custom.any { it.keyword.equals(trimmed, ignoreCase = true) }) return@launch
+        prefs.setSensitiveCustom(custom + SensitiveRule(keyword = trimmed, packages = packages.distinct()))
+    }
+
+    fun removeSensitiveKeyword(keyword: String) = launch {
+        val custom = prefs.sensitiveRules.first().filter { it.kind == null }
+        prefs.setSensitiveCustom(custom.filterNot { it.keyword == keyword })
     }
 
     fun setDedupe(enabled: Boolean, seconds: Int) = launch { prefs.setDedupe(enabled, seconds) }

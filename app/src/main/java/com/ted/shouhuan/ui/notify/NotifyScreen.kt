@@ -57,6 +57,10 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.ted.shouhuan.data.AppRule
 import com.ted.shouhuan.data.BandNotification
+import com.ted.shouhuan.data.InstalledApp
+import com.ted.shouhuan.data.KeywordRule
+import com.ted.shouhuan.data.SensitiveKind
+import com.ted.shouhuan.data.SensitiveRule
 import com.ted.shouhuan.ui.components.CollapsibleSection
 import com.ted.shouhuan.ui.components.FilterChipRow
 import com.ted.shouhuan.ui.components.KeyValueRow
@@ -73,6 +77,21 @@ private val DEDUPE_LABELS = listOf("10秒", "30秒", "1分钟", "5分钟")
 private val VIBRATIONS = listOf("standard", "short", "strong")
 private val VIBRATION_LABELS = listOf("标准", "短促", "强提醒")
 
+/**
+ * 关键词编辑弹窗的状态。[blacklist] 指明在编辑哪一份名单 —— 白/黑两份同时存在；
+ * [rule] 为 null = 新增一条，否则是改这条关键词的生效应用。
+ */
+private data class KeywordEditorState(
+    val blacklist: Boolean,
+    val rule: KeywordRule? = null,
+)
+
+/** 敏感信息编辑弹窗的状态：[isNew] = 新增自定义敏感词，否则用 [rule] 改它的生效应用。 */
+private data class SensitiveEditorState(
+    val rule: SensitiveRule? = null,
+    val isNew: Boolean = false,
+)
+
 @Composable
 fun NotifyScreen(
     vm: NotifyViewModel,
@@ -85,7 +104,9 @@ fun NotifyScreen(
     val dndStart by vm.dndStart.collectAsStateWithLifecycle()
     val dndEnd by vm.dndEnd.collectAsStateWithLifecycle()
     val keywordBlacklist by vm.keywordBlacklist.collectAsStateWithLifecycle()
-    val keywords by vm.keywords.collectAsStateWithLifecycle()
+    val keywordWhitelist by vm.keywordWhitelist.collectAsStateWithLifecycle()
+    val sensitiveEnabled by vm.sensitiveEnabled.collectAsStateWithLifecycle()
+    val sensitiveRules by vm.sensitiveRules.collectAsStateWithLifecycle()
     val appFilterBlacklist by vm.appFilterBlacklist.collectAsStateWithLifecycle()
     val dedupeEnabled by vm.dedupeEnabled.collectAsStateWithLifecycle()
     val dedupeSeconds by vm.dedupeSeconds.collectAsStateWithLifecycle()
@@ -104,9 +125,10 @@ fun NotifyScreen(
         vm.loadInstalledApps()
     }
 
-    // 弹层状态：勿扰时间选择 / 关键词新增 / 添加转发应用
+    // 弹层状态：勿扰时间选择 / 关键词编辑 / 敏感信息编辑 / 添加转发应用
     var editingDndEdge by remember { mutableStateOf<String?>(null) }
-    var showKeywordDialog by remember { mutableStateOf(false) }
+    var keywordEditor by remember { mutableStateOf<KeywordEditorState?>(null) }
+    var sensitiveEditor by remember { mutableStateOf<SensitiveEditorState?>(null) }
     var showAppPicker by remember { mutableStateOf(false) }
 
     val btPermissionLauncher = rememberLauncherForActivityResult(
@@ -284,56 +306,132 @@ fun NotifyScreen(
 
         Spacer(Modifier.height(12.dp))
 
-        // ---- 关键词过滤 ----
+        // ---- 关键词过滤：白名单 + 黑名单同时存在、同屏展示 ----
         SectionCard(title = "关键词过滤", accent = NotifyAmber) {
             Text(
-                if (keywordBlacklist) {
-                    "黑名单模式：标题或正文命中关键词的通知不转发。"
-                } else {
-                    "白名单模式：只有标题或正文命中关键词的通知才转发。"
-                },
+                "白名单和黑名单同时生效（不是二选一）：黑名单命中、或白名单未命中时，" +
+                    "通知只推标题、正文不上手环。每条规则都能限定生效应用，不选 = 全部应用。",
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
-            Spacer(Modifier.height(10.dp))
-            FilterChipRow(
-                options = listOf("白名单（命中才转发）", "黑名单（命中不转发）"),
-                selectedIndex = if (keywordBlacklist) 1 else 0,
-                accent = NotifyAmber,
-                onSelect = { vm.setKeywordMode(it == 1) },
-            )
             Spacer(Modifier.height(12.dp))
+            KeywordRuleBlock(
+                title = "黑名单（命中只推标题）",
+                hint = "出厂已放好系统提示词，例如「正在运行」「点按即可了解详情或停止应用」——命中后只推标题。",
+                rules = keywordBlacklist,
+                installedApps = installedApps,
+                onAdd = { keywordEditor = KeywordEditorState(blacklist = true) },
+                onRemove = { vm.removeKeyword(true, it.keyword) },
+                onEditApps = { keywordEditor = KeywordEditorState(blacklist = true, rule = it) },
+            )
+            Spacer(Modifier.height(10.dp))
+            HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.35f))
+            Spacer(Modifier.height(10.dp))
+            KeywordRuleBlock(
+                title = "白名单（未命中只推标题）",
+                hint = "只约束出现过规则的应用；一条都没有时白名单不生效。",
+                rules = keywordWhitelist,
+                installedApps = installedApps,
+                onAdd = { keywordEditor = KeywordEditorState(blacklist = false) },
+                onRemove = { vm.removeKeyword(false, it.keyword) },
+                onEditApps = { keywordEditor = KeywordEditorState(blacklist = false, rule = it) },
+            )
+        }
 
-            if (keywords.isEmpty()) {
+        Spacer(Modifier.height(12.dp))
+
+        // ---- 敏感信息过滤：内置识别（可逐条开关）+ 自定义敏感词 ----
+        SectionCard(title = "敏感信息过滤", accent = NotifyAmber) {
+            Text(
+                "验证码、银行卡号这类内容推到手环上等于摊在手腕上。开启后命中的通知只推标题、" +
+                    "正文不上手环；内置识别可以逐条开关，也能自己加敏感词，每条都能限定生效应用" +
+                    "（不选 = 全部应用）。",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Spacer(Modifier.height(6.dp))
+            SwitchSettingRow(
+                title = "开启敏感信息过滤",
+                subtitle = if (sensitiveEnabled) "命中时只推标题，正文不上手环" else "当前关闭",
+                checked = sensitiveEnabled,
+                onCheckedChange = vm::setSensitiveEnabled,
+                accent = NotifyAmber,
+            )
+            if (sensitiveEnabled) {
+                Spacer(Modifier.height(10.dp))
                 Text(
-                    "还没有关键词。",
-                    style = MaterialTheme.typography.bodyMedium,
+                    "内置识别（可逐条开关）",
+                    style = MaterialTheme.typography.labelMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
-            } else {
-                keywords.forEach { keyword ->
+                sensitiveRules.filter { it.kind != null }.forEach { rule ->
                     Row(
-                        Modifier
-                            .fillMaxWidth()
-                            .padding(vertical = 2.dp),
-                        horizontalArrangement = Arrangement.SpaceBetween,
+                        Modifier.fillMaxWidth().padding(vertical = 4.dp),
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
-                        Text(keyword, style = MaterialTheme.typography.bodyMedium)
-                        Icon(
-                            Icons.Rounded.Close,
-                            contentDescription = "删除 $keyword",
-                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                            modifier = Modifier
-                                .size(18.dp)
-                                .clickable { vm.removeKeyword(keyword) },
+                        Column(Modifier.weight(1f)) {
+                            Text(rule.label, style = MaterialTheme.typography.bodyMedium)
+                            Text(
+                                rule.kind?.hint.orEmpty(),
+                                style = MaterialTheme.typography.labelMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                            AppScopeChip(rule.packages, installedApps) {
+                                sensitiveEditor = SensitiveEditorState(rule = rule)
+                            }
+                        }
+                        Spacer(Modifier.width(8.dp))
+                        Switch(
+                            checked = rule.enabled,
+                            onCheckedChange = { vm.setSensitiveKindEnabled(rule.kind!!, it) },
+                            colors = SwitchDefaults.colors(
+                                checkedThumbColor = MaterialTheme.colorScheme.surface,
+                                checkedTrackColor = NotifyAmber,
+                            ),
                         )
                     }
                 }
-            }
-            Spacer(Modifier.height(10.dp))
-            TextButton(onClick = { showKeywordDialog = true }) {
-                Text("+ 添加关键词", color = NotifyAmber)
+                Spacer(Modifier.height(10.dp))
+                Text(
+                    "自定义敏感词",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                val custom = sensitiveRules.filter { it.kind == null }
+                if (custom.isEmpty()) {
+                    Spacer(Modifier.height(4.dp))
+                    Text(
+                        "还没有自定义敏感词。",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                } else {
+                    custom.forEach { rule ->
+                        Row(
+                            Modifier.fillMaxWidth().padding(vertical = 4.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Column(Modifier.weight(1f)) {
+                                Text(rule.keyword, style = MaterialTheme.typography.bodyMedium)
+                                AppScopeChip(rule.packages, installedApps) {
+                                    sensitiveEditor = SensitiveEditorState(rule = rule)
+                                }
+                            }
+                            Icon(
+                                Icons.Rounded.Close,
+                                contentDescription = "删除 ${rule.keyword}",
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier
+                                    .size(18.dp)
+                                    .clickable { vm.removeSensitiveKeyword(rule.keyword) },
+                            )
+                        }
+                    }
+                }
+                Spacer(Modifier.height(6.dp))
+                TextButton(onClick = { sensitiveEditor = SensitiveEditorState(isNew = true) }) {
+                    Text("+ 添加敏感词", color = NotifyAmber)
+                }
             }
         }
 
@@ -641,32 +739,104 @@ fun NotifyScreen(
         )
     }
 
-    // ---- 关键词新增弹窗 ----
-    if (showKeywordDialog) {
-        var draft by remember { mutableStateOf("") }
+    // ---- 关键词编辑弹窗：新增（可同时选生效应用）或改已有词的生效应用 ----
+    keywordEditor?.let { state ->
+        val editing = state.rule
+        var draft by remember(state) { mutableStateOf(editing?.keyword.orEmpty()) }
+        var apps by remember(state) { mutableStateOf(editing?.packages.orEmpty()) }
         AlertDialog(
-            onDismissRequest = { showKeywordDialog = false },
-            title = { Text("添加关键词") },
+            onDismissRequest = { keywordEditor = null },
+            title = { Text(if (editing == null) "添加关键词" else "生效应用") },
             text = {
-                OutlinedTextField(
-                    value = draft,
-                    onValueChange = { draft = it },
-                    singleLine = true,
-                    placeholder = { Text("例如：验证码、快递") },
-                )
+                Column(
+                    Modifier
+                        .heightIn(max = 420.dp)
+                        .verticalScroll(rememberScrollState()),
+                ) {
+                    if (editing == null) {
+                        OutlinedTextField(
+                            value = draft,
+                            onValueChange = { draft = it },
+                            singleLine = true,
+                            modifier = Modifier.fillMaxWidth(),
+                            placeholder = { Text("例如：验证码、快递") },
+                        )
+                        Spacer(Modifier.height(10.dp))
+                    } else {
+                        Text(
+                            "「${editing.keyword}」只在这些应用里生效：",
+                            style = MaterialTheme.typography.bodyMedium,
+                        )
+                        Spacer(Modifier.height(6.dp))
+                    }
+                    AppScopePicker(apps, installedApps) { apps = it }
+                }
             },
             confirmButton = {
                 TextButton(onClick = {
-                    vm.addKeyword(draft)
-                    showKeywordDialog = false
+                    if (editing == null) {
+                        vm.addKeyword(state.blacklist, draft, apps)
+                    } else {
+                        vm.setKeywordApps(state.blacklist, editing.keyword, apps)
+                    }
+                    keywordEditor = null
                 }) {
-                    Text("添加")
+                    Text("保存")
                 }
             },
             dismissButton = {
-                TextButton(onClick = { showKeywordDialog = false }) {
-                    Text("取消")
+                TextButton(onClick = { keywordEditor = null }) { Text("取消") }
+            },
+        )
+    }
+
+    // ---- 敏感信息编辑弹窗：新增自定义敏感词，或改某条规则的生效应用 ----
+    sensitiveEditor?.let { state ->
+        val editing = state.rule
+        var draft by remember(state) { mutableStateOf(editing?.keyword.orEmpty()) }
+        var apps by remember(state) { mutableStateOf(editing?.packages.orEmpty()) }
+        AlertDialog(
+            onDismissRequest = { sensitiveEditor = null },
+            title = { Text(if (state.isNew) "添加敏感词" else "生效应用") },
+            text = {
+                Column(
+                    Modifier
+                        .heightIn(max = 420.dp)
+                        .verticalScroll(rememberScrollState()),
+                ) {
+                    if (state.isNew) {
+                        OutlinedTextField(
+                            value = draft,
+                            onValueChange = { draft = it },
+                            singleLine = true,
+                            modifier = Modifier.fillMaxWidth(),
+                            placeholder = { Text("例如：密码、工资") },
+                        )
+                        Spacer(Modifier.height(10.dp))
+                    } else if (editing != null) {
+                        Text(
+                            "「${editing.label}」只在这些应用里生效：",
+                            style = MaterialTheme.typography.bodyMedium,
+                        )
+                        Spacer(Modifier.height(6.dp))
+                    }
+                    AppScopePicker(apps, installedApps) { apps = it }
                 }
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    if (state.isNew) {
+                        vm.addSensitiveKeyword(draft, apps)
+                    } else if (editing != null) {
+                        vm.setSensitiveApps(editing.id, apps)
+                    }
+                    sensitiveEditor = null
+                }) {
+                    Text("保存")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { sensitiveEditor = null }) { Text("取消") }
             },
         )
     }
@@ -687,6 +857,187 @@ private fun TimePickButton(label: String, modifier: Modifier = Modifier, onClick
             style = MaterialTheme.typography.bodyMedium,
             color = NotifyAmber,
         )
+    }
+}
+
+/**
+ * 一份关键词名单（白名单或黑名单）：标题 + 说明 + 逐条「关键词 / 生效应用 / 删除」+ 添加。
+ * 白黑两份同时展示，所以这个块会被调用两次。
+ */
+@Composable
+private fun KeywordRuleBlock(
+    title: String,
+    hint: String,
+    rules: List<KeywordRule>,
+    installedApps: List<InstalledApp>,
+    onAdd: () -> Unit,
+    onRemove: (KeywordRule) -> Unit,
+    onEditApps: (KeywordRule) -> Unit,
+) {
+    Text(title, style = MaterialTheme.typography.bodyMedium, color = NotifyAmber)
+    Spacer(Modifier.height(2.dp))
+    Text(
+        hint,
+        style = MaterialTheme.typography.labelMedium,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+    )
+    Spacer(Modifier.height(6.dp))
+    if (rules.isEmpty()) {
+        Text(
+            "还没有关键词。",
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+    } else {
+        rules.forEach { rule ->
+            Row(
+                Modifier.fillMaxWidth().padding(vertical = 3.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Column(Modifier.weight(1f)) {
+                    Text(rule.keyword, style = MaterialTheme.typography.bodyMedium)
+                    AppScopeChip(rule.packages, installedApps) { onEditApps(rule) }
+                }
+                Icon(
+                    Icons.Rounded.Close,
+                    contentDescription = "删除 ${rule.keyword}",
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier
+                        .size(18.dp)
+                        .clickable { onRemove(rule) },
+                )
+            }
+        }
+    }
+    Spacer(Modifier.height(6.dp))
+    TextButton(onClick = onAdd) {
+        Text("+ 添加关键词", color = NotifyAmber)
+    }
+}
+
+/** 「生效应用」小胶囊：点一下改这条规则的生效范围。空列表 = 全部应用。 */
+@Composable
+private fun AppScopeChip(
+    packages: List<String>,
+    installedApps: List<InstalledApp>,
+    onClick: () -> Unit,
+) {
+    Box(
+        Modifier
+            .padding(top = 2.dp)
+            .clip(RoundedCornerShape(6.dp))
+            .background(NotifyAmber.copy(alpha = 0.10f))
+            .clickable(onClick = onClick)
+            .padding(horizontal = 6.dp, vertical = 2.dp),
+    ) {
+        Text(
+            appScopeLabel(packages, installedApps),
+            style = MaterialTheme.typography.labelMedium,
+            color = NotifyAmber,
+        )
+    }
+}
+
+/** 生效应用的显示文案：不限定 → 全部应用；1 个 → 应用名；多个 → 「第一个 等 N 个应用」。 */
+private fun appScopeLabel(packages: List<String>, installedApps: List<InstalledApp>): String {
+    if (packages.isEmpty()) return "全部应用"
+    fun name(pkg: String) = installedApps.firstOrNull { it.packageName == pkg }?.label ?: pkg
+    return if (packages.size == 1) name(packages[0]) else "${name(packages[0])} 等 ${packages.size} 个应用"
+}
+
+/**
+ * 应用范围多选：一个都不勾 = 全部应用。自带搜索框，列表高了可滚。
+ * 关键词 / 敏感信息规则的「生效应用」共用它 —— 规则「附着 0 到多个应用」就靠这里选。
+ */
+@Composable
+private fun AppScopePicker(
+    selected: List<String>,
+    installedApps: List<InstalledApp>,
+    onChange: (List<String>) -> Unit,
+) {
+    var query by remember { mutableStateOf("") }
+    val matched = installedApps.filter { app ->
+        query.isBlank() ||
+            app.label.contains(query, ignoreCase = true) ||
+            app.packageName.contains(query, ignoreCase = true)
+    }
+    Column {
+        Text(
+            if (selected.isEmpty()) "生效应用：全部应用（不勾 = 不限定）" else "生效应用：已选 ${selected.size} 个",
+            style = MaterialTheme.typography.labelMedium,
+            color = NotifyAmber,
+        )
+        Spacer(Modifier.height(6.dp))
+        OutlinedTextField(
+            value = query,
+            onValueChange = { query = it },
+            singleLine = true,
+            modifier = Modifier.fillMaxWidth(),
+            placeholder = { Text("搜应用名或包名") },
+        )
+        Spacer(Modifier.height(6.dp))
+        when {
+            installedApps.isEmpty() -> Text(
+                "正在读取手机上的应用…",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+
+            matched.isEmpty() -> Text(
+                "没有匹配的应用。",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+
+            else -> Column(
+                Modifier
+                    .heightIn(max = 260.dp)
+                    .verticalScroll(rememberScrollState()),
+            ) {
+                matched.forEach { app ->
+                    val checked = app.packageName in selected
+                    Row(
+                        Modifier
+                            .fillMaxWidth()
+                            .clickable {
+                                onChange(
+                                    if (checked) selected - app.packageName
+                                    else selected + app.packageName,
+                                )
+                            }
+                            .padding(vertical = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Column(Modifier.weight(1f)) {
+                            Text(
+                                app.label,
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = if (checked) {
+                                    NotifyAmber
+                                } else {
+                                    MaterialTheme.colorScheme.onSurface
+                                },
+                            )
+                            Text(
+                                app.packageName,
+                                style = MaterialTheme.typography.labelMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                        }
+                        Text(
+                            if (checked) "已选 ✓" else "选择",
+                            style = MaterialTheme.typography.labelMedium,
+                            color = if (checked) NotifyAmber else MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                    HorizontalDivider(
+                        color = MaterialTheme.colorScheme.outline.copy(alpha = 0.3f),
+                    )
+                }
+            }
+        }
     }
 }
 
@@ -772,10 +1123,15 @@ private fun RecentCard(
                         maxLines = 2,
                         overflow = TextOverflow.Ellipsis,
                     )
-                    if (!item.forwarded) {
+                    val reason = item.dropReason
+                    if (!item.forwarded || reason.isNotBlank()) {
                         Spacer(Modifier.height(3.dp))
                         Text(
-                            if (item.dropReason.isBlank()) "未推送" else "未推送 · ${item.dropReason}",
+                            when {
+                                !item.forwarded && reason.isBlank() -> "未推送"
+                                !item.forwarded -> "未推送 · $reason"
+                                else -> "已推送 · $reason"
+                            },
                             style = MaterialTheme.typography.labelMedium,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )

@@ -61,8 +61,25 @@ class BandPrefs(private val context: Context) {
         val DND_ENABLED = booleanPreferencesKey("dnd_enabled")
         val DND_START = intPreferencesKey("dnd_start")
         val DND_END = intPreferencesKey("dnd_end")
-        val KEYWORD_BLACKLIST = booleanPreferencesKey("keyword_blacklist")
-        val KEYWORDS = stringPreferencesKey("keywords")
+        /**
+         * **老版本**的关键词键：一个关键词列表 + 白/黑模式二选一。
+         * 现在关键词拆成白名单 / 黑名单两份（同时生效），这两个键不再写入，
+         * 只在读配置时用于把老数据搬到新键（见 keywordBlacklistRules / keywordWhitelistRules）。
+         */
+        val LEGACY_KEYWORD_BLACKLIST = booleanPreferencesKey("keyword_blacklist")
+        val LEGACY_KEYWORDS = stringPreferencesKey("keywords")
+
+        /** 关键词黑名单 / 白名单：每行 "关键词|包名,包名"（包名留空 = 全部应用）。 */
+        val KEYWORD_BLACKLIST_RULES = stringPreferencesKey("keyword_blacklist_rules")
+        val KEYWORD_WHITELIST = stringPreferencesKey("keyword_whitelist")
+
+        /**
+         * 敏感信息过滤：总开关（默认关）+ 内置识别（每行 "类型|开关|包名,包名"）
+         * + 自定义敏感词（每行 "词|包名,包名"）。
+         */
+        val SENSITIVE_ENABLED = booleanPreferencesKey("sensitive_enabled")
+        val SENSITIVE_BUILTIN = stringPreferencesKey("sensitive_builtin")
+        val SENSITIVE_CUSTOM = stringPreferencesKey("sensitive_custom")
 
         /** 应用名单模式：false = 白名单（名单内才转发），true = 黑名单（名单内不转发）。 */
         val APP_FILTER_BLACKLIST = booleanPreferencesKey("app_filter_blacklist")
@@ -356,19 +373,62 @@ class BandPrefs(private val context: Context) {
     val dndEnd: Flow<Int> = context.bandDataStore.data.map { it[Keys.DND_END] ?: 7 * 60 + 30 }
 
     /**
-     * 关键词模式：true = 黑名单（命中不转发），false = 白名单（命中才转发）。
-     * 默认黑名单 —— 关键词是「不想被吵」的排除项，比「必须命中才转发」更符合直觉。
+     * 关键词黑名单：命中（且规则作用于该应用）就不转发。
+     *
+     * 默认给一份出厂黑名单 —— 系统「短信正在运行，点按即可了解详情或停止应用」这类提示卡
+     * 就是靠它拦下的；用户只要动过关键词（哪怕删空）就照用户的来。
+     *
+     * 老版本是「单个关键词列表 + 白/黑模式二选一」，这里按老模式把老关键词搬到对应列表。
      */
-    val keywordBlacklist: Flow<Boolean> =
-        context.bandDataStore.data.map { it[Keys.KEYWORD_BLACKLIST] ?: true }
+    val keywordBlacklistRules: Flow<List<KeywordRule>> =
+        context.bandDataStore.data.map { prefs ->
+            when {
+                prefs.contains(Keys.KEYWORD_BLACKLIST_RULES) ->
+                    decodeKeywordRules(prefs[Keys.KEYWORD_BLACKLIST_RULES])
+
+                hasLegacyKeywords(prefs) ->
+                    if (prefs[Keys.LEGACY_KEYWORD_BLACKLIST] ?: true) {
+                        legacyBlacklistRules(prefs)
+                    } else {
+                        emptyList()
+                    }
+
+                else -> DemoData.defaultKeywordBlacklist()
+            }
+        }
+
+    /** 关键词白名单：命中才转发（只对规则生效的应用形成约束）。 */
+    val keywordWhitelistRules: Flow<List<KeywordRule>> =
+        context.bandDataStore.data.map { prefs ->
+            when {
+                prefs.contains(Keys.KEYWORD_WHITELIST) ->
+                    decodeKeywordRules(prefs[Keys.KEYWORD_WHITELIST])
+
+                hasLegacyKeywords(prefs) ->
+                    if (prefs[Keys.LEGACY_KEYWORD_BLACKLIST] ?: true) {
+                        emptyList()
+                    } else {
+                        legacyKeywordRules(prefs)
+                    }
+
+                else -> emptyList()
+            }
+        }
 
     /** 应用名单模式：true = 黑名单（名单内不转发，其余转发），默认白名单。 */
     val appFilterBlacklist: Flow<Boolean> =
         context.bandDataStore.data.map { it[Keys.APP_FILTER_BLACKLIST] ?: false }
 
-    /** 关键词列表，保持添加顺序。 */
-    val keywords: Flow<List<String>> =
-        context.bandDataStore.data.map { decodeLines(it[Keys.KEYWORDS]) }
+    /** 敏感信息过滤总开关，默认关 —— 要用户自己额外打开。 */
+    val sensitiveEnabled: Flow<Boolean> =
+        context.bandDataStore.data.map { it[Keys.SENSITIVE_ENABLED] ?: false }
+
+    /** 敏感信息规则：内置识别（缺的按默认补全）+ 自定义敏感词。 */
+    val sensitiveRules: Flow<List<SensitiveRule>> =
+        context.bandDataStore.data.map { prefs ->
+            decodeSensitiveBuiltin(prefs[Keys.SENSITIVE_BUILTIN]) +
+                decodeSensitiveCustom(prefs[Keys.SENSITIVE_CUSTOM])
+        }
 
     /** 同一应用 + 同一标题在 [dedupeSeconds] 内的重复通知只转发一次。 */
     val dedupeEnabled: Flow<Boolean> =
@@ -430,8 +490,12 @@ class BandPrefs(private val context: Context) {
         }
     }
 
-    suspend fun setKeywordBlacklist(blacklist: Boolean) {
-        context.bandDataStore.edit { it[Keys.KEYWORD_BLACKLIST] = blacklist }
+    suspend fun setKeywordBlacklistRules(rules: List<KeywordRule>) {
+        context.bandDataStore.edit { it[Keys.KEYWORD_BLACKLIST_RULES] = encodeKeywordRules(rules) }
+    }
+
+    suspend fun setKeywordWhitelistRules(rules: List<KeywordRule>) {
+        context.bandDataStore.edit { it[Keys.KEYWORD_WHITELIST] = encodeKeywordRules(rules) }
     }
 
     /** 切应用名单模式（白名单 / 黑名单）。 */
@@ -439,11 +503,17 @@ class BandPrefs(private val context: Context) {
         context.bandDataStore.edit { it[Keys.APP_FILTER_BLACKLIST] = blacklist }
     }
 
-    suspend fun setKeywords(keywords: List<String>) {
-        context.bandDataStore.edit { prefs ->
-            if (keywords.isEmpty()) prefs.remove(Keys.KEYWORDS)
-            else prefs[Keys.KEYWORDS] = keywords.joinToString("\n")
-        }
+    suspend fun setSensitiveEnabled(enabled: Boolean) {
+        context.bandDataStore.edit { it[Keys.SENSITIVE_ENABLED] = enabled }
+    }
+
+    /** 写内置敏感规则时必须四条全写 —— 缺的行解码时按默认（启用 + 全部应用）补回。 */
+    suspend fun setSensitiveBuiltin(rules: List<SensitiveRule>) {
+        context.bandDataStore.edit { it[Keys.SENSITIVE_BUILTIN] = encodeSensitiveBuiltin(rules) }
+    }
+
+    suspend fun setSensitiveCustom(rules: List<SensitiveRule>) {
+        context.bandDataStore.edit { it[Keys.SENSITIVE_CUSTOM] = encodeSensitiveCustom(rules) }
     }
 
     suspend fun setDedupe(enabled: Boolean, seconds: Int) {
@@ -549,6 +619,86 @@ class BandPrefs(private val context: Context) {
             // 第 4 列（showDetail）是后来加的：老数据只有 3 列，默认显示详细内容
             if (p.size !in 3..4) return@mapNotNull null
             AppRule(p[0], p[1], p[2] == "1", p.getOrNull(3) != "0")
+        }.toList()
+    }
+
+    // ---- 关键词 / 敏感信息规则的编解码 ----
+    // 一行一条，形如 "关键词|包名,包名"（包名留空 = 全部应用）。关键词里的 | 和 ,
+    // 写入前换成空格 —— 它们是分隔符，混进去会把整行解析歪。
+
+    private fun encodeKeywordRules(rules: List<KeywordRule>): String =
+        rules.joinToString("\n") { r ->
+            "${r.keyword.replace('|', ' ').replace(',', ' ')}|${r.packages.joinToString(",")}"
+        }
+
+    private fun decodeKeywordRules(raw: String?): List<KeywordRule> {
+        if (raw.isNullOrBlank()) return emptyList()
+        return raw.lineSequence().mapNotNull { line ->
+            val p = line.split('|')
+            val keyword = p.getOrNull(0)?.trim().orEmpty()
+            if (keyword.isEmpty()) return@mapNotNull null
+            KeywordRule(keyword, decodePackages(p.getOrNull(1)))
+        }.toList()
+    }
+
+    private fun decodePackages(raw: String?): List<String> =
+        raw?.split(',')?.map { it.trim() }?.filter { it.isNotEmpty() }.orEmpty()
+
+    // ---- 老数据迁移：旧版本「单个关键词列表 + 白/黑模式」→ 新的白/黑两份名单 ----
+
+    private fun hasLegacyKeywords(prefs: Preferences): Boolean =
+        decodeLines(prefs[Keys.LEGACY_KEYWORDS]).isNotEmpty()
+
+    private fun legacyKeywordRules(prefs: Preferences): List<KeywordRule> =
+        decodeLines(prefs[Keys.LEGACY_KEYWORDS]).map { KeywordRule(it) }
+
+    /**
+     * 老配置搬到黑名单时，顺带把出厂系统提示词并进去：老版本没有这份默认值，
+     * 升级上来的用户（可能早就自己加过几个词）也应该立刻摆脱「XX 正在运行」这类系统卡。
+     * 重复的词只留一份；之后用户自己删掉就是删掉了（删完会落盘，不再回落）。
+     */
+    private fun legacyBlacklistRules(prefs: Preferences): List<KeywordRule> {
+        val legacy = legacyKeywordRules(prefs)
+        val known = legacy.map { it.keyword.lowercase() }.toSet()
+        return legacy + DemoData.defaultKeywordBlacklist().filterNot { it.keyword.lowercase() in known }
+    }
+
+    // ---- 敏感信息规则 ----
+
+    private fun encodeSensitiveBuiltin(rules: List<SensitiveRule>): String =
+        rules.filter { it.kind != null }.joinToString("\n") { r ->
+            "${r.kind!!.name}|${if (r.enabled) 1 else 0}|${r.packages.joinToString(",")}"
+        }
+
+    /** 内置规则：键不存在、或某一行缺了，都按「启用 + 全部应用」补全，顺序固定按枚举走。 */
+    private fun decodeSensitiveBuiltin(raw: String?): List<SensitiveRule> {
+        val stored = raw?.lineSequence()?.mapNotNull { line ->
+            val p = line.split('|')
+            val kind = SensitiveKind.entries.firstOrNull { it.name == p.getOrNull(0)?.trim() }
+                ?: return@mapNotNull null
+            SensitiveRule(
+                kind = kind,
+                enabled = p.getOrNull(1)?.trim() != "0",
+                packages = decodePackages(p.getOrNull(2)),
+            )
+        }?.toList().orEmpty()
+        return SensitiveKind.entries.map { kind ->
+            stored.firstOrNull { it.kind == kind } ?: SensitiveRule(kind = kind)
+        }
+    }
+
+    private fun encodeSensitiveCustom(rules: List<SensitiveRule>): String =
+        rules.filter { it.kind == null && it.keyword.isNotBlank() }.joinToString("\n") { r ->
+            "${r.keyword.replace('|', ' ').replace(',', ' ')}|${r.packages.joinToString(",")}"
+        }
+
+    private fun decodeSensitiveCustom(raw: String?): List<SensitiveRule> {
+        if (raw.isNullOrBlank()) return emptyList()
+        return raw.lineSequence().mapNotNull { line ->
+            val p = line.split('|')
+            val keyword = p.getOrNull(0)?.trim().orEmpty()
+            if (keyword.isEmpty()) return@mapNotNull null
+            SensitiveRule(keyword = keyword, packages = decodePackages(p.getOrNull(1)))
         }.toList()
     }
 
