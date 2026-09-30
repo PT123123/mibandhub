@@ -6,7 +6,8 @@
 >
 > 相关代码：`app/src/main/java/com/ted/shouhuan/proto/BandSettings.kt`（字节构造）、
 > `BandSession.applyXxx()`（下发）、`service/BandService.kt`（连接后整套推送 +
-> 手机电量提醒）、`ui/device/DeviceScreen.kt`（设备页 UI）、
+> 手机电量提醒）、`ui/device/DeviceScreen.kt`（设备页目录）+
+> `ui/device/DeviceSubPages.kt`（手环设置 / 菜单顺序 / 快捷方式 / 手机提醒等子页面 UI）、
 > `data/BandPrefs.kt`（偏好存储）。
 
 ## 1. 功能清单（对齐 Notify for Mi Band 的能力面）

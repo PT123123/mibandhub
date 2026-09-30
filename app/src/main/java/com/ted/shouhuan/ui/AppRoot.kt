@@ -29,8 +29,18 @@ import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
+import com.ted.shouhuan.ui.device.DeviceBandSettingsPage
+import com.ted.shouhuan.ui.device.DeviceBatteryPage
+import com.ted.shouhuan.ui.device.DeviceConnectPage
+import com.ted.shouhuan.ui.device.DeviceMenuPage
+import com.ted.shouhuan.ui.device.DevicePairPage
+import com.ted.shouhuan.ui.device.DeviceRemindPage
+import com.ted.shouhuan.ui.device.DeviceRoutes
 import com.ted.shouhuan.ui.device.DeviceScreen
+import com.ted.shouhuan.ui.device.DeviceShortcutPage
+import com.ted.shouhuan.ui.device.DeviceSyncPage
 import com.ted.shouhuan.ui.device.DeviceViewModel
+import com.ted.shouhuan.ui.device.DeviceWidgetPage
 import com.ted.shouhuan.ui.device.PairingScreen
 import com.ted.shouhuan.ui.heart.HeartRateScreen
 import com.ted.shouhuan.ui.heart.HeartRateViewModel
@@ -39,8 +49,17 @@ import com.ted.shouhuan.ui.home.HomeViewModel
 import com.ted.shouhuan.ui.market.BrowserScreen
 import com.ted.shouhuan.ui.market.MarketScreen
 import com.ted.shouhuan.ui.market.MarketViewModel
+import com.ted.shouhuan.ui.notify.NotifyAppsPage
+import com.ted.shouhuan.ui.notify.NotifyDedupePage
+import com.ted.shouhuan.ui.notify.NotifyDndPage
+import com.ted.shouhuan.ui.notify.NotifyForwardPage
+import com.ted.shouhuan.ui.notify.NotifyKeywordPage
+import com.ted.shouhuan.ui.notify.NotifyRoutes
 import com.ted.shouhuan.ui.notify.NotifyScreen
+import com.ted.shouhuan.ui.notify.NotifySensitivePage
+import com.ted.shouhuan.ui.notify.NotifyTestPage
 import com.ted.shouhuan.ui.notify.NotifyViewModel
+import com.ted.shouhuan.ui.notify.NotifyVibrationPage
 import com.ted.shouhuan.ui.notify.RecentNotificationsScreen
 import com.ted.shouhuan.ui.notify.RecentNotificationsViewModel
 import com.ted.shouhuan.ui.sleep.SleepScreen
@@ -118,7 +137,11 @@ fun AppRoot(initialRoute: String? = null, externalRoute: String? = null) {
                 tonalElevation = 0.dp,
             ) {
                 Tabs.forEach { tab ->
-                    val selected = current?.hierarchy?.any { it.route == tab.route } == true
+                    // 子页面（notify-forward / device-band 这类）也算在所属 tab 上：
+                    // 推进子页面后底栏仍然高亮那一格，不然会以为自己哪儿都不在。
+                    val selected = current?.hierarchy?.any {
+                        it.route == tab.route || it.route?.startsWith("${tab.route}-") == true
+                    } == true
                     NavigationBarItem(
                         selected = selected,
                         onClick = {
@@ -151,8 +174,19 @@ fun AppRoot(initialRoute: String? = null, externalRoute: String? = null) {
             composable("home") { HomeScreen(homeVm) }
             composable("heart") { HeartRateScreen(heartVm) }
             composable("sleep") { SleepScreen(sleepVm) }
-            composable("notify") { NotifyScreen(notifyVm, onOpenRecentNotifications = { nav.navigate("recent-notifications") }) }
-            composable("recent-notifications") {
+            composable("notify") {
+                NotifyScreen(notifyVm, onNavigate = { route -> nav.navigate(route) { launchSingleTop = true } })
+            }
+            // 通知 tab 的子页面：目录上点一下才进得来，返回一律 pop 回目录。
+            composable(NotifyRoutes.FORWARD) { NotifyForwardPage(notifyVm) { nav.popBackStack() } }
+            composable(NotifyRoutes.TEST) { NotifyTestPage(notifyVm) { nav.popBackStack() } }
+            composable(NotifyRoutes.DND) { NotifyDndPage(notifyVm) { nav.popBackStack() } }
+            composable(NotifyRoutes.KEYWORD) { NotifyKeywordPage(notifyVm) { nav.popBackStack() } }
+            composable(NotifyRoutes.SENSITIVE) { NotifySensitivePage(notifyVm) { nav.popBackStack() } }
+            composable(NotifyRoutes.DEDUPE) { NotifyDedupePage(notifyVm) { nav.popBackStack() } }
+            composable(NotifyRoutes.VIBRATION) { NotifyVibrationPage(notifyVm) { nav.popBackStack() } }
+            composable(NotifyRoutes.APPS) { NotifyAppsPage(notifyVm) { nav.popBackStack() } }
+            composable(NotifyRoutes.RECENT) {
                 RecentNotificationsScreen(
                     vm = recentNotificationsVm,
                     onBack = { nav.popBackStack() },
@@ -179,10 +213,29 @@ fun AppRoot(initialRoute: String? = null, externalRoute: String? = null) {
                 BrowserScreen(onBack = { nav.popBackStack() })
             }
             composable("device") {
-                DeviceScreen(deviceVm, onPair = { nav.navigate("pairing") { launchSingleTop = true } })
+                DeviceScreen(deviceVm, onNavigate = { route -> nav.navigate(route) { launchSingleTop = true } })
             }
-            // 配对页不是 tab，从设备页推上来；存完就 pop 回去。
-            composable("pairing") { PairingScreen(deviceVm, onDone = { nav.popBackStack() }) }
+            // 设备 tab 的子页面：手环设置 / 菜单顺序 / 快捷方式 / 手机提醒等，
+            // 目录上点一下才进得来，返回一律 pop 回目录。
+            composable(DeviceRoutes.CONNECT) { DeviceConnectPage(deviceVm) { nav.popBackStack() } }
+            composable(DeviceRoutes.BATTERY) { DeviceBatteryPage(deviceVm) { nav.popBackStack() } }
+            composable(DeviceRoutes.SYNC) { DeviceSyncPage(deviceVm) { nav.popBackStack() } }
+            composable(DeviceRoutes.BAND) { DeviceBandSettingsPage(deviceVm) { nav.popBackStack() } }
+            composable(DeviceRoutes.MENU) { DeviceMenuPage(deviceVm) { nav.popBackStack() } }
+            composable(DeviceRoutes.SHORTCUT) { DeviceShortcutPage(deviceVm) { nav.popBackStack() } }
+            composable(DeviceRoutes.REMIND) { DeviceRemindPage(deviceVm) { nav.popBackStack() } }
+            composable(DeviceRoutes.WIDGET) { DeviceWidgetPage { nav.popBackStack() } }
+            composable(DeviceRoutes.PAIR) {
+                DevicePairPage(
+                    vm = deviceVm,
+                    onPair = { nav.navigate(DeviceRoutes.PAIRING_FORM) { launchSingleTop = true } },
+                    onBack = { nav.popBackStack() },
+                )
+            }
+            // 配对表单不是独立 tab，从配对子页面推上来；存完就 pop 回去。
+            composable(DeviceRoutes.PAIRING_FORM) {
+                PairingScreen(deviceVm, onDone = { nav.popBackStack() })
+            }
         }
     }
 }
