@@ -316,10 +316,15 @@ private fun NotificationItem(
                     color = MaterialTheme.colorScheme.onSurface,
                 )
             }
-            if (!item.forwarded) {
+            val reason = item.dropReason
+            if (!item.forwarded || reason.isNotBlank()) {
                 Spacer(Modifier.height(3.dp))
                 Text(
-                    if (item.dropReason.isBlank()) "未推送" else "未推送 · ${item.dropReason}",
+                    when {
+                        !item.forwarded && reason.isBlank() -> "未推送"
+                        !item.forwarded -> "未推送 · $reason"
+                        else -> "已推送 · $reason"
+                    },
                     style = MaterialTheme.typography.labelMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )

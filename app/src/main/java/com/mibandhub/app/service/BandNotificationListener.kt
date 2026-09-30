@@ -195,22 +195,39 @@ class BandNotificationListener : NotificationListenerService() {
             }
         }
 
-        // ---- 关键词过滤 ----
-        val keywordList = prefs.keywords.first()
-        if (keywordList.isNotEmpty()) {
-            val blacklist = prefs.keywordBlacklist.first()
-            val hit = keywordList.any { kw ->
-                title.contains(kw, ignoreCase = true) || body.contains(kw, ignoreCase = true)
+        // ---- 内容过滤（关键词 + 敏感信息）：命中不整条丢，只把正文藏起来 ----
+        // 用户要求「全部都要保留标题」：命中过滤时标题照推、正文不上手环 ——
+        // 手环上还是一次提醒，噪音文字 / 敏感内容不落到手腕上。
+        // 判定顺序：关键词黑名单 → 关键词白名单（未命中）→ 敏感信息，先命中先定原因。
+        var bodyHiddenReason: String? = null
+
+        // 黑名单：命中就只推标题。每条规则可限定生效应用（packages 空 = 全部应用），
+        // 所以先按包名筛出「适用于这个应用的」规则再判命中。
+        val blacklistHit = prefs.keywordBlacklistRules.first()
+            .firstOrNull { it.appliesTo(pkg) && it.hits(title, body) }
+        if (blacklistHit != null) {
+            Log.d(TAG, "命中关键词黑名单「${blacklistHit.keyword}」：只推标题")
+            bodyHiddenReason = "正文已隐藏（命中关键词黑名单：${blacklistHit.keyword}）"
+        }
+
+        // 白名单：只要这个应用有生效的白名单规则，未命中就只推标题；
+        // 一条白名单规则都没覆盖到它时不受约束（避免把整个应用误伤掉）。
+        if (bodyHiddenReason == null) {
+            val whitelistForApp = prefs.keywordWhitelistRules.first().filter { it.appliesTo(pkg) }
+            if (whitelistForApp.isNotEmpty() && whitelistForApp.none { it.hits(title, body) }) {
+                Log.d(TAG, "未命中关键词白名单：只推标题")
+                bodyHiddenReason = "正文已隐藏（未命中关键词白名单）"
             }
-            if (blacklist && hit) {
-                Log.d(TAG, "命中关键词黑名单，跳过")
-                recordDropped(pkg, title, body, "命中关键词黑名单")
-                return
-            }
-            if (!blacklist && !hit) {
-                Log.d(TAG, "未命中关键词白名单，跳过")
-                recordDropped(pkg, title, body, "未命中关键词白名单")
-                return
+        }
+
+        // 敏感信息：内置识别（可逐条开关）+ 自定义敏感词。
+        if (bodyHiddenReason == null && prefs.sensitiveEnabled.first()) {
+            val sensitiveText = "$title\n$body"
+            val sensitiveHit = prefs.sensitiveRules.first()
+                .firstOrNull { it.enabled && it.appliesTo(pkg) && it.hits(sensitiveText) }
+            if (sensitiveHit != null) {
+                Log.d(TAG, "命中敏感信息「${sensitiveHit.label}」：只推标题")
+                bodyHiddenReason = "正文已隐藏（命中敏感信息：${sensitiveHit.label}）"
             }
         }
 
@@ -231,8 +248,11 @@ class BandNotificationListener : NotificationListenerService() {
         // ---- 组装要推的内容（应用名 + 标题 + 正文，全量照发）----
         val appLabel = resolveAppLabel(pkg)
 
-        // ---- 应用级「详细内容」开关：该应用关掉了就只推标题，正文不上手环 ----
-        val effectiveBody = if (rule != null && !rule.showDetail) "" else body
+        // ---- 正文是否要藏起来：应用级「详细内容」开关关了，或者命中了内容过滤 ----
+        val appHidesBody = rule != null && !rule.showDetail
+        val effectiveBody = if (appHidesBody || bodyHiddenReason != null) "" else body
+        // 藏了正文就在「最近推送」里说明原因（已推送的通知也带原因）
+        val hideNote = bodyHiddenReason ?: if (appHidesBody) "正文未推送（该应用只推标题）" else ""
 
         // ---- 振动档位 → 告警类别（手环按类别存的振动模式来震）----
         val alertCategory = Notify.alertCategoryFor(prefs.notifyVibration.first())
@@ -256,15 +276,18 @@ class BandNotificationListener : NotificationListenerService() {
             BandNotification(
                 appName = appLabel,
                 title = title.ifBlank { "(无标题)" },
-                body = effectiveBody,
+                // 命中内容过滤时正文照存 —— 「最近推送」要能看出到底哪句话被藏了；
+                // 应用级「只推标题」是隐私设置，正文本来就不进日志。
+                body = if (bodyHiddenReason != null) body else effectiveBody,
                 timeLabel = timeLabel,
                 forwarded = sent,
                 packageName = pkg,
+                dropReason = hideNote,
             ),
         )
 
         Log.d(TAG, "通知${if (sent) "已转发" else "转发失败"}：$appLabel / ${title.take(40)}" +
-            if (rule != null && !rule.showDetail) "（该应用仅标题）" else "")
+            if (hideNote.isBlank()) "" else "（$hideNote）")
     }
 
     /**
