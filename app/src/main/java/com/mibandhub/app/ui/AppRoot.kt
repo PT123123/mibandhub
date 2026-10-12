@@ -54,6 +54,7 @@ import com.mibandhub.app.ui.notify.NotifyDedupePage
 import com.mibandhub.app.ui.notify.NotifyDndPage
 import com.mibandhub.app.ui.notify.NotifyForwardPage
 import com.mibandhub.app.ui.notify.NotifyKeywordPage
+import com.mibandhub.app.ui.notify.NotifyConflictPage
 import com.mibandhub.app.ui.notify.NotifyRoutes
 import com.mibandhub.app.ui.notify.NotifyScreen
 import com.mibandhub.app.ui.notify.NotifySensitivePage
@@ -186,6 +187,7 @@ fun AppRoot(initialRoute: String? = null, externalRoute: String? = null) {
             composable(NotifyRoutes.DEDUPE) { NotifyDedupePage(notifyVm) { nav.popBackStack() } }
             composable(NotifyRoutes.VIBRATION) { NotifyVibrationPage(notifyVm) { nav.popBackStack() } }
             composable(NotifyRoutes.APPS) { NotifyAppsPage(notifyVm) { nav.popBackStack() } }
+            composable(NotifyRoutes.CONFLICT) { NotifyConflictPage(notifyVm) { nav.popBackStack() } }
             composable(NotifyRoutes.RECENT) {
                 RecentNotificationsScreen(
                     vm = recentNotificationsVm,

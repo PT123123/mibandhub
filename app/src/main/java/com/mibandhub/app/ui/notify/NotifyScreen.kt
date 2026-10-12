@@ -38,6 +38,7 @@ object NotifyRoutes {
     const val VIBRATION = "notify-vibration"
     const val APPS = "notify-apps"
     const val RECENT = "recent-notifications"
+    const val CONFLICT = "notify-conflict"
 }
 
 /**
@@ -68,9 +69,13 @@ fun NotifyScreen(
     val vibration by vm.vibration.collectAsStateWithLifecycle()
     val appRules by vm.appRules.collectAsStateWithLifecycle()
     val recent by vm.recent.collectAsStateWithLifecycle()
+    val conflicts by vm.conflictApps.collectAsStateWithLifecycle()
 
     // 每次进入页面都刷新一次权限状态（从系统设置授权回来也能看到最新状态）
-    LaunchedEffect(Unit) { vm.refreshNotifyPermission() }
+    LaunchedEffect(Unit) {
+        vm.refreshNotifyPermission()
+        vm.refreshConflicts()
+    }
 
     Column(
         Modifier
@@ -191,6 +196,21 @@ fun NotifyScreen(
             subtitle = "${if (appFilterBlacklist) "黑名单" else "白名单"}模式 · ${appRules.size} 个应用",
             accent = NotifyAmber,
             onClick = { onNavigate(NotifyRoutes.APPS) },
+        )
+        Spacer(Modifier.height(10.dp))
+
+        // ---- 转发冲突检测：别的 App 是否也在转发通知 ----
+        val conflictCount = conflicts.count { it.conflict }
+        NavRow(
+            title = "转发冲突检测",
+            subtitle = if (conflictCount > 0) {
+                "$conflictCount 个应用也在转发通知到手环"
+            } else {
+                "未发现其他转发应用"
+            },
+            badge = if (conflictCount > 0) "$conflictCount" else "正常",
+            accent = if (conflictCount > 0) PulseRed else NotifyAmber,
+            onClick = { onNavigate(NotifyRoutes.CONFLICT) },
         )
         Spacer(Modifier.height(10.dp))
 

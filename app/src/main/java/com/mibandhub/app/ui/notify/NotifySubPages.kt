@@ -1195,3 +1195,115 @@ private fun AppScopePicker(
         }
     }
 }
+
+// ---------------------------------------------------------------------------
+// 转发冲突检测
+// ---------------------------------------------------------------------------
+
+/**
+ * 转发冲突检测页：扫描已知会往手环转发通知的第三方 App
+ * （小米运动健康、Gadgetbridge 等）是否安装、是否授权了通知监听。
+ *
+ * 这些 App 会绕过本 App 的过滤规则、独立把手环通知推上去，
+ * 正是「没加白名单却收到 / 重复推送」的常见元凶。
+ */
+@Composable
+fun NotifyConflictPage(vm: NotifyViewModel, onBack: () -> Unit) {
+    val context = LocalContext.current
+    val conflicts by vm.conflictApps.collectAsStateWithLifecycle()
+    LaunchedEffect(Unit) { vm.refreshConflicts() }
+
+    SubPage("转发冲突检测", onBack) {
+        NoticeBanner(
+            title = "什么是转发冲突？",
+            tone = NotifyAmber,
+            detail = "小米手环允许被多个 App 同时连接。如果手机上还装着别的会转发通知的 App" +
+                "（如小米运动健康、Gadgetbridge），它们会绕过本 App 的过滤规则，" +
+                "独立把通知（含安全中心警告等）推到手环，造成重复或漏拦。",
+        )
+        Spacer(Modifier.height(12.dp))
+
+        conflicts.forEach { app ->
+            ConflictAppCard(app = app, onOpenSettings = {
+                context.startActivity(vm.notifyListenerSettingsIntent())
+            })
+            Spacer(Modifier.height(10.dp))
+        }
+
+        if (conflicts.none { it.conflict }) {
+            Spacer(Modifier.height(4.dp))
+            Text(
+                "未发现其他转发应用。手环收到的通知应该都来自本 App。",
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+    }
+}
+
+@Composable
+private fun ConflictAppCard(
+    app: NotifyViewModel.ConflictApp,
+    onOpenSettings: () -> Unit,
+) {
+    val tone = when {
+        app.conflict && app.target.risky -> PulseRed
+        app.conflict -> NotifyAmber
+        else -> MaterialTheme.colorScheme.outline
+    }
+    SectionCard(title = app.label, accent = tone) {
+        KeyValueRow(key = "包名", value = app.target.packageName)
+        KeyValueRow(
+            key = "是否已安装",
+            value = if (app.installed) "已安装" else "未安装",
+            valueColor = if (app.installed) {
+                MaterialTheme.colorScheme.onSurface
+            } else {
+                MaterialTheme.colorScheme.onSurfaceVariant
+            },
+        )
+        KeyValueRow(
+            key = "是否授权通知监听",
+            value = if (app.installed && app.listenerEnabled) "已授权" else "未授权",
+            valueColor = if (app.installed && app.listenerEnabled) {
+                PulseRed
+            } else {
+                MaterialTheme.colorScheme.onSurfaceVariant
+            },
+        )
+        Spacer(Modifier.height(8.dp))
+        Text(
+            app.target.role,
+            style = MaterialTheme.typography.labelMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        if (app.conflict) {
+            Spacer(Modifier.height(10.dp))
+            val detail = if (app.target.risky) {
+                "它正在把通知转发到手环，可能正是「没加白名单却收到 / 重复推送」的来源。" +
+                    "建议到系统「通知使用权」里关闭它的开关，只保留手环管家。"
+            } else {
+                "它已授权通知监听，但通常不会把手环作为通知同步目标。" +
+                    "如果你不希望它读取通知，也可以到系统设置里关闭。"
+            }
+            NoticeBanner(
+                title = if (app.target.risky) "检测到转发冲突" else "已授权通知监听",
+                tone = tone,
+                detail = detail,
+                action = {
+                    Spacer(Modifier.height(10.dp))
+                    Button(
+                        onClick = onOpenSettings,
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = tone,
+                            contentColor = MaterialTheme.colorScheme.onPrimary,
+                        ),
+                        shape = RoundedCornerShape(12.dp),
+                    ) {
+                        Text("去系统设置关闭")
+                    }
+                },
+            )
+        }
+    }
+}

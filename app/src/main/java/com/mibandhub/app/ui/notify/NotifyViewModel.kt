@@ -8,6 +8,7 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Build
 import android.provider.Settings
+import androidx.core.app.NotificationManagerCompat
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
@@ -197,6 +198,79 @@ class NotifyViewModel(app: Application) : AndroidViewModel(app) {
             general
         } else {
             Intent(Settings.ACTION_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        }
+    }
+
+    // ---------------------------------------------------------------------------
+    // 转发冲突检测：别的 App 是否也在把手环通知转发到手环
+    // ---------------------------------------------------------------------------
+
+    /** 已知的、可能把手环通知也转发的第三方 App（用户明确点名了小米运动健康与 Gadgetbridge）。 */
+    data class ConflictTarget(
+        val packageName: String,
+        val labelHint: String,
+        val role: String,
+        /** 已知会把通知同步到手环（true）= 高概率就是重复/漏拦推送的元凶。 */
+        val risky: Boolean,
+    )
+
+    /** 某个候选 App 在本机上的实测状态。 */
+    data class ConflictApp(
+        val target: ConflictTarget,
+        val installed: Boolean,
+        val label: String,
+        val listenerEnabled: Boolean,
+    ) {
+        /** 已安装 + 已授权通知监听 = 它确实有能力独立转发通知到手环。 */
+        val conflict: Boolean get() = installed && listenerEnabled
+    }
+
+    private val KNOWN_FORWARDERS = listOf(
+        ConflictTarget(
+            "com.mi.health",
+            "小米运动健康",
+            "小米官方 App，内置把手环通知同步到手环的服务（NotifySyncService）。",
+            risky = true,
+        ),
+        ConflictTarget(
+            "nodomain.freeyourgadget.gadgetbridge",
+            "Gadgetbridge",
+            "开源手环管理工具，会按自己的规则把手机通知转发到手环。",
+            risky = true,
+        ),
+        ConflictTarget(
+            "com.xiaomi.barrage",
+            "小米妙享",
+            "系统级跨设备通知同步（手机→平板/电视），一般不把手环作为同步目标。",
+            risky = false,
+        ),
+    )
+
+    /** 已知的、会往手环转发通知的其他 App 的实测状态（安装 + 监听授权）。 */
+    private val _conflictApps = MutableStateFlow(scanConflictApps(getApplication()))
+    val conflictApps: StateFlow<List<ConflictApp>> = _conflictApps.asStateFlow()
+
+    /** 从系统设置返回或进页面时调一次，刷新冲突检测结果。 */
+    fun refreshConflicts() {
+        _conflictApps.value = scanConflictApps(getApplication())
+    }
+
+    private fun scanConflictApps(app: Application): List<ConflictApp> {
+        val pm = app.packageManager
+        val enabled = NotificationManagerCompat.getEnabledListenerPackages(app)
+        return KNOWN_FORWARDERS.map { t ->
+            val (installed, label) = try {
+                val ai = pm.getApplicationInfo(t.packageName, 0)
+                true to pm.getApplicationLabel(ai).toString()
+            } catch (_: PackageManager.NameNotFoundException) {
+                false to t.labelHint
+            }
+            ConflictApp(
+                target = t,
+                installed = installed,
+                label = label,
+                listenerEnabled = installed && enabled.contains(t.packageName),
+            )
         }
     }
 
