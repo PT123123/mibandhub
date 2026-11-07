@@ -41,9 +41,24 @@ class BandNotificationListener : NotificationListenerService() {
 
     private val TAG = "BandNotifyListener"
 
-    private companion object {
+    companion object {
         /** 同一条丢弃（包名+标题+原因相同）记录进「最近推送」的最小间隔。 */
         const val DROP_RECORD_THROTTLE_MS = 60_000L
+
+        /**
+         * 本进程里这个监听器有没有真的被系统创建过（时间戳，0 = 从没起来）。
+         *
+         * 为什么需要它：ColorOS / 部分国产 ROM 会出现「设置里已授权，但系统就是不
+         * 绑定监听服务」的情况 —— 授权状态为真，一条通知却永远收不到，光看
+         * enabled_notification_listeners 完全看不出问题。系统一旦绑定本服务就会
+         * 走到 [onCreate]，所以用「进程活着却没有实例」就能把这种假授权揪出来。
+         *
+         * 同进程共享（监听器与界面在同一个 App 进程），进程重启自然清零。
+         */
+        @Volatile
+        @JvmStatic
+        var instantiatedAt: Long = 0
+            private set
     }
 
     private lateinit var prefs: BandPrefs
@@ -70,6 +85,7 @@ class BandNotificationListener : NotificationListenerService() {
 
     override fun onCreate() {
         super.onCreate()
+        instantiatedAt = System.currentTimeMillis()
         prefs = BandPrefs(this)
         session = BandSessionProvider.get(this)
     }

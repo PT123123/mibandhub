@@ -84,6 +84,7 @@ import com.mibandhub.app.widget.SleepDetailWidgetProvider
 import com.mibandhub.app.widget.SleepHeartWidgetProvider
 import com.mibandhub.app.widget.SleepWidgetProvider
 import com.mibandhub.app.widget.hasShortcutPermission
+import com.mibandhub.app.widget.isColorOs
 import com.mibandhub.app.widget.isMiui
 import com.mibandhub.app.widget.openAppSettings
 import com.mibandhub.app.widget.pinWidgetToHome
@@ -1186,7 +1187,7 @@ private fun WidgetAddCard() {
     // 点击「添加到桌面」：小米上先确保「桌面快捷方式」权限再钉，别家直接钉。
     fun onAdd(provider: Class<out AppWidgetProvider>) {
         pendingProvider = provider
-        if (isMiui() && !hasShortcutPermission(context)) {
+        if ((isMiui() || isColorOs()) && !hasShortcutPermission(context)) {
             shortcutPermLauncher.launch(
                 arrayOf(MIUI_HOME_SHORTCUT_PERMISSION, LAUNCHER_SHORTCUT_PERMISSION),
             )

@@ -29,6 +29,11 @@
 
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
+    <!-- Android 15+：targetSdk 35 的应用要用通知监听，必须单独拿到「敏感通知」权限，
+         否则来电、验证码这类通知会被系统整条拦掉（普通聊天通知不受影响）。
+         不申请的表现是「偶尔有通知不上手环」，很容易被当成偶发问题。 -->
+    <uses-permission android:name="android.permission.RECEIVE_SENSITIVE_NOTIFICATIONS" />
+
     <!-- 配对页「扫码填入」：扫码自动填 MAC/AuthKey。运行时申请；没有相机也能
          装 App，只是扫码功能不可用（仍可手动输入）。 -->
     <uses-permission android:name="android.permission.CAMERA" />
@@ -58,6 +63,8 @@
     <uses-permission android:name="android.permission.health.READ_SLEEP" />
 
     <uses-permission android:name="android.permission.INTERNET" />
+    <!-- 局域网中转：申请组播锁，保证能收到桌面端 health-motion 的 UDP 组播宣告（否则很多设备会丢组播包）。 -->
+    <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
@@ -73,9 +80,13 @@
         </intent>
     </queries>
 
+    <!-- 局域网中转用的是 http://（同一 WiFi 内点对点，不上云）。Android 9+ 默认
+         禁止明文 HTTP，不开这条会让 POST /api/health-motion/v1/push 直接抛
+         "Cleartext HTTP traffic to <IP> not permitted"，同步静默失败。 -->
     <application
         android:name=".ShouhuanApp"
         android:allowBackup="false"
+        android:usesCleartextTraffic="true"
         android:icon="@mipmap/ic_launcher"
         android:label="@string/app_name"
         android:roundIcon="@mipmap/ic_launcher_round"
@@ -166,12 +177,15 @@
 
         <!-- 桌面控件：主控件「昨晚睡眠」（2×2，可拉大）+ 两个原生控件
              （1×1 睡眠时长 / 1×2 睡眠+心率曲线）。统一走原生 AppWidget 路径，
-             澎湃OS 桌面上从「添加小部件 → 安卓小组件」分类按「手环管家」分组找。
-             都是标准 RemoteViews，系统投递的 APPWIDGET_UPDATE 就够用，
-             exported=false 即可（系统以 SYSTEM_UID 发广播，不受 exported 限制）。 -->
+             澎湃OS/ColorOS 桌面上从「添加小部件 → 小部件/安卓小组件」分类按「手环管家」分组找。
+             标准 RemoteViews，系统投递的 APPWIDGET_UPDATE 就够用。
+             注意：exported 必须 true —— 国产桌面（ColorOS/MIUI/EMUI 等）的 launcher
+             要以自身进程绑定 provider 来读预览、列组件库，exported=false 时绑定被拒，
+             控件直接不出现在列表里（声明完全正确也列不出来）。这个标记只决定别的 App
+             能否给它发广播，AppWidgetProvider 只处理系统派的 APPWIDGET_* 动作，无实质风险。 -->
         <receiver
             android:name=".widget.SleepWidgetProvider"
-            android:exported="false"
+            android:exported="true"
             android:label="@string/widget_sleep_label">
             <intent-filter>
                 <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
@@ -183,7 +197,7 @@
 
         <receiver
             android:name=".widget.SleepHeartWidgetProvider"
-            android:exported="false"
+            android:exported="true"
             android:label="@string/widget_sleep_hr_label">
             <intent-filter>
                 <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
@@ -202,7 +216,7 @@
              声明了它控件内容才能跟着刷新。 -->
         <receiver
             android:name=".widget.SleepDetailWidgetProvider"
-            android:exported="false"
+            android:exported="true"
             android:label="@string/widget_sleep_detail_label">
             <intent-filter>
                 <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />

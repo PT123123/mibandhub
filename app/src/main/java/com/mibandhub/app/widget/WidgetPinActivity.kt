@@ -22,7 +22,7 @@ class WidgetPinActivity : Activity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        if (isMiui() && !hasShortcutPermission(this)) {
+        if ((isMiui() || isColorOs()) && !hasShortcutPermission(this)) {
             requestPermissions(
                 arrayOf(MIUI_HOME_SHORTCUT_PERMISSION, LAUNCHER_SHORTCUT_PERMISSION),
                 REQ_SHORTCUT_PERMISSION,

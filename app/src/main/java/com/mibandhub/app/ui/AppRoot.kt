@@ -8,6 +8,7 @@ import androidx.compose.material.icons.rounded.MonitorHeart
 import androidx.compose.material.icons.rounded.Notifications
 import androidx.compose.material.icons.rounded.Wallpaper
 import androidx.compose.material.icons.rounded.Watch
+import androidx.compose.material.icons.rounded.Sync
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.NavigationBar
@@ -67,6 +68,8 @@ import com.mibandhub.app.ui.sleep.SleepScreen
 import com.mibandhub.app.ui.sleep.SleepViewModel
 import com.mibandhub.app.ui.watchface.WatchFaceScreen
 import com.mibandhub.app.ui.watchface.WatchFaceViewModel
+import com.mibandhub.app.relay.RelayViewModel
+import com.mibandhub.app.relay.ui.RelayScreen
 
 private data class Tab(val route: String, val label: String, val icon: ImageVector)
 
@@ -77,6 +80,7 @@ private val Tabs = listOf(
     Tab("notify", "通知", Icons.Rounded.Notifications),
     Tab("watchface", "表盘", Icons.Rounded.Wallpaper),
     Tab("device", "设备", Icons.Rounded.Watch),
+    Tab("relay", "中转", Icons.Rounded.Sync),
 )
 
 /**
@@ -129,6 +133,9 @@ fun AppRoot(initialRoute: String? = null, externalRoute: String? = null) {
 
     // 首页：全部数据来自共享会话与存储，提到这里切 tab 不重算
     val homeVm: HomeViewModel = viewModel()
+
+    // 数据中转：发现局域网中转、后台同步、日志；进程级单例，切 tab 不丢状态
+    val relayVm: RelayViewModel = viewModel()
 
     Scaffold(
         containerColor = MaterialTheme.colorScheme.background,
@@ -238,6 +245,8 @@ fun AppRoot(initialRoute: String? = null, externalRoute: String? = null) {
             composable(DeviceRoutes.PAIRING_FORM) {
                 PairingScreen(deviceVm, onDone = { nav.popBackStack() })
             }
+            // 数据中转：独立的底部 tab，发现节点 / 后台同步 / 日志都在这一页
+            composable("relay") { RelayScreen(relayVm) }
         }
     }
 }

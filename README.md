@@ -15,6 +15,7 @@
 | `app/src/main/java/com/mibandhub/app/proto/` | 协议层：认证握手、心率指令、电量、表盘下发 |
 | `app/src/main/java/com/mibandhub/app/data/` | 本地存储（密钥/MAC）与数据模型 |
 | `app/src/main/java/com/mibandhub/app/service/` | 前台服务 + 通知监听 |
+| `app/src/main/java/com/mibandhub/app/relay/` | 数据中转：把本地手环数据同步到桌面端 health-motion（见「数据中转」一节） |
 | `xiaomi_authkey.py` / `parse_log.py` | 取 AuthKey 的工具（配对时要用，见文末附录） |
 | `tools/` | adb 直连取密钥、装机、打包等脚本 |
 
@@ -241,6 +242,109 @@ App 连手环只需要两样东西：**手环的 MAC** 和 **AuthKey**（32 位�
   不在主线程阻塞读 DataStore。
 - 文字用平台 autoSize（minSdk 26 原生支持，远程视图里可用），五列网格的窄格子
   里「7小时12分」会自动缩字，不会截断；卡片底是近黑半透明圆角，深浅壁纸共用。
+
+## 数据中转：对接桌面端 health-motion（局域网同步）
+
+`relay/` 包把手环数据（睡眠 / 心率 / 测量 / 通知）打包后送进电脑上的
+**健康运动 / health-motion**（Rust + GPUI 桌面端，仓库 `vigorhub`）。
+设计参考了 **LocalSend 的 UDP 组播发现** 与 **Quire 的自托管伴随服务器**：
+不经过任何云端，只在同一个 WiFi 里点对点传。
+
+### 两端分工（手机是双角色）
+
+```
+手机 relay（主动）── POST /api/health-motion/v1/push ──▶ 桌面 hub :18765
+手机 LanRelayServer :随机端口 ◀── GET /api/health-motion/v1/snapshot ── 桌面「拉取」
+手机 ⇄ 桌面：UDP 组播 224.0.0.167:53317 互报 {alias, device_type, port, fingerprint}
+```
+
+- **主动推送**：`LanRelayTransport` 组播扫桌面端宣告（`device_type=desktop`），
+  找不到就用设置里手填的地址，把 `Snapshot` POST 到桌面端 `/push`。
+  桌面端该端点是**无状态**的，没有 LocalSend 的 `prepare-upload`/token 流程，
+  所以 `openSession` 只做原样返回。
+- **被动供拉取**：切到「局域网中转」模式时 `LanRelayServer` 起一个随机端口的极简
+  HTTP 服务，同时每 2 秒组播宣告自己；桌面端点「拉取」就会来读 `/snapshot`。
+  切回「模拟中转」会停掉服务、释放端口与组播锁。
+
+### HTTP 契约
+
+| 方向 | 方法 + 路径 | 载荷 / 响应 |
+|---|---|---|
+| 手机 → 桌面 | `GET /api/health-motion/v1/info` | 桌面 `DeviceInfo`（`device_type=desktop`、`port=18765`），供手机探活 |
+| 手机 → 桌面 | `POST /api/health-motion/v1/push` | `Snapshot` JSON，成功回 `{"ok":true}` |
+| 桌面 → 手机 | `GET /api/health-motion/v1/info` | 手机 `DeviceInfo`（`device_type=phone`、`port` 为随机端口） |
+| 桌面 → 手机 | `GET /api/health-motion/v1/snapshot` | `Snapshot` JSON（仅 `band` 部分） |
+
+`Snapshot` 结构（本 App 只填 `band`，`gym` 由 gymbuddy 侧负责）：
+
+```json
+{
+  "band": {
+    "sleeps":    [{"epoch_day":1,"total_minutes":480,"score":90,
+                   "bed_minutes":500,"wake_minutes":30,"deep_minutes":120,
+                   "light_minutes":300,"rem_minutes":40,"awake_minutes":10}],
+    "hr_samples":[{"at_millis":1700000000000,"bpm":72}],
+    "measures":  [{"bpm":80,"finished_at_millis":1700000000000,"duration_sec":30}],
+    "device_name": "Mi Band 7",
+    "device_mac":  "AA:BB:CC:DD:EE:FF"
+  }
+}
+```
+
+> **字段名是 snake_case，且三个数组必须始终存在**（没数据就给 `[]`）。
+> 桌面端 `ShouhuanData` 对这三个字段没有 `serde(default)`，缺一个键整段快照就解析失败，
+> 而且失败是**静默丢数据**、界面不会报错。序列化集中在 `relay/RelayPayloadJson.kt`，
+> 改数据模型时先改这里再对照桌面端 `src/sources/shouhuan.rs`。
+> 通知不进 Snapshot（桌面端没有对应字段）。
+
+### 用起来
+
+1. 电脑端 health-motion 打开「局域网」标签页，点「启动服务」（默认 `TCP 18765`，
+   按上次开关状态决定是否自启），并放行 Windows 防火墙入站 `TCP 18765` + `UDP 53317`；
+2. 手机与电脑连**同一个 WiFi**，App 里进入中转页 → 模式切到「局域网中转」；
+3. 点「发现节点」自动组播找桌面（组播不通就在地址栏填 `http://<电脑IP>:18765`）；
+4. 「立即同步」主动推送；或在电脑端点「拉取」反向读手机的 `/snapshot`。
+   两条路进的是同一套去重合并逻辑，重复同步不会产生重复记录。
+
+### 实现要点
+
+- 分层：`RelayTransport` 接口是唯一接缝，`RelayRepository` 管编排 / 配置 / 日志，
+  `RelayPayloadSource` 从 `BandPrefs` 取数，`RelayPayloadJson` 负责装车，
+  `MockRelayTransport`（离线演示）与 `LanRelayTransport`（真实网络）可随时互换。
+  加新数据源或换协议时，仓库 / ViewModel / UI 都不用动。
+- 配置存独立的 `relay` DataStore，和手环的 `band` 存储隔离，改坏了不影响配对。
+- 因 Android 默认丢弃组播包，`LanRelayServer` 启动时会申请 `WifiManager.MulticastLock`
+  （manifest 声明 `ACCESS_WIFI_STATE`）；拿不到锁只影响自动发现，手填 IP 仍可用。
+- 全程零额外依赖：标准 `Socket` / `HttpURLConnection` + `org.json`，离线可编译。
+- **两个真机踩过的坑（2026-11-07 实测）**：
+  - Android 9+ 默认禁止明文 HTTP，而 LAN 同步就是 `http://`。manifest 必须声明
+    `android:usesCleartextTraffic="true"`，否则 `POST /push` 直接抛
+    `Cleartext HTTP traffic to <IP> not permitted`，界面只显示一句「同步失败」。
+    手机作为**服务端**被拉取不受这条限制，所以只测拉取会漏掉这个问题。
+  - 切「模拟 / 局域网」模式时，`RelayRepository` 会清空已发现节点并按新模式自动
+    重新发现；冷启动也由「配置首次生效」统一触发发现。否则 `RelayViewModel.init`
+    抢先用默认 MOCK 配置发现的假节点会残留，LAN 同步把数据推到 `localhost`。
+
+### 真机验证（2026-11-07）
+
+小米 `23054RA19C` / Android 15，与电脑同 WiFi（`192.168.88.0/24`）；电脑上用临时
+mock hub（TCP `18765` + UDP 组播宣告）代替桌面端，不启动桌面 GUI：
+
+| 项 | 结果 |
+|---|---|
+| 手机组播宣告 / 桌面发现 | ✅ 互相发现，手机侧显示 `192.168.88.246:18765` |
+| `GET /info`（桌面拉手机） | ✅ `device_type=phone` + 随机端口 |
+| `GET /snapshot`（桌面拉手机） | ✅ `sleeps 46 / hr_samples 1195 / measures 1`，带设备名与 MAC |
+| `POST /push`（手机推桌面） | ✅ 51861 字节，三个数组字段无缺失、全为数值 |
+| 冷启动自动重新发现 | ✅ 无残留模拟节点 |
+
+**后续又用真实桌面端 health-motion 实跑了一遍**（不再用 mock hub）：手机发现
+`健康运动 · 192.168.88.246:18765` 后推送，桌面端 `%LOCALAPPDATA%/health-motion/state.json`
+实际写入 `sleeps 46 / hr_samples 1195 / measures 1`、设备名「小米手环5」与 MAC，
+日志出现「已合并来自 push 的数据」；连续推送两次条数不变（去重生效）。
+桌面端为此修了三处：组播 socket 开启 `SO_REUSEADDR` 以便与本机 LocalSend 共存、
+显式指定 `IP_MULTICAST_IF`（Windows 多网卡 / WSL 虚拟网卡会把宣告发错网段）、
+`fingerprint` 改为跨重启稳定的派生值。
 
 ## 构建与装机
 

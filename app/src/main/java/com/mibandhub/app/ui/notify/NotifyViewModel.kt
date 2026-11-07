@@ -2,12 +2,10 @@ package com.mibandhub.app.ui.notify
 
 import android.app.Application
 import android.bluetooth.BluetoothManager
-import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Build
-import android.provider.Settings
 import androidx.core.app.NotificationManagerCompat
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.AndroidViewModel
@@ -21,15 +19,16 @@ import com.mibandhub.app.data.InstalledApp
 import com.mibandhub.app.data.KeywordRule
 import com.mibandhub.app.data.SensitiveKind
 import com.mibandhub.app.data.SensitiveRule
-import com.mibandhub.app.service.BandNotificationListener
 import com.mibandhub.app.service.BandSessionProvider
 import com.mibandhub.app.service.HeartMeasureController
+import com.mibandhub.app.service.NotifyPermissionReminder
 import com.mibandhub.app.util.minuteOfDayToClock
 import java.text.Collator
 import java.time.LocalDateTime
 import java.time.ZoneId
 import java.util.Locale
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -183,22 +182,39 @@ class NotifyViewModel(app: Application) : AndroidViewModel(app) {
     private val _notifyPermission = MutableStateFlow(checkNotifyPermission(getApplication()))
     val notifyPermission: StateFlow<Boolean> = _notifyPermission.asStateFlow()
 
-    /** 从系统设置页返回后调一次，刷新权限状态。 */
+    /**
+     * 监听服务是否真的被系统绑定并跑起来了。
+     *
+     * 和 [notifyPermission] 分开是有意的：授权记录为真 ≠ 监听服务在跑。
+     * ColorOS 这类 ROM 会在后台管理上拦截，出现「已授权但收不到任何通知」，
+     * 只看授权状态永远发现不了，所以转发能不能用要看这个。
+     */
+    private val _listenerBound = MutableStateFlow(NotifyPermissionReminder.isListenerBound())
+    val listenerBound: StateFlow<Boolean> = _listenerBound.asStateFlow()
+
+    /** 从系统设置页返回后调一次，刷新权限状态 + 通知栏那条提醒。 */
     fun refreshNotifyPermission() {
         _notifyPermission.value = checkNotifyPermission(getApplication())
+        // 监听服务是异步被系统绑定的，给它一拍再读，否则刚进页面必然是「未绑定」。
+        viewModelScope.launch {
+            delay(1200)
+            _listenerBound.value = NotifyPermissionReminder.isListenerBound()
+            NotifyPermissionReminder.sync(getApplication())
+        }
     }
 
     /** 生成跳转到系统通知监听设置页的 Intent（不同 ROM 入口不同，这里用通用入口 + 兜底）。 */
-    fun notifyListenerSettingsIntent(): Intent {
-        val app = getApplication<Application>()
-        val general = Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS).apply {
-            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-        }
-        return if (general.resolveActivity(app.packageManager) != null) {
-            general
-        } else {
-            Intent(Settings.ACTION_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-        }
+    fun notifyListenerSettingsIntent(): Intent = NotifyPermissionReminder.settingsIntent(getApplication())
+
+    /**
+     * 去厂商的「自启动 / 后台运行」设置页。
+     *
+     * 不返回 Intent 而是直接开：ColorOS 的自启动页会拒绝被第三方 App 拉起，
+     * 异常发生在我们进程里，用户只会看到「点一下退回桌面」。逐个候选 try 一遍
+     * 才不会崩，逻辑见 [NotifyPermissionReminder.openAutoStartSettings]。
+     */
+    fun openAutoStartSettings() {
+        NotifyPermissionReminder.openAutoStartSettings(getApplication())
     }
 
     // ---------------------------------------------------------------------------
@@ -274,14 +290,8 @@ class NotifyViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    private fun checkNotifyPermission(context: Context): Boolean {
-        val raw = runCatching {
-            Settings.Secure.getString(context.contentResolver, "enabled_notification_listeners")
-        }.getOrNull() ?: return false
-        if (raw.isBlank()) return false
-        val our = ComponentName(context, BandNotificationListener::class.java).flattenToString()
-        return raw.split(':').any { it.trim() == our }
-    }
+    private fun checkNotifyPermission(context: Context): Boolean =
+        NotifyPermissionReminder.hasPermission(context)
 
     fun setForward(enabled: Boolean) = launch { prefs.setForwardNotifications(enabled) }
 

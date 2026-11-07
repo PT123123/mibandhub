@@ -116,7 +116,7 @@ fun NotifyForwardPage(vm: NotifyViewModel, onBack: () -> Unit) {
                 action = {
                     Spacer(Modifier.height(10.dp))
                     Button(
-                        onClick = { context.startActivity(vm.notifyListenerSettingsIntent()) },
+                        onClick = { runCatching { context.startActivity(vm.notifyListenerSettingsIntent()) } },
                         colors = ButtonDefaults.buttonColors(
                             containerColor = PulseRed,
                             contentColor = MaterialTheme.colorScheme.onPrimary,
@@ -1211,9 +1211,74 @@ private fun AppScopePicker(
 fun NotifyConflictPage(vm: NotifyViewModel, onBack: () -> Unit) {
     val context = LocalContext.current
     val conflicts by vm.conflictApps.collectAsStateWithLifecycle()
-    LaunchedEffect(Unit) { vm.refreshConflicts() }
+    val notifyPermission by vm.notifyPermission.collectAsStateWithLifecycle()
+    val listenerBound by vm.listenerBound.collectAsStateWithLifecycle()
+    LaunchedEffect(Unit) {
+        vm.refreshConflicts()
+        vm.refreshNotifyPermission()
+    }
 
     SubPage("转发冲突检测", onBack) {
+        // 本 App 自己的授权状态排在最前：外部冲突再少，自己没权限就是一条都不推，
+        // 那是更前置、也更容易被忽略的原因。
+        if (!notifyPermission) {
+            NoticeBanner(
+                title = "⚠ 手环管家还没有通知使用权",
+                tone = PulseRed,
+                detail = "这是「手机通知转到手环」的前提条件。现在没授权，下面所有过滤规则都不会生效，" +
+                    "手环收不到任何通知 —— 部分 OPPO/ColorOS 机型还会把入口藏在「其他权限」里，" +
+                    "找不到时可以在系统设置里直接搜「通知使用权」。",
+                action = {
+                    Spacer(Modifier.height(10.dp))
+                    Button(
+                        onClick = { runCatching { context.startActivity(vm.notifyListenerSettingsIntent()) } },
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = PulseRed,
+                            contentColor = MaterialTheme.colorScheme.onPrimary,
+                        ),
+                        shape = RoundedCornerShape(12.dp),
+                    ) {
+                        Text("去系统设置授权")
+                    }
+                },
+            )
+            Spacer(Modifier.height(12.dp))
+        } else if (!listenerBound) {
+            // 授权记录为真、系统却没起监听服务。这是 OPPO / ColorOS 上最常见的一种
+            // 「有权限但没转发」，不给按钮的话用户只能反复开关授权，永远碰不到真因。
+            NoticeBanner(
+                title = "⚠ 已授权，但系统没有启动通知监听",
+                tone = PulseRed,
+                detail = "权限开关显示是开的，可系统并没有真正运行手环管家的通知监听服务，" +
+                    "所以手机通知一条都转发不到手环。这不是本 App 的问题，是系统在后台管理上拦的：" +
+                    "① 允许「手环管家」自启动（设置 → 应用管理 → 自启动管理）；" +
+                    "② 允许后台运行 / 关闭「智能耗电」限制（设置 → 电池 → 应用耗电管理）；" +
+                    "③ 回到系统「通知使用权」里把手环管家关掉再打开，然后重新打开本 App。",
+                action = {
+                    Spacer(Modifier.height(10.dp))
+                    Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                        Button(
+                            onClick = { vm.openAutoStartSettings() },
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = PulseRed,
+                                contentColor = MaterialTheme.colorScheme.onPrimary,
+                            ),
+                            shape = RoundedCornerShape(12.dp),
+                        ) {
+                            Text("去开自启动/后台运行")
+                        }
+                        OutlinedButton(
+                            onClick = { runCatching { context.startActivity(vm.notifyListenerSettingsIntent()) } },
+                            shape = RoundedCornerShape(12.dp),
+                        ) {
+                            Text("重新授权")
+                        }
+                    }
+                },
+            )
+            Spacer(Modifier.height(12.dp))
+        }
+
         NoticeBanner(
             title = "什么是转发冲突？",
             tone = NotifyAmber,
@@ -1225,7 +1290,7 @@ fun NotifyConflictPage(vm: NotifyViewModel, onBack: () -> Unit) {
 
         conflicts.forEach { app ->
             ConflictAppCard(app = app, onOpenSettings = {
-                context.startActivity(vm.notifyListenerSettingsIntent())
+                runCatching { context.startActivity(vm.notifyListenerSettingsIntent()) }
             })
             Spacer(Modifier.height(10.dp))
         }
@@ -1233,7 +1298,12 @@ fun NotifyConflictPage(vm: NotifyViewModel, onBack: () -> Unit) {
         if (conflicts.none { it.conflict }) {
             Spacer(Modifier.height(4.dp))
             Text(
-                "未发现其他转发应用。手环收到的通知应该都来自本 App。",
+                if (notifyPermission) {
+                    "未发现其他转发应用。手环收到的通知应该都来自本 App。"
+                } else {
+                    "未发现其他转发应用，但本 App 尚未授权通知监听 —— 先把上面的授权打开，" +
+                        "否则手环一条通知都收不到。"
+                },
                 style = MaterialTheme.typography.labelMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )

@@ -3,12 +3,14 @@ package com.mibandhub.app
 import android.app.Application
 import android.app.NotificationChannel
 import android.app.NotificationManager
+import com.mibandhub.app.service.NotifyPermissionReminder
 
 class ShouhuanApp : Application() {
 
     override fun onCreate() {
         super.onCreate()
         createNotificationChannels()
+        NotifyPermissionReminder.markProcessStart()
     }
 
     private fun createNotificationChannels() {
@@ -35,6 +37,14 @@ class ShouhuanApp : Application() {
                 description = "「测试通知」功能发出的通知走这个渠道"
             },
         )
+
+        // 权限提醒走 DEFAULT：缺「通知使用权」时挂一条常驻提醒，点一下跳系统设置。
+        // 同一时刻最多一条，sync 靠 ID 覆盖，不会越积越多。
+        manager.createNotificationChannel(
+            NotificationChannel(CHANNEL_PERMISSION, "权限提醒", NotificationManager.IMPORTANCE_DEFAULT).apply {
+                description = "缺少「通知使用权」等关键权限时的常驻提醒，点击直达系统设置"
+            },
+        )
     }
 
     companion object {
@@ -44,5 +54,8 @@ class ShouhuanApp : Application() {
         /** v1 渠道 ID，创建 v2 后删掉。 */
         private const val OLD_KEEP_ALIVE_CHANNEL = "keep_alive"
         const val CHANNEL_TEST = "test"
+
+        /** 权限提醒渠道：缺「通知使用权」时的常驻通知。 */
+        const val CHANNEL_PERMISSION = "permission_reminder"
     }
 }

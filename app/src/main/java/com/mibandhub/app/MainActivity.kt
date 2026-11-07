@@ -14,6 +14,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.core.content.ContextCompat
 import com.mibandhub.app.service.BandService
+import com.mibandhub.app.service.NotifyPermissionReminder
 import com.mibandhub.app.ui.AppRoot
 import com.mibandhub.app.ui.theme.ShouhuanTheme
 
@@ -56,11 +57,20 @@ class MainActivity : ComponentActivity() {
         // 从后台切回也算「打开应用」：让服务再跑一遍自动拉取的判断
         // （服务里带 10 分钟去抖，反复进出不会连番轰炸手环）。
         BandService.notifyAppOpen(this)
+        // 从系统设置授权回来也走这里：提醒通知据此撤掉 / 补上。
+        NotifyPermissionReminder.sync(this)
     }
 
     companion object {
         /** 桌面控件 PendingIntent 里的目标 tab 名（AppRoot 的 route，如 "sleep"）。 */
         const val EXTRA_TARGET_ROUTE = "com.mibandhub.app.target_route"
+
+        /**
+         * 「接收敏感通知」权限。写成字符串而不是 Manifest.permission 常量：
+         * 该常量在部分 compileSdk 上还没有，用字面量保证任何 SDK 都能编译。
+         */
+        private const val PERMISSION_SENSITIVE_NOTIFICATIONS =
+            "android.permission.RECEIVE_SENSITIVE_NOTIFICATIONS"
     }
 
     /**
@@ -88,6 +98,14 @@ class MainActivity : ComponentActivity() {
             ) {
                 missing += Manifest.permission.BLUETOOTH_CONNECT
             }
+        }
+        // Android 15+：通知监听要拿到「敏感通知」权限才能收到来电、验证码这类通知。
+        // 缺它不影响普通通知，但用户看到的会是「有些通知偶尔不上手环」。
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE &&
+            ContextCompat.checkSelfPermission(this, PERMISSION_SENSITIVE_NOTIFICATIONS) !=
+            PackageManager.PERMISSION_GRANTED
+        ) {
+            missing += PERMISSION_SENSITIVE_NOTIFICATIONS
         }
         if (missing.isEmpty()) {
             BandService.start(this)

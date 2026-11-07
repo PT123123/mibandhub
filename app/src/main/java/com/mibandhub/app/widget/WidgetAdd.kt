@@ -67,7 +67,7 @@ const val LAUNCHER_SHORTCUT_PERMISSION = "com.android.launcher.permission.INSTAL
  * 两个权限字符串对应同一个开关，任一授予就算开。非小米桌面不需要它，直接放行。
  */
 fun hasShortcutPermission(context: Context): Boolean {
-    if (!isMiui()) return true
+    if (!isMiui() && !isColorOs()) return true
     return ContextCompat.checkSelfPermission(context, MIUI_HOME_SHORTCUT_PERMISSION) ==
         PackageManager.PERMISSION_GRANTED ||
         ContextCompat.checkSelfPermission(context, LAUNCHER_SHORTCUT_PERMISSION) ==
@@ -92,13 +92,30 @@ fun isMiui(): Boolean {
 
 private val MIUI_BRANDS = setOf("xiaomi", "redmi", "poco")
 
-/** 桌面上手动加控件的那条路：小米走双指捏合，别家走长按空白处。 */
-private fun manualHint(): String = if (isMiui()) MIUI_MANUAL_HINT else OTHER_MANUAL_HINT
+/** 当前桌面是不是 OPPO/一加/realme 的 ColorOS（三家共用一套桌面行为）。 */
+fun isColorOs(): Boolean {
+    val brand = Build.BRAND.lowercase()
+    val manufacturer = Build.MANUFACTURER.lowercase()
+    return brand in COLOROS_BRANDS || manufacturer in COLOROS_BRANDS
+}
+
+private val COLOROS_BRANDS = setOf("oppo", "oneplus", "realme")
+
+/** 桌面上手动加控件的那条路：小米走双指捏合，OPPO/别家走长按空白处的小部件。 */
+private fun manualHint(): String = when {
+    isMiui() -> MIUI_MANUAL_HINT
+    isColorOs() -> COLOROS_MANUAL_HINT
+    else -> OTHER_MANUAL_HINT
+}
 
 private const val MIUI_MANUAL_HINT =
     "没能自动添加：请在桌面双指捏合（或长按空白处）→ 添加小部件 → 找「手环管家」，" +
         "没有就滑到最底部的「安卓小组件」。红米还要在 应用信息 → 权限管理 → 其他权限 " +
         "里打开「桌面快捷方式」。"
+
+private const val COLOROS_MANUAL_HINT =
+    "OPPO/ColorOS：请桌面长按空白处 → 小部件 → 找「手环管家」拖上去。" +
+        "列表里没有就关掉应用锁（设置→密码与安全→应用锁）和电池省电限制、重启再试。"
 
 private const val OTHER_MANUAL_HINT =
     "当前桌面不支持在应用内固定控件：请长按桌面空白处 → 小部件 → 找到「手环管家」。"

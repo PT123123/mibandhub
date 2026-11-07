@@ -1,6 +1,8 @@
 package com.mibandhub.app.ui.notify
 
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.height
@@ -11,6 +13,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -56,6 +59,7 @@ fun NotifyScreen(
     val context = LocalContext.current
     val forwardEnabled by vm.forwardEnabled.collectAsStateWithLifecycle()
     val notifyPermission by vm.notifyPermission.collectAsStateWithLifecycle()
+    val listenerBound by vm.listenerBound.collectAsStateWithLifecycle()
     val dndEnabled by vm.dndEnabled.collectAsStateWithLifecycle()
     val dndStart by vm.dndStart.collectAsStateWithLifecycle()
     val dndEnd by vm.dndEnd.collectAsStateWithLifecycle()
@@ -97,7 +101,7 @@ fun NotifyScreen(
                 action = {
                     Spacer(Modifier.height(10.dp))
                     Button(
-                        onClick = { context.startActivity(vm.notifyListenerSettingsIntent()) },
+                        onClick = { runCatching { context.startActivity(vm.notifyListenerSettingsIntent()) } },
                         colors = ButtonDefaults.buttonColors(
                             containerColor = PulseRed,
                             contentColor = MaterialTheme.colorScheme.onPrimary,
@@ -105,6 +109,38 @@ fun NotifyScreen(
                         shape = RoundedCornerShape(12.dp),
                     ) {
                         Text("去系统设置授权")
+                    }
+                },
+            )
+            Spacer(Modifier.height(12.dp))
+        } else if (!listenerBound) {
+            // 授权记录为真、系统却没把监听服务跑起来 —— ColorOS 等 ROM 的后台管理
+            // 会这么干，症状是「一条通知都收不到」，光看授权状态发现不了。
+            NoticeBanner(
+                title = "⚠ 已授权，但通知监听没被系统启动",
+                tone = PulseRed,
+                detail = "权限开关显示是开的，可系统并没有真正运行本 App 的通知监听服务，" +
+                    "所以手机通知一条都转发不到手环。ColorOS / 澎湃等系统会在「后台管理」上拦截，" +
+                    "需要允许本 App 自启动、后台运行，然后重新打开一次 App。",
+                action = {
+                    Spacer(Modifier.height(10.dp))
+                    Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                        Button(
+                            onClick = { vm.openAutoStartSettings() },
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = PulseRed,
+                                contentColor = MaterialTheme.colorScheme.onPrimary,
+                            ),
+                            shape = RoundedCornerShape(12.dp),
+                        ) {
+                            Text("去开自启动/后台运行")
+                        }
+                        OutlinedButton(
+                            onClick = { runCatching { context.startActivity(vm.notifyListenerSettingsIntent()) } },
+                            shape = RoundedCornerShape(12.dp),
+                        ) {
+                            Text("重新授权")
+                        }
                     }
                 },
             )
@@ -199,17 +235,25 @@ fun NotifyScreen(
         )
         Spacer(Modifier.height(10.dp))
 
-        // ---- 转发冲突检测：别的 App 是否也在转发通知 ----
+        // ---- 转发冲突检测：本 App 转发链路异常 + 别的 App 也在抢着转发 ----
+        // 优先报自己的问题：外部冲突只是重复推送，而自己这条链路断掉是一条都收不到。
         val conflictCount = conflicts.count { it.conflict }
+        val forwardingBlocked = !notifyPermission || !listenerBound
+        val conflictProblem = forwardingBlocked || conflictCount > 0
         NavRow(
             title = "转发冲突检测",
-            subtitle = if (conflictCount > 0) {
-                "$conflictCount 个应用也在转发通知到手环"
-            } else {
-                "未发现其他转发应用"
+            subtitle = when {
+                !notifyPermission -> "⚠ 未获得通知使用权 · 转发不会生效，点这里去授权"
+                !listenerBound -> "⚠ 监听服务没被系统启动 · 转发不会生效，点这里排查"
+                conflictCount > 0 -> "$conflictCount 个应用也在转发通知到手环"
+                else -> "未发现其他转发应用"
             },
-            badge = if (conflictCount > 0) "$conflictCount" else "正常",
-            accent = if (conflictCount > 0) PulseRed else NotifyAmber,
+            badge = when {
+                !notifyPermission || !listenerBound -> "!"
+                conflictCount > 0 -> "$conflictCount"
+                else -> "正常"
+            },
+            accent = if (conflictProblem) PulseRed else NotifyAmber,
             onClick = { onNavigate(NotifyRoutes.CONFLICT) },
         )
         Spacer(Modifier.height(10.dp))
