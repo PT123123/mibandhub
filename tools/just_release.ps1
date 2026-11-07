@@ -186,8 +186,14 @@ function Test-Apk([string]$Apk) {
     if ($LASTEXITCODE -ne 0) {
         Fail "apksigner 校验失败（包没签名？）`n$certs"
     }
-    $subject = [regex]::Match($certs, 'Signer #1 certificate DN:\s*(.+)')
-    $fp = [regex]::Match($certs, 'Signer #1 certificate SHA-256 digest:\s*(\S+)')
+    # apksigner 的输出格式随 build-tools 换过：≤36 是 "Signer #1 certificate ..."，
+    # 37.0.0 起按签名方案分成 "V2 Signer: certificate ..."。前缀不写死，只认后面的
+    # 固定字段名，否则升级 SDK 后 SHA256 会读成空串、被白名单闸当成「签名不对」误拦。
+    $subject = [regex]::Match($certs, 'certificate DN:\s*(.+)')
+    $fp = [regex]::Match($certs, 'certificate SHA-256 digest:\s*(\S+)')
+    if (-not $fp.Success) {
+        Fail "apksigner 输出里读不到 certificate SHA-256 digest（输出格式可能又变了）`n$certs"
+    }
     $certSha = ($fp.Groups[1].Value -replace ':', '').ToUpper()
     Say ("  签名主体    {0}" -f $subject.Groups[1].Value.Trim())
     Say ("  证书 SHA256 {0}" -f $certSha)
