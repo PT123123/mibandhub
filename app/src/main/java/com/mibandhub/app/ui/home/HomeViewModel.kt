@@ -13,6 +13,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import com.mibandhub.app.data.HeartRateSource
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.stateIn
 
@@ -26,6 +27,8 @@ data class HomeUiState(
     /** 今日心率大数字：测量中跟实时读数走，平时显示最近一次测量结果。 */
     val bpm: Int? = null,
     val lastMeasuredAt: Long? = null,
+    /** 最近这次读数是哪条路测的 —— 首页也得标明来源，别把手环和手机混为一谈。 */
+    val bpmSource: HeartRateSource? = null,
     /** 近几次测量的 bpm（旧 → 新），给趋势线用。 */
     val bpmTrend: List<Int> = emptyList(),
     val lastNight: SleepNightRecord? = null,
@@ -67,12 +70,14 @@ class HomeViewModel(app: Application) : AndroidViewModel(app) {
                 bpm = liveBpm,
             )
         },
-        prefs.measureHistory,
+        // 手环 + 手机闪光灯合并后的时间线：首页大数字、趋势都吃同一份
+        prefs.allMeasureRecords,
         prefs.sleepHistory,
     ) { base, history, sleep ->
         base.copy(
             bpm = base.bpm ?: history.firstOrNull()?.bpm,
             lastMeasuredAt = history.firstOrNull()?.finishedAtMillis,
+            bpmSource = history.firstOrNull()?.source,
             bpmTrend = history.take(30).reversed().map { it.bpm },
             lastNight = sleep.firstOrNull(),
         )

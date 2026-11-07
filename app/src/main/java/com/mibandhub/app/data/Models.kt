@@ -186,3 +186,76 @@ data class MeasureResult(
     val durationSec: Int,
 )
 
+// ---------------------------------------------------------------------------
+// 心率来源：手环 BLE / 手机闪光灯 PPG
+// ---------------------------------------------------------------------------
+
+/**
+ * 一条心率测量记录的来源。
+ *
+ * [id] 是**跨端契约**：落盘 CSV、LAN 快照 JSON、桌面端 `model.rs` 全都认这个字符串。
+ * 别用 enum 的 `name` 当 id —— 以后重命名会悄悄把老数据判成另一种来源。
+ */
+enum class HeartRateSource(val id: String, val label: String) {
+    BAND("band", "手环"),
+    PHONE_PPG("phone_ppg", "手机闪光灯"),
+    ;
+
+    companion object {
+        /** 老记录没有来源字段，一律按手环算。未知取值也回落到手环，不让脏数据炸界面。 */
+        fun of(id: String?): HeartRateSource = when (id) {
+            PHONE_PPG.id -> PHONE_PPG
+            else -> BAND
+        }
+    }
+}
+
+/**
+ * 手机摄像头 + 闪光灯做 PPG 测出来的一次结果。
+ *
+ * 单独存一份（[BandPrefs] 的 `ppg_measure_history`），不往 `measure_history` 里塞：
+ * 桌面端 `sources/shouhuan.rs` 按**固定 3 列**解析后者，给它加列会让 PC 端把新记录
+ * 整批丢掉。两个 key 物理分开，App 内再合并成一条时间线。
+ *
+ * [quality] 是 0–100 的信号质量分（自相关峰高 + 交流分量强度），低于阈值的结果
+ * 不落盘；界面上也会老实告诉用户这次读数不太可信。
+ */
+data class PpgMeasureResult(
+    val bpm: Int,
+    val finishedAtMillis: Long,
+    val durationSec: Int,
+    val quality: Int,
+    val sampleCount: Int,
+)
+
+/**
+ * 界面与中转统一吃的一条测量记录 —— 手环和手机闪光灯在这里合流。
+ *
+ * 这是**展示层/传输层**模型，不直接落盘；落盘的两份各自保持自己的 CSV 格式。
+ */
+data class HeartMeasureRecord(
+    val bpm: Int,
+    val finishedAtMillis: Long,
+    val durationSec: Int,
+    val source: HeartRateSource,
+    /** 只有 PPG 有信号质量；手环记录为 null。 */
+    val quality: Int? = null,
+    val sampleCount: Int = 0,
+)
+
+fun MeasureResult.asRecord(): HeartMeasureRecord = HeartMeasureRecord(
+    bpm = bpm,
+    finishedAtMillis = finishedAtMillis,
+    durationSec = durationSec,
+    source = HeartRateSource.BAND,
+)
+
+fun PpgMeasureResult.asRecord(): HeartMeasureRecord = HeartMeasureRecord(
+    bpm = bpm,
+    finishedAtMillis = finishedAtMillis,
+    durationSec = durationSec,
+    source = HeartRateSource.PHONE_PPG,
+    quality = quality,
+    sampleCount = sampleCount,
+)
+

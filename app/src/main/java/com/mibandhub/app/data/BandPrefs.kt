@@ -10,6 +10,7 @@ import androidx.datastore.preferences.core.longPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.map
 import org.json.JSONArray
 import org.json.JSONObject
@@ -34,6 +35,11 @@ class BandPrefs(private val context: Context) {
 
         /** 自动心率检测的默认档位 —— 官方标称 15 天续航的测试条件正是 30 分钟这一档。 */
         const val AUTO_HR_DEFAULT_INTERVAL = 30
+
+        /** 闪光灯 PPG 采样的可选时长（秒），界面和 [com.mibandhub.app.ppg.PpgMeasureController] 共用。 */
+        val PPG_DURATION_OPTIONS = listOf(15, 20, 30)
+
+        const val PPG_DURATION_DEFAULT_SEC = 20
     }
 
     private object Keys {
@@ -44,6 +50,18 @@ class BandPrefs(private val context: Context) {
         val FORWARD_NOTIFICATIONS = booleanPreferencesKey("forward_notifications")
         val HAS_DEVICE = booleanPreferencesKey("has_device")
         val MEASURE_HISTORY = stringPreferencesKey("measure_history")
+
+        /**
+         * 手机闪光灯 PPG 测出来的记录，**独立一个 key**。
+         *
+         * 不往 measure_history 里加列：桌面端 `sources/shouhuan.rs` 按固定 3 列解析
+         * 那个 key，多一列它会把新记录整行丢掉。物理分开、App 内合并展示，
+         * 桌面端靠 key 名识别来源（见 [HeartRateSource]）。
+         */
+        val PPG_MEASURE_HISTORY = stringPreferencesKey("ppg_measure_history")
+
+        /** 闪光灯采样时长（秒），取值见 [BandPrefs.PPG_DURATION_OPTIONS]。 */
+        val PPG_DURATION_SEC = intPreferencesKey("ppg_duration_sec")
 
         // ---- 睡眠历史 ----
         val SLEEP_HISTORY = stringPreferencesKey("sleep_history")
@@ -146,6 +164,44 @@ class BandPrefs(private val context: Context) {
     /** 测量记录，新的在前。不设上限 —— 用户明确要求历史存多久算多久。 */
     val measureHistory: Flow<List<MeasureResult>> =
         context.bandDataStore.data.map { decodeHistory(it[Keys.MEASURE_HISTORY]) }
+
+    /** 闪光灯 PPG 的记录，新的在前，每行 4 列：bpm,finishedAtMillis,durationSec,quality。 */
+    val ppgMeasureHistory: Flow<List<PpgMeasureResult>> =
+        context.bandDataStore.data.map { decodePpgHistory(it[Keys.PPG_MEASURE_HISTORY]) }
+
+    val ppgDurationSec: Flow<Int> =
+        context.bandDataStore.data.map { it[Keys.PPG_DURATION_SEC] ?: PPG_DURATION_DEFAULT_SEC }
+
+    /**
+     * 手环 + 手机闪光灯合并成一条时间线，**每条都带来源**。
+     *
+     * 存储层刻意分成两个 key（老 CSV 格式一个字节都不动，桌面端零影响），
+     * 合并只发生在读侧：界面、统计、LAN 快照都吃这一条流。
+     */
+    val allMeasureRecords: Flow<List<HeartMeasureRecord>> = combine(
+        measureHistory,
+        ppgMeasureHistory,
+    ) { band, ppg ->
+        (band.map { it.asRecord() } + ppg.map { it.asRecord() })
+            .sortedByDescending { it.finishedAtMillis }
+    }
+
+    suspend fun recordPpgMeasure(result: PpgMeasureResult) {
+        context.bandDataStore.edit { prefs ->
+            prefs[Keys.PPG_MEASURE_HISTORY] = encodePpgHistory(
+                listOf(result) + decodePpgHistory(prefs[Keys.PPG_MEASURE_HISTORY]),
+            )
+        }
+    }
+
+    suspend fun clearPpgMeasureHistory() {
+        context.bandDataStore.edit { it.remove(Keys.PPG_MEASURE_HISTORY) }
+    }
+
+    suspend fun setPpgDurationSec(seconds: Int) {
+        if (seconds !in PPG_DURATION_OPTIONS) return
+        context.bandDataStore.edit { it[Keys.PPG_DURATION_SEC] = seconds }
+    }
 
     suspend fun saveDevice(mac: String, name: String, authKey: String) {
         context.bandDataStore.edit {
@@ -890,6 +946,34 @@ class BandPrefs(private val context: Context) {
             val finishedAt = parts[1].toLongOrNull() ?: return@mapNotNull null
             val duration = parts[2].toIntOrNull() ?: return@mapNotNull null
             MeasureResult(bpm, finishedAt, duration)
+        }.toList()
+    }
+
+    // ------------------------------------------------------------------
+    // 闪光灯 PPG 记录的编解码
+    //
+    // 4 列：bpm,finishedAtMillis,durationSec,quality。桌面端按同一个 key、
+    // 同一个列数解析（见 vigorhub/src/sources/shouhuan.rs），所以这个格式
+    // 和上面那三个整数一样属于跨端契约，改动要两边一起改。
+    // sampleCount 不上盘：桌面端用不到，少一列就少一处要对齐的地方。
+    // 解码兼容 3 列（quality 回 0），老行也不会被整批丢掉。
+    // ------------------------------------------------------------------
+
+    private fun encodePpgHistory(list: List<PpgMeasureResult>): String =
+        list.joinToString("\n") {
+            "${it.bpm},${it.finishedAtMillis},${it.durationSec},${it.quality}"
+        }
+
+    private fun decodePpgHistory(raw: String?): List<PpgMeasureResult> {
+        if (raw.isNullOrBlank()) return emptyList()
+        return raw.lineSequence().mapNotNull { line ->
+            val parts = line.split(',')
+            if (parts.size !in 3..4) return@mapNotNull null
+            val bpm = parts[0].toIntOrNull() ?: return@mapNotNull null
+            val finishedAt = parts[1].toLongOrNull() ?: return@mapNotNull null
+            val duration = parts[2].toIntOrNull() ?: return@mapNotNull null
+            val quality = parts.getOrNull(3)?.toIntOrNull() ?: 0
+            PpgMeasureResult(bpm, finishedAt, duration, quality.coerceIn(0, 100), 0)
         }.toList()
     }
 }

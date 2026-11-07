@@ -284,7 +284,10 @@ App 连手环只需要两样东西：**手环的 MAC** 和 **AuthKey**（32 位�
                    "bed_minutes":500,"wake_minutes":30,"deep_minutes":120,
                    "light_minutes":300,"rem_minutes":40,"awake_minutes":10}],
     "hr_samples":[{"at_millis":1700000000000,"bpm":72}],
-    "measures":  [{"bpm":80,"finished_at_millis":1700000000000,"duration_sec":30}],
+    "measures":  [
+      {"bpm":80,"finished_at_millis":1700000000000,"duration_sec":30,"source":"band"},
+      {"bpm":76,"finished_at_millis":1700000005000,"duration_sec":20,"source":"phone_ppg","quality":87}
+    ],
     "device_name": "Mi Band 7",
     "device_mac":  "AA:BB:CC:DD:EE:FF"
   }
@@ -296,6 +299,16 @@ App 连手环只需要两样东西：**手环的 MAC** 和 **AuthKey**（32 位�
 > 而且失败是**静默丢数据**、界面不会报错。序列化集中在 `relay/RelayPayloadJson.kt`，
 > 改数据模型时先改这里再对照桌面端 `src/sources/shouhuan.rs`。
 > 通知不进 Snapshot（桌面端没有对应字段）。
+>
+> `measures` 的 `source` 是逐条来源标注：`"band"` = 手环 BLE，`"phone_ppg"` =
+> 手机摄像头 + 闪光灯 PPG；后者另有可选 `quality`（0–100 信号质量）。桌面端
+> `model.rs` 把这两个字段做成 `Option` + `serde(default)`，**旧版手机端不带它们
+> 也能正常解析**，不会因为多出未知字段丢整批数据。
+>
+> 手机侧的 PPG 记录另存一个 DataStore key `ppg_measure_history`（4 列 CSV
+> `bpm,finishedAtMillis,durationSec,quality`），`measure_history` **永远保持 3 列**：
+> 桌面端 `sources/shouhuan.rs` 按固定列数解析后者，给它加列会把新记录整行丢掉。
+> 两个 key 物理分开、App 内合并展示，桌面端靠 key 名和 `source` 字段识别来源。
 
 ### 用起来
 

@@ -34,11 +34,16 @@
          不申请的表现是「偶尔有通知不上手环」，很容易被当成偶发问题。 -->
     <uses-permission android:name="android.permission.RECEIVE_SENSITIVE_NOTIFICATIONS" />
 
-    <!-- 配对页「扫码填入」：扫码自动填 MAC/AuthKey。运行时申请；没有相机也能
-         装 App，只是扫码功能不可用（仍可手动输入）。 -->
+    <!-- 配对页「扫码填入」+ 心率页「闪光灯测心率」共用相机权限。
+         闪光灯走 CameraX 的 enableTorch()，不需要 android.permission.FLASHLIGHT；
+         两个 uses-feature 都设 required=false，没相机/没闪光灯的设备照样能装，
+         只是对应功能不可用（闪光灯测量进页面时会给出明确提示）。 -->
     <uses-permission android:name="android.permission.CAMERA" />
     <uses-feature
         android:name="android.hardware.camera"
+        android:required="false" />
+    <uses-feature
+        android:name="android.hardware.camera.flash"
         android:required="false" />
 
     <!-- 桌面快捷方式：launcher 的老权限，只在「把控件/快捷方式钉到桌面」这一步有意义。

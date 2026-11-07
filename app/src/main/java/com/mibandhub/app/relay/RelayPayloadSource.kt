@@ -1,6 +1,7 @@
 package com.mibandhub.app.relay
 
 import com.mibandhub.app.data.BandPrefs
+import com.mibandhub.app.data.asRecord
 import com.mibandhub.app.relay.model.RelayBatch
 import com.mibandhub.app.relay.model.RelayPayloadItem
 import kotlinx.coroutines.flow.first
@@ -8,7 +9,7 @@ import kotlinx.coroutines.flow.first
 /**
  * 同步数据的来源抽象 —— 传输层只认 [RelayBatch]，不关心数据从哪来。
  *
- * 默认实现 [BandDataPayloadSource] 从 [BandPrefs] 取手环数据打包；
+ * 默认实现 [BandDataPayloadSource] 从 [BandPrefs] 取数据打包；
  * 以后要中继别的数据（比如 Health Connect、第三方 CSV），实现这个接口换掉即可，
  * 传输层与 UI 都不用动。
  */
@@ -22,7 +23,14 @@ class BandDataPayloadSource(private val prefs: BandPrefs) : RelayPayloadSource {
     override suspend fun buildBatch(sourceAlias: String): RelayBatch {
         val hr = prefs.heartRateSamples.first()
         val sleep = prefs.sleepHistory.first()
-        val measures = prefs.measureHistory.first()
+
+        // 测量记录是两个来源合流后同步的：桌面端靠每条的 source 字段区分
+        // 手环 / 手机闪光灯。存储上仍是两个独立 key，互不影响老 CSV 契约。
+        val bandMeasures = prefs.measureHistory.first()
+        val ppgMeasures = prefs.ppgMeasureHistory.first()
+        val measures = (bandMeasures.map { it.asRecord() } + ppgMeasures.map { it.asRecord() })
+            .sortedByDescending { it.finishedAtMillis }
+
         val notifications = prefs.recentNotifications.first()
         val name = prefs.name.first()
         val mac = prefs.mac.first()
@@ -35,7 +43,8 @@ class BandDataPayloadSource(private val prefs: BandPrefs) : RelayPayloadSource {
                 add(RelayPayloadItem("sleep", sleep.size, sleep.sleepNightsToRelayJson().utf8Bytes(), sleep.sleepNightsToRelayJson()))
             }
             if (measures.isNotEmpty()) {
-                add(RelayPayloadItem("measure", measures.size, measures.measuresToRelayJson().utf8Bytes(), measures.measuresToRelayJson()))
+                val json = measures.measuresToRelayJson()
+                add(RelayPayloadItem("measure", measures.size, json.utf8Bytes(), json))
             }
             if (notifications.isNotEmpty()) {
                 add(RelayPayloadItem("notification", notifications.size, notifications.notificationsToRelayJson().utf8Bytes(), notifications.notificationsToRelayJson()))

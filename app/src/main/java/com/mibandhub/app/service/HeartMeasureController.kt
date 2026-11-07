@@ -10,6 +10,7 @@ import android.os.Build
 import androidx.core.content.ContextCompat
 import com.mibandhub.app.ble.ConnectionState
 import com.mibandhub.app.data.BandPrefs
+import com.mibandhub.app.data.HeartMeasureRecord
 import com.mibandhub.app.data.MeasureResult
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -116,7 +117,7 @@ class HeartMeasureController private constructor(private val app: Application) {
     val elapsedSec: StateFlow<Int> = _elapsedSec.asStateFlow()
 
     /**
-     * 测量记录，新的在前。
+     * 手环测量记录（老 CSV 那份），新的在前。
      *
      * 直接以本地存储为唯一来源，而不是在内存里另存一份：这样「界面上看到的」
      * 和「重启后还在的」天然是同一份，不会出现两边对不上。
@@ -124,14 +125,21 @@ class HeartMeasureController private constructor(private val app: Application) {
     val history: StateFlow<List<MeasureResult>> = prefs.measureHistory
         .stateIn(scope, SharingStarted.Eagerly, emptyList())
 
-    /** 最近一次测量 —— 就是记录里的第一条，重启后依然在。 */
-    val lastResult: StateFlow<MeasureResult?> = history
+    /**
+     * 手环 + 手机闪光灯**合并**后的时间线，界面、统计、中转都吃这一条。
+     * 每条带 [HeartRateSource]，来源不会被合并掉。
+     */
+    val records: StateFlow<List<HeartMeasureRecord>> = prefs.allMeasureRecords
+        .stateIn(scope, SharingStarted.Eagerly, emptyList())
+
+    /** 最近一次测量（不分来源）—— 就是合并记录里的第一条，重启后依然在。 */
+    val lastRecord: StateFlow<HeartMeasureRecord?> = records
         .map { it.firstOrNull() }
         .stateIn(scope, SharingStarted.Eagerly, null)
 
     /** 最近一次测到的值。切到别的页面再回来还在。 */
-    val lastBpm: StateFlow<Int?> = history
-        .map { it.firstOrNull()?.bpm }
+    val lastBpm: StateFlow<Int?> = lastRecord
+        .map { it?.bpm }
         .stateIn(scope, SharingStarted.Eagerly, null)
 
     /** 设置里是否已经配好手环（MAC + AuthKey 都在）。 */
@@ -197,9 +205,12 @@ class HeartMeasureController private constructor(private val app: Application) {
     /** 当前有没有连手环所需的运行时权限（Android 12 以下恒为 true）。 */
     fun hasBluetoothPermission(context: Context): Boolean = checkBluetoothPermission(context)
 
-    /** 清空全部测量记录（界面有确认框，这里只负责落盘）。 */
+    /** 清空全部测量记录（手环 + 手机闪光灯，界面有确认框，这里只负责落盘）。 */
     fun clearHistory() {
-        scope.launch { prefs.clearMeasureHistory() }
+        scope.launch {
+            prefs.clearMeasureHistory()
+            prefs.clearPpgMeasureHistory()
+        }
     }
 
     // ------------------------------------------------------------------

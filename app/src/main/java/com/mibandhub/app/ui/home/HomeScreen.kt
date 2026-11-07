@@ -123,7 +123,10 @@ fun HomeScreen(vm: HomeViewModel) {
                 }
                 Spacer(Modifier.height(6.dp))
                 Text(
-                    state.lastMeasuredAt?.let { "上次测量 · ${formatClockTime(it)}" } ?: "还没有测量记录",
+                    state.lastMeasuredAt?.let {
+                        val from = state.bpmSource?.let { src -> " · ${src.label}" } ?: ""
+                        "上次测量 · ${formatClockTime(it)}$from"
+                    } ?: "还没有测量记录",
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
