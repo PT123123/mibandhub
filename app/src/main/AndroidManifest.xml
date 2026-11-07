@@ -63,8 +63,12 @@
     <uses-permission android:name="android.permission.health.READ_SLEEP" />
 
     <uses-permission android:name="android.permission.INTERNET" />
-    <!-- 局域网中转：申请组播锁，保证能收到桌面端 health-motion 的 UDP 组播宣告（否则很多设备会丢组播包）。 -->
+    <!-- 局域网中转：申请组播锁，保证能收到桌面端 vigorhub（health-motion）的 UDP 组播宣告。
+         两个权限缺一不可：ACCESS_WIFI_STATE 用来拿 WifiManager，CHANGE_WIFI_MULTICAST_STATE
+         才是 createMulticastLock() 真正校验的那条（缺了会抛 SecurityException，被 runCatching
+         吞掉后很多设备会直接丢组播包，只剩「手填 IP」这条降级路径）。 -->
     <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
+    <uses-permission android:name="android.permission.CHANGE_WIFI_MULTICAST_STATE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />

@@ -2,6 +2,7 @@ package com.mibandhub.app.relay
 
 import android.content.Context
 import android.net.wifi.WifiManager
+import android.provider.Settings
 import android.util.Log
 import com.mibandhub.app.relay.model.RelayBatch
 import kotlinx.coroutines.CoroutineScope
@@ -18,13 +19,16 @@ import java.net.ServerSocket
 import java.net.Socket
 
 /**
- * 手机侧局域网伴随服务 + 组播宣告 —— 对应电脑端 health-motion 的 LAN hub 的「被拉取」半边。
+ * 手机侧局域网伴随服务 + 组播宣告 —— 对应电脑端 vigorhub（health-motion）LAN hub 的「被拉取」半边。
  *
  * 桌面端会主动「发现 → 拉取」这台手机，所以手机必须：
  *  - 嵌一个极简 HTTP 服务，暴露两个端点（其余路径回 `{"app":"shouhuan-relay"}`）：
  *      GET /api/health-motion/v1/info     报自身 DeviceInfo（alias / device_type=phone / port / fingerprint）
  *      GET /api/health-motion/v1/snapshot 把当前手环数据打成桌面端 Snapshot 返回，供桌面「拉取」
  *  - 通过 UDP 组播 224.0.0.167:53317 每 2 秒宣告自身，桌面端据此把本机列进「已发现设备」。
+ *
+ * 契约以桌面端 `src/lan.rs` / `src/model.rs` 为准；API 路径里的 health-motion 是协议名，
+ * 桌面程序后来改名 vigorhub，路径**没有跟着改**，不要擅自「顺手改名」。
  *
  * 这个服务只在「局域网中转」模式下由 [RelayRepository] 启停。
  * 零额外依赖：标准 Socket + org.json。
@@ -44,8 +48,13 @@ object LanRelayServer {
     private const val EMPTY_SNAPSHOT =
         "{\"band\":{\"sleeps\":[],\"hr_samples\":[],\"measures\":[]}}"
 
-    /** 进程级指纹：桌面端用它去重 / 自识别；重启会变（同桌面端策略）。 */
-    private val fingerprint: String = buildFingerprint()
+    /**
+     * 设备指纹：桌面端按 fingerprint 对「已发现设备」去重，所以必须**跨进程重启稳定**。
+     * 桌面端（src/lan.rs）用「主机名 + 用户名」FNV-1a 派生；手机端用 ANDROID_ID 派生
+     * 同一套哈希，只有卸载重装 / 恢复出厂才会变。
+     * 早期用 nanoTime^pid 每次启动都换，桌面端会把同一台手机当成新设备，列表里堆幽灵条目。
+     */
+    @Volatile private var fingerprint: String = ""
 
     @Volatile private var serverSocket: ServerSocket? = null
     @Volatile private var announceSocket: DatagramSocket? = null
@@ -63,7 +72,7 @@ object LanRelayServer {
 
     /**
      * 启动伴随服务（幂等：已在运行直接返回）。
-     * @param context 用于申请组播锁（[Context.WIFI_SERVICE]）。
+     * @param context 用于申请组播锁（[Context.WIFI_SERVICE]）与派生稳定指纹。
      * @param aliasProvider 取本机别名（随配置变化）。
      * @param snapshotProvider 取当前要同步的 [RelayBatch]（band 数据从这里来；为 null 时回空快照）。
      *        因为底层是 DataStore 的挂起 Flow，所以这个 provider 本身是挂起函数。
@@ -76,6 +85,7 @@ object LanRelayServer {
         scope: CoroutineScope,
     ) {
         if (running) return
+        fingerprint = buildFingerprint(context.applicationContext)
         running = true
         // 申请组播锁，保证能收到桌面端的 UDP 组播宣告
         runCatching {
@@ -90,7 +100,7 @@ object LanRelayServer {
                 val ss = ServerSocket(0) // 系统分配空闲端口
                 serverSocket = ss
                 httpPort = ss.localPort
-                Log.i(TAG, "局域网伴随服务已启动 :$httpPort")
+                Log.i(TAG, "局域网伴随服务已启动 :$httpPort，指纹 $fingerprint")
                 announceJob = launch { announceLoop(aliasProvider) }
                 while (isActive && running) {
                     runCatching {
@@ -206,8 +216,21 @@ object LanRelayServer {
         out.flush()
     }
 
-    private fun buildFingerprint(): String {
-        val n = System.nanoTime() xor (android.os.Process.myPid().toLong() shl 16)
-        return "%032x".format(n)
+    /** 与桌面端同款 FNV-1a 64，按 ANDROID_ID 派生，跨重启稳定；异常时回落到随机值。 */
+    private fun buildFingerprint(context: Context): String {
+        val androidId = runCatching {
+            Settings.Secure.getString(context.contentResolver, Settings.Secure.ANDROID_ID)
+        }.getOrNull()
+        if (androidId.isNullOrBlank()) {
+            val n = System.nanoTime() xor (android.os.Process.myPid().toLong() shl 16)
+            return "%032x".format(n)
+        }
+        val seed = "shouhuan|$androidId"
+        var h: Long = 0xcbf2_9ce4_8422_2325uL.toLong()
+        for (b in seed.toByteArray(Charsets.UTF_8)) {
+            h = h xor (b.toLong() and 0xff)
+            h *= 0x100_0000_01b3L
+        }
+        return java.lang.Long.toHexString(h).padStart(32, '0')
     }
 }
