@@ -59,9 +59,9 @@ import com.mibandhub.app.util.formatClockTime
 /**
  * 数据中转页面：发现节点 / 手动+自动同步 / 服务端设置 / 实时日志。
  *
- * 默认走「模拟中转」—— 数据只在手机内环路跑、不触网，用来把整条链路和 UI 演示清楚；
- * 切到「局域网中转」即可对接电脑端 health-motion（组播自动发现桌面，或手填 IP:18765），
- * 协议细节见 README「数据中转」一节，其余界面不用改。
+ * 默认走「局域网中转」—— 冷启动即组播宣告并开放 /info、/snapshot，供电脑端
+ * health-motion 自动发现与拉取；「模拟中转」只在手机内环路跑、不触网，供调试用。
+ * 组播不通可在地址栏手填 IP:18765，协议细节见 README「数据中转」一节。
  */
 @Composable
 fun RelayScreen(vm: RelayViewModel) {

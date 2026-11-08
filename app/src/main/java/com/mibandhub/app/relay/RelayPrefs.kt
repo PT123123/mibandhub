@@ -37,7 +37,9 @@ class RelayPrefs(private val context: Context) {
 
     val config: Flow<RelayConfig> = context.relayDataStore.data.map { p ->
         RelayConfig(
-            mode = if (p[Keys.MODE] == "lan") RelayMode.LAN else RelayMode.MOCK,
+            // 默认 LAN：只有用户显式存过 "mock" 才回退到调试模式。
+            // 这样桌面端开箱即可组播自动发现手机，不需要任何手填地址。
+            mode = if (p[Keys.MODE] == "mock") RelayMode.MOCK else RelayMode.LAN,
             enabled = p[Keys.ENABLED] ?: true,
             autoSync = p[Keys.AUTO_SYNC] ?: false,
             intervalMinutes = p[Keys.INTERVAL] ?: 15,

@@ -7,7 +7,7 @@ package com.mibandhub.app.relay.model
  * 不关心里面装的是什么、从哪来。
  */
 
-/** 传输模式：模拟中转（进程内假节点，默认）/ 局域网真实中转（对接电脑上的服务端）。 */
+/** 传输模式：局域网真实中转（默认，对接电脑上的服务端）/ 模拟中转（进程内假节点，仅供调试）。 */
 enum class RelayMode { MOCK, LAN }
 
 /** 局域网里被发现的中转节点（LocalSend 风格：每台设备带指纹用于校验身份）。 */
@@ -93,7 +93,8 @@ enum class RelayLogLevel { INFO, WARN, ERROR }
 
 /** 中转配置（持久化到独立 DataStore "relay"，与手环配置隔离）。 */
 data class RelayConfig(
-    val mode: RelayMode = RelayMode.MOCK,
+    /** 默认走 LAN：组播自动发现桌面端，不需要手填 IP；MOCK 仅供手动调试。 */
+    val mode: RelayMode = RelayMode.LAN,
     /** 总开关：关掉后既不自动同步也不手动同步。 */
     val enabled: Boolean = true,
     /** 后台自动同步。 */

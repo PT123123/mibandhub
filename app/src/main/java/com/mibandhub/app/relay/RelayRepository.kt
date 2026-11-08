@@ -110,8 +110,8 @@ object RelayRepository {
             }
         }
         // 局域网中转模式下，启动手机侧伴随服务（暴露 /info、/snapshot 供桌面端发现与拉取）；
-        // 切回模拟模式则停掉，端口释放。
-        if (cfg.mode == RelayMode.LAN) {
+        // 切回模拟模式、或用户关掉「中转总开关」都停掉服务，释放端口与组播锁。
+        if (cfg.mode == RelayMode.LAN && cfg.enabled) {
             LanRelayServer.start(
                 context = app,
                 aliasProvider = { _config.value.sourceAlias },
