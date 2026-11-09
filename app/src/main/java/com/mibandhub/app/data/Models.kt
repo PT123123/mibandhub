@@ -191,6 +191,24 @@ data class MeasureResult(
 // ---------------------------------------------------------------------------
 
 /**
+ * 测量时的身体状态标注 —— 官方 App 测完心率会问一句「运动后还是静息」，
+ * 同样是 80 BPM，运动后和刚起床时的含义完全不同，回头翻记录才解释得通。
+ *
+ * [id] 落盘用，别用 enum 的 name 当存储值（以后改名会把老记录判成别的状态）。
+ */
+enum class MeasureActivity(val id: String, val label: String) {
+    RESTING("resting", "静息"),
+    AFTER_EXERCISE("after_exercise", "运动后"),
+    AFTER_WAKING("after_waking", "起床后"),
+    ;
+
+    companion object {
+        /** 未知 / 空值一律当作「没标注」。 */
+        fun of(id: String?): MeasureActivity? = entries.firstOrNull { it.id == id }
+    }
+}
+
+/**
  * 一条心率测量记录的来源。
  *
  * [id] 是**跨端契约**：落盘 CSV、LAN 快照 JSON、桌面端 `model.rs` 全都认这个字符串。
@@ -226,6 +244,8 @@ data class PpgMeasureResult(
     val durationSec: Int,
     val quality: Int,
     val sampleCount: Int,
+    /** 测完用户标注的状态（静息 / 运动后 / 起床后）；null = 没标注。 */
+    val activity: MeasureActivity? = null,
 )
 
 /**
@@ -241,6 +261,8 @@ data class HeartMeasureRecord(
     /** 只有 PPG 有信号质量；手环记录为 null。 */
     val quality: Int? = null,
     val sampleCount: Int = 0,
+    /** 测完标注的状态；手环记录暂时不带。 */
+    val activity: MeasureActivity? = null,
 )
 
 fun MeasureResult.asRecord(): HeartMeasureRecord = HeartMeasureRecord(
@@ -257,5 +279,6 @@ fun PpgMeasureResult.asRecord(): HeartMeasureRecord = HeartMeasureRecord(
     source = HeartRateSource.PHONE_PPG,
     quality = quality,
     sampleCount = sampleCount,
+    activity = activity,
 )
 

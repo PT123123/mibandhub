@@ -2,6 +2,7 @@ package com.mibandhub.app.ui.heart
 
 import android.app.Application
 import androidx.lifecycle.AndroidViewModel
+import com.mibandhub.app.data.MeasureActivity
 import com.mibandhub.app.ppg.PpgLive
 import com.mibandhub.app.ppg.PpgMeasureController
 import com.mibandhub.app.ppg.PpgPhase
@@ -27,4 +28,5 @@ class PpgMeasureViewModel(app: Application) : AndroidViewModel(app) {
     fun onFrame(atMillis: Long, brightness: Float) = controller.onFrame(atMillis, brightness)
     fun onCameraError(message: String) = controller.onCameraError(message)
     fun setDurationSec(seconds: Int) = controller.setDurationSec(seconds)
+    fun setActivity(activity: MeasureActivity) = controller.setActivity(activity)
 }

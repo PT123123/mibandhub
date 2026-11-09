@@ -305,6 +305,7 @@ fun HeartRateScreen(vm: HeartRateViewModel) {
                 SectionCard(title = "测量明细", accent = PulseRed) {
                     KeyValueRow("读数", "${record.bpm} BPM", valueColor = PulseRed)
                     KeyValueRow("来源", record.source.label, valueColor = sourceColor(record.source))
+                    record.activity?.let { KeyValueRow("状态", it.label, valueColor = Mint) }
                     KeyValueRow("测量时刻", formatDateTime(record.finishedAtMillis))
                     KeyValueRow("耗时", formatSeconds(record.durationSec))
                     record.quality?.let {
@@ -607,6 +608,7 @@ private fun RecordRow(
         AnimatedVisibility(visible = expanded) {
             Column(Modifier.padding(bottom = 8.dp)) {
                 KeyValueRow("来源", record.source.label, valueColor = sourceColor(record.source))
+                record.activity?.let { KeyValueRow("状态", it.label, valueColor = Mint) }
                 KeyValueRow("测量时刻", formatDateTime(record.finishedAtMillis))
                 KeyValueRow("耗时", formatSeconds(record.durationSec))
                 record.quality?.let { KeyValueRow("信号质量", "$it / 100", valueColor = Mint) }

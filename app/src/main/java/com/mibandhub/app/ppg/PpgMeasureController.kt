@@ -2,6 +2,7 @@ package com.mibandhub.app.ppg
 
 import android.app.Application
 import com.mibandhub.app.data.BandPrefs
+import com.mibandhub.app.data.MeasureActivity
 import com.mibandhub.app.data.PpgMeasureResult
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -102,12 +103,12 @@ class PpgMeasureController private constructor(app: Application) {
         if (_phase.value !is PpgPhase.Preparing) return
         startedAtMillis = System.currentTimeMillis()
         _phase.value = PpgPhase.Sampling
-        _live.value = PpgLive(progress = 0f, remainingSec = targetSec)
         ticker?.cancel()
         ticker = scope.launch {
             // 时长落盘在 DataStore，进采样前定下来，避免和用户刚改的设置对不上
             targetSec = prefs.ppgDurationSec.first()
             val total = targetSec * 1000L
+            _live.value = PpgLive(progress = 0f, remainingSec = targetSec)
             while (isActive) {
                 delay(200)
                 val elapsed = System.currentTimeMillis() - startedAtMillis
@@ -166,14 +167,31 @@ class PpgMeasureController private constructor(app: Application) {
         start()
     }
 
+    /**
+     * 测完在结果页选「静息 / 运动后 / 起床后」。
+     *
+     * 结果已经落盘，这里只补标注：先更新界面上的结果（选中态立刻生效），
+     * 再异步写进存储，界面不会等磁盘。
+     */
+    fun setActivity(activity: MeasureActivity) {
+        val success = _phase.value as? PpgPhase.Success ?: return
+        val updated = success.result.copy(activity = activity)
+        _phase.value = PpgPhase.Success(updated)
+        scope.launch {
+            prefs.setPpgMeasureActivity(updated.finishedAtMillis, activity)
+        }
+    }
+
     fun setDurationSec(seconds: Int) {
         if (seconds !in DURATION_OPTIONS) return
         scope.launch { prefs.setPpgDurationSec(seconds) }
     }
 
     private suspend fun finish() {
-        ticker?.cancel()
-        ticker = null
+        // 这里**不能** cancel ticker：finish() 就跑在 ticker 这个 Job 里，
+        // 一取消，下面的 withContext/落盘会在第一个挂起点抛 CancellationException，
+        // 状态永远停在「剩余 0 秒」的 Sampling。计时循环自己 break 即可；
+        // ticker 留着不动，这样用户中途点取消仍能打断这次收尾。
         val snapshot = synchronized(lock) { samples.toList() }
         val estimate = withContext(Dispatchers.Default) { PpgSignalAnalyzer.analyze(snapshot) }
         val finishedAt = System.currentTimeMillis()

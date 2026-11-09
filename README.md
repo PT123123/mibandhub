@@ -309,6 +309,8 @@ App 连手环只需要两样东西：**手环的 MAC** 和 **AuthKey**（32 位�
 > `bpm,finishedAtMillis,durationSec,quality`），`measure_history` **永远保持 3 列**：
 > 桌面端 `sources/shouhuan.rs` 按固定列数解析后者，给它加列会把新记录整行丢掉。
 > 两个 key 物理分开、App 内合并展示，桌面端靠 key 名和 `source` 字段识别来源。
+> 测完后用户标注的状态（静息 / 运动后 / 起床后）另存 `ppg_measure_activity`
+> （每行 `finishedAtMillis|状态 id`），不往上面两份 CSV 加列。
 
 ### 用起来
 

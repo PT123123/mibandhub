@@ -60,6 +60,7 @@ import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.mibandhub.app.data.MeasureActivity
 import com.mibandhub.app.ppg.PpgCameraSession
 import com.mibandhub.app.ppg.PpgMeasureController
 import com.mibandhub.app.ppg.PpgPhase
@@ -171,6 +172,7 @@ fun PpgMeasureOverlay(vm: PpgMeasureViewModel, onClose: () -> Unit) {
                 is PpgPhase.Success -> SuccessContent(
                     phase = phase as PpgPhase.Success,
                     onAgain = vm::retry,
+                    onActivity = vm::setActivity,
                     onDone = {
                         vm.cancel()
                         onClose()
@@ -300,7 +302,12 @@ private fun SamplingContent(live: com.mibandhub.app.ppg.PpgLive, onCancel: () ->
 }
 
 @Composable
-private fun SuccessContent(phase: PpgPhase.Success, onAgain: () -> Unit, onDone: () -> Unit) {
+private fun SuccessContent(
+    phase: PpgPhase.Success,
+    onAgain: () -> Unit,
+    onActivity: (MeasureActivity) -> Unit,
+    onDone: () -> Unit,
+) {
     val result = phase.result
     Text("测量完成", color = Mint, style = MaterialTheme.typography.titleMedium)
     Spacer(Modifier.height(8.dp))
@@ -318,7 +325,23 @@ private fun SuccessContent(phase: PpgPhase.Success, onAgain: () -> Unit, onDone:
         color = Color.White.copy(alpha = 0.6f),
         style = MaterialTheme.typography.labelMedium,
     )
-    Spacer(Modifier.height(24.dp))
+    Spacer(Modifier.height(20.dp))
+    // 和官方 App 一样，测完问一句状态：同样的读数，运动后和静息含义完全不同
+    Text("刚才测量时你是？", color = Color.White, style = MaterialTheme.typography.bodyMedium)
+    Spacer(Modifier.height(8.dp))
+    FilterChipRow(
+        options = MeasureActivity.entries.map { it.label },
+        selectedIndex = result.activity?.let { MeasureActivity.entries.indexOf(it) } ?: -1,
+        accent = Mint,
+        onSelect = { onActivity(MeasureActivity.entries[it]) },
+    )
+    Spacer(Modifier.height(6.dp))
+    Text(
+        "不选也能保存，只是这条记录不会带状态标注。",
+        color = Color.White.copy(alpha = 0.45f),
+        style = MaterialTheme.typography.labelSmall,
+    )
+    Spacer(Modifier.height(22.dp))
     Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
         TextButton(onClick = onAgain) { Text("再测一次", color = Color.White.copy(alpha = 0.8f)) }
         Button(

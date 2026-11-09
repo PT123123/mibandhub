@@ -60,6 +60,14 @@ class BandPrefs(private val context: Context) {
          */
         val PPG_MEASURE_HISTORY = stringPreferencesKey("ppg_measure_history")
 
+        /**
+         * 闪光灯测量的事后状态标注：每行 "finishedAtMillis|状态 id"。
+         *
+         * 单独一个 key 而不是往 [PPG_MEASURE_HISTORY] 加第 5 列 —— 那份 CSV 的列数
+         * 是跨端契约，桌面端按固定列数解析，加列会把整行丢掉。
+         */
+        val PPG_MEASURE_ACTIVITY = stringPreferencesKey("ppg_measure_activity")
+
         /** 闪光灯采样时长（秒），取值见 [BandPrefs.PPG_DURATION_OPTIONS]。 */
         val PPG_DURATION_SEC = intPreferencesKey("ppg_duration_sec")
 
@@ -165,9 +173,17 @@ class BandPrefs(private val context: Context) {
     val measureHistory: Flow<List<MeasureResult>> =
         context.bandDataStore.data.map { decodeHistory(it[Keys.MEASURE_HISTORY]) }
 
-    /** 闪光灯 PPG 的记录，新的在前，每行 4 列：bpm,finishedAtMillis,durationSec,quality。 */
+    /**
+     * 闪光灯 PPG 的记录，新的在前，每行 4 列：bpm,finishedAtMillis,durationSec,quality。
+     * 事后标注的状态从 [Keys.PPG_MEASURE_ACTIVITY] 合并进来，存储格式保持不变。
+     */
     val ppgMeasureHistory: Flow<List<PpgMeasureResult>> =
-        context.bandDataStore.data.map { decodePpgHistory(it[Keys.PPG_MEASURE_HISTORY]) }
+        context.bandDataStore.data.map { prefs ->
+            decodePpgHistory(
+                prefs[Keys.PPG_MEASURE_HISTORY],
+                decodePpgActivity(prefs[Keys.PPG_MEASURE_ACTIVITY]),
+            )
+        }
 
     val ppgDurationSec: Flow<Int> =
         context.bandDataStore.data.map { it[Keys.PPG_DURATION_SEC] ?: PPG_DURATION_DEFAULT_SEC }
@@ -194,8 +210,21 @@ class BandPrefs(private val context: Context) {
         }
     }
 
+    /** 给一次已落盘的闪光灯测量补上事后状态标注（用户没选就一直是 null）。 */
+    suspend fun setPpgMeasureActivity(finishedAtMillis: Long, activity: MeasureActivity) {
+        context.bandDataStore.edit { prefs ->
+            val tags = decodePpgActivity(prefs[Keys.PPG_MEASURE_ACTIVITY]) +
+                (finishedAtMillis to activity)
+            prefs[Keys.PPG_MEASURE_ACTIVITY] =
+                tags.entries.joinToString("\n") { "${it.key}|${it.value.id}" }
+        }
+    }
+
     suspend fun clearPpgMeasureHistory() {
-        context.bandDataStore.edit { it.remove(Keys.PPG_MEASURE_HISTORY) }
+        context.bandDataStore.edit {
+            it.remove(Keys.PPG_MEASURE_HISTORY)
+            it.remove(Keys.PPG_MEASURE_ACTIVITY)
+        }
     }
 
     suspend fun setPpgDurationSec(seconds: Int) {
@@ -964,7 +993,10 @@ class BandPrefs(private val context: Context) {
             "${it.bpm},${it.finishedAtMillis},${it.durationSec},${it.quality}"
         }
 
-    private fun decodePpgHistory(raw: String?): List<PpgMeasureResult> {
+    private fun decodePpgHistory(
+        raw: String?,
+        activityTags: Map<Long, MeasureActivity> = emptyMap(),
+    ): List<PpgMeasureResult> {
         if (raw.isNullOrBlank()) return emptyList()
         return raw.lineSequence().mapNotNull { line ->
             val parts = line.split(',')
@@ -973,7 +1005,21 @@ class BandPrefs(private val context: Context) {
             val finishedAt = parts[1].toLongOrNull() ?: return@mapNotNull null
             val duration = parts[2].toIntOrNull() ?: return@mapNotNull null
             val quality = parts.getOrNull(3)?.toIntOrNull() ?: 0
-            PpgMeasureResult(bpm, finishedAt, duration, quality.coerceIn(0, 100), 0)
+            PpgMeasureResult(
+                bpm, finishedAt, duration, quality.coerceIn(0, 100), 0,
+                activityTags[finishedAt],
+            )
         }.toList()
+    }
+
+    /** 事后状态标注："finishedAtMillis|状态 id" 一行一条，坏行单丢。 */
+    private fun decodePpgActivity(raw: String?): Map<Long, MeasureActivity> {
+        if (raw.isNullOrBlank()) return emptyMap()
+        return raw.lineSequence().mapNotNull { line ->
+            val parts = line.split('|')
+            val at = parts.getOrNull(0)?.toLongOrNull() ?: return@mapNotNull null
+            val activity = MeasureActivity.of(parts.getOrNull(1)) ?: return@mapNotNull null
+            at to activity
+        }.toMap()
     }
 }
