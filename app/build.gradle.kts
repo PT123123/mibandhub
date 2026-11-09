@@ -23,8 +23,8 @@ android {
         applicationId = "com.mibandhub.app"
         minSdk = 26
         targetSdk = 35
-        versionCode = 19
-        versionName = "2.1.0"
+        versionCode = 20
+        versionName = "2.1.1"
         vectorDrawables { useSupportLibrary = true }
     }
 
@@ -70,6 +70,12 @@ android {
         compose = true
     }
 
+    testOptions {
+        // 迁移里有一条 android.util.Log；JVM 单测不跑在 Android 上，
+        // 让框架方法返回默认值而不是抛 "not mocked"，否则纯逻辑门被平台桩挡死。
+        unitTests.isReturnDefaultValues = true
+    }
+
     packaging {
         resources {
             excludes += "/META-INF/{AL2.0,LGPL2.1}"
@@ -107,4 +113,6 @@ dependencies {
     implementation(libs.guava)
 
     debugImplementation(libs.androidx.ui.tooling)
+
+    testImplementation(libs.junit)
 }
