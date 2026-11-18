@@ -22,6 +22,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.mibandhub.app.link.LinkRole
 import com.mibandhub.app.ui.components.NavRow
 import com.mibandhub.app.ui.components.NoticeBanner
 import com.mibandhub.app.ui.theme.NotifyAmber
@@ -42,6 +43,7 @@ object NotifyRoutes {
     const val APPS = "notify-apps"
     const val RECENT = "recent-notifications"
     const val CONFLICT = "notify-conflict"
+    const val LINK = "notify-link"
 }
 
 /**
@@ -74,6 +76,8 @@ fun NotifyScreen(
     val appRules by vm.appRules.collectAsStateWithLifecycle()
     val recent by vm.recent.collectAsStateWithLifecycle()
     val conflicts by vm.conflictApps.collectAsStateWithLifecycle()
+    val linkRole by vm.linkRole.collectAsStateWithLifecycle()
+    val linkSearchStatus by vm.linkSearchStatus.collectAsStateWithLifecycle()
 
     // 每次进入页面都刷新一次权限状态（从系统设置授权回来也能看到最新状态）
     LaunchedEffect(Unit) {
@@ -164,6 +168,20 @@ fun NotifyScreen(
             },
             accent = NotifyAmber,
             onClick = { onNavigate(NotifyRoutes.FORWARD) },
+        )
+        Spacer(Modifier.height(10.dp))
+
+        // ---- 主从转发：另一台手机（从机）的通知经本机（主机）推手环 ----
+        NavRow(
+            title = "主从转发",
+            subtitle = when (linkRole) {
+                LinkRole.MASTER -> "本机是主机 · 等待从机连接"
+                LinkRole.SLAVE -> "本机是从机 · " +
+                    (linkSearchStatus.ifBlank { "未发现主机" })
+                LinkRole.NONE -> "未启用 · 可让另一台手机不连手环也能推消息"
+            },
+            accent = NotifyAmber,
+            onClick = { onNavigate(NotifyRoutes.LINK) },
         )
         Spacer(Modifier.height(10.dp))
 

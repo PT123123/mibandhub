@@ -9,6 +9,7 @@ import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.core.longPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
+import com.mibandhub.app.link.LinkRole
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.map
@@ -124,6 +125,25 @@ class BandPrefs(private val context: Context) {
         /** 真实推到手环的通知记录（最近推送页），新的在前。 */
         val RECENT_NOTIFICATIONS = stringPreferencesKey("recent_notifications")
 
+        // ---- 主从转发：从机不连手环蓝牙，把过滤后的通知经局域网发给主机，由主机推手环 ----
+        /** 本机角色："none" 独立使用 / "master" 主机（连手环）/ "slave" 从机（不连手环）。 */
+        val LINK_ROLE = stringPreferencesKey("link_role")
+
+        /** 本机在主从链路里的名字，主机用来宣告、从机随消息带上（主机记录里显示来源）。 */
+        val LINK_ALIAS = stringPreferencesKey("link_alias")
+
+        /** 6 位配对码：主机生成展示，从机填入。局域网 HTTP 请求凭它过门禁。 */
+        val LINK_PAIRING_CODE = stringPreferencesKey("link_pairing_code")
+
+        /** 从机的备用主机地址 "ip:端口"，仅在自动发现不可用时使用。 */
+        val LINK_MANUAL_HOST = stringPreferencesKey("link_manual_host")
+
+        /** 从机选中的主机指纹（空 = 自动选任一发现的主机）。 */
+        val LINK_SELECTED_MASTER = stringPreferencesKey("link_selected_master")
+
+        /** 从机记住的选中主机最近地址 "ip:端口" —— 重启后第一次发送、组播还没到时用。 */
+        val LINK_SELECTED_ENDPOINT = stringPreferencesKey("link_selected_endpoint")
+
         /** 手环电量读数历史（时间点 + 电量）。永久保存，不清理。 */
         val BATTERY_HISTORY = stringPreferencesKey("battery_history")
 
@@ -168,6 +188,23 @@ class BandPrefs(private val context: Context) {
     val autoConnect: Flow<Boolean> = context.bandDataStore.data.map { it[Keys.AUTO_CONNECT] ?: true }
     val forwardNotifications: Flow<Boolean> =
         context.bandDataStore.data.map { it[Keys.FORWARD_NOTIFICATIONS] ?: true }
+
+    // ---- 主从转发 ----
+    val linkRole: Flow<LinkRole> =
+        context.bandDataStore.data.map { LinkRole.fromKey(it[Keys.LINK_ROLE]) }
+    val linkAlias: Flow<String> = context.bandDataStore.data.map { it[Keys.LINK_ALIAS] ?: "" }
+    val linkPairingCode: Flow<String> =
+        context.bandDataStore.data.map { it[Keys.LINK_PAIRING_CODE] ?: "" }
+    val linkManualHost: Flow<String> =
+        context.bandDataStore.data.map { it[Keys.LINK_MANUAL_HOST] ?: "" }
+
+    /** 从机选中的主机指纹；null = 自动选任一发现的主机。 */
+    val linkSelectedMaster: Flow<String?> =
+        context.bandDataStore.data.map { it[Keys.LINK_SELECTED_MASTER] }
+
+    /** 从机记住的选中主机最近地址 "ip:端口"。 */
+    val linkSelectedEndpoint: Flow<String?> =
+        context.bandDataStore.data.map { it[Keys.LINK_SELECTED_ENDPOINT] }
 
     /** 测量记录，新的在前。不设上限 —— 用户明确要求历史存多久算多久。 */
     val measureHistory: Flow<List<MeasureResult>> =
@@ -247,6 +284,50 @@ class BandPrefs(private val context: Context) {
 
     suspend fun setForwardNotifications(enabled: Boolean) {
         context.bandDataStore.edit { it[Keys.FORWARD_NOTIFICATIONS] = enabled }
+    }
+
+    // ---- 主从转发 ----
+
+    suspend fun setLinkRole(role: LinkRole) {
+        context.bandDataStore.edit { it[Keys.LINK_ROLE] = role.key }
+    }
+
+    suspend fun setLinkAlias(alias: String) {
+        context.bandDataStore.edit { it[Keys.LINK_ALIAS] = alias.trim().take(30) }
+    }
+
+    suspend fun setLinkPairingCode(code: String) {
+        context.bandDataStore.edit { it[Keys.LINK_PAIRING_CODE] = code.trim().take(6) }
+    }
+
+    /** 生成并保存一个 6 位随机配对码，返回新码。 */
+    suspend fun regenerateLinkPairingCode(): String {
+        val code = (100000..999999).random().toString()
+        context.bandDataStore.edit { it[Keys.LINK_PAIRING_CODE] = code }
+        return code
+    }
+
+    suspend fun setLinkManualHost(host: String) {
+        context.bandDataStore.edit { it[Keys.LINK_MANUAL_HOST] = host.trim() }
+    }
+
+    /**
+     * 记住从机选中的主机：指纹 + 最近一次见到的 "ip:端口"。
+     * 两者都可以为 null（清掉选择 = 回到自动模式）。
+     */
+    suspend fun setLinkSelection(fingerprint: String?, endpoint: String?) {
+        context.bandDataStore.edit {
+            if (fingerprint.isNullOrBlank()) {
+                it.remove(Keys.LINK_SELECTED_MASTER)
+            } else {
+                it[Keys.LINK_SELECTED_MASTER] = fingerprint
+            }
+            if (endpoint.isNullOrBlank()) {
+                it.remove(Keys.LINK_SELECTED_ENDPOINT)
+            } else {
+                it[Keys.LINK_SELECTED_ENDPOINT] = endpoint
+            }
+        }
     }
 
     /** 记一次测量结果，全部保留。 */

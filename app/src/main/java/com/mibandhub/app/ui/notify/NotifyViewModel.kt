@@ -19,6 +19,10 @@ import com.mibandhub.app.data.InstalledApp
 import com.mibandhub.app.data.KeywordRule
 import com.mibandhub.app.data.SensitiveKind
 import com.mibandhub.app.data.SensitiveRule
+import com.mibandhub.app.link.DiscoveredMaster
+import com.mibandhub.app.link.LinkManager
+import com.mibandhub.app.link.LinkRole
+import com.mibandhub.app.link.LinkSendResult
 import com.mibandhub.app.service.BandSessionProvider
 import com.mibandhub.app.service.HeartMeasureController
 import com.mibandhub.app.service.NotifyPermissionReminder
@@ -127,6 +131,20 @@ class NotifyViewModel(app: Application) : AndroidViewModel(app) {
     /** 转发常驻/前台服务通知（骑手位置、音乐播放器等），默认关。 */
     val forwardOngoing: StateFlow<Boolean> =
         prefs.forwardOngoing.stateIn(viewModelScope, SharingStarted.Eagerly, false)
+
+    // ---- 主从转发：本机角色、发现的主机、链路状态 ----
+    val linkRole: StateFlow<LinkRole> =
+        prefs.linkRole.stateIn(viewModelScope, SharingStarted.Eagerly, LinkRole.NONE)
+    val linkAlias: StateFlow<String> =
+        prefs.linkAlias.stateIn(viewModelScope, SharingStarted.Eagerly, "")
+    val linkPairingCode: StateFlow<String> =
+        prefs.linkPairingCode.stateIn(viewModelScope, SharingStarted.Eagerly, "")
+    val linkManualHost: StateFlow<String> =
+        prefs.linkManualHost.stateIn(viewModelScope, SharingStarted.Eagerly, "")
+    val linkMasters: StateFlow<List<DiscoveredMaster>> = LinkManager.get(app).masters
+    val linkSearchStatus: StateFlow<String> = LinkManager.get(app).searchStatus
+    val linkActiveEndpoint: StateFlow<String?> = LinkManager.get(app).activeEndpoint
+    val linkLastSend: StateFlow<LinkSendResult?> = LinkManager.get(app).lastSend
 
     val vibration: StateFlow<String> =
         prefs.notifyVibration.stateIn(viewModelScope, SharingStarted.Eagerly, "standard")
@@ -381,6 +399,32 @@ class NotifyViewModel(app: Application) : AndroidViewModel(app) {
     fun setForwardOngoing(enabled: Boolean) = launch { prefs.setForwardOngoing(enabled) }
 
     fun setVibration(pattern: String) = launch { prefs.setNotifyVibration(pattern) }
+
+    // ---- 主从转发 ----
+
+    /**
+     * 切换角色。切主机且还没配对码时顺手生成一个 —— 用户进页面就能看到码，
+     * 不用再点「重新生成」。
+     */
+    fun setLinkRole(role: LinkRole) = launch {
+        if (role == LinkRole.MASTER && prefs.linkPairingCode.first().isBlank()) {
+            prefs.regenerateLinkPairingCode()
+        }
+        prefs.setLinkRole(role)
+    }
+
+    fun setLinkAlias(alias: String) = launch { prefs.setLinkAlias(alias) }
+
+    fun regenerateLinkPairingCode() = launch { prefs.regenerateLinkPairingCode() }
+
+    fun setLinkManualHost(host: String) = launch { prefs.setLinkManualHost(host) }
+
+    /** 手动选择主机（null/空串 = 回到自动选择）。 */
+    fun selectLinkMaster(fingerprint: String?) =
+        launch { LinkManager.get(getApplication()).selectMaster(fingerprint) }
+
+    /** 本机名称的兜底显示（机型名），给输入框的 placeholder 用。 */
+    fun defaultAlias(): String = LinkManager.get(getApplication()).defaultAlias()
 
     fun setAppEnabled(packageName: String, enabled: Boolean) = launch {
         prefs.setAppRules(

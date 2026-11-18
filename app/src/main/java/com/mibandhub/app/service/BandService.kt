@@ -25,6 +25,7 @@ import com.mibandhub.app.data.BandNotification
 import com.mibandhub.app.util.formatHours
 import com.mibandhub.app.data.BandPrefs
 import com.mibandhub.app.data.SleepNightRecord
+import com.mibandhub.app.link.LinkRole
 import com.mibandhub.app.proto.BandSettings
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -317,6 +318,11 @@ class BandService : Service() {
         autoConnecting = true
         scope.launch {
             try {
+                // 主从模式：从机不连手环蓝牙 —— 手环只由主机负责，从机的通知走局域网转发
+                if (prefs.linkRole.first() == LinkRole.SLAVE) {
+                    Log.d(TAG, "从机模式，跳过自动连接手环")
+                    return@launch
+                }
                 val enabled = prefs.autoConnect.first()
                 if (!enabled) return@launch
                 val mac = prefs.mac.first()

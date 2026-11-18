@@ -3,6 +3,7 @@ package com.mibandhub.app
 import android.app.Application
 import android.app.NotificationChannel
 import android.app.NotificationManager
+import com.mibandhub.app.link.LinkManager
 import com.mibandhub.app.service.NotifyPermissionReminder
 
 class ShouhuanApp : Application() {
@@ -11,6 +12,9 @@ class ShouhuanApp : Application() {
         super.onCreate()
         createNotificationChannels()
         NotifyPermissionReminder.markProcessStart()
+        // 主从转发：进程一起来就初始化 —— 角色是主机要立刻起接收服务，
+        // 是从机要立刻开始监听宣告，不能等用户打开界面才恢复。
+        LinkManager.get(this)
     }
 
     private fun createNotificationChannels() {

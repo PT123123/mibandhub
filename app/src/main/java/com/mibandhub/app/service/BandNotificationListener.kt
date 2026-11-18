@@ -10,6 +10,8 @@ import com.mibandhub.app.ble.ConnectionState
 import com.mibandhub.app.data.AppRule
 import com.mibandhub.app.data.BandNotification
 import com.mibandhub.app.data.BandPrefs
+import com.mibandhub.app.link.LinkManager
+import com.mibandhub.app.link.LinkRole
 import com.mibandhub.app.proto.BandSession
 import com.mibandhub.app.proto.Notify
 import kotlinx.coroutines.CoroutineScope
@@ -273,6 +275,13 @@ class BandNotificationListener : NotificationListenerService() {
         // ---- 振动档位 → 告警类别（手环按类别存的振动模式来震）----
         val alertCategory = Notify.alertCategoryFor(prefs.notifyVibration.first())
 
+        // ---- 主从转发：从机不连手环蓝牙，把过滤完的通知交给局域网主机，由主机推手环 ----
+        // 过滤（名单/关键词/敏感/去重/勿扰/仅锁屏）在上面已经全部完成，这里只管「交给谁」。
+        if (prefs.linkRole.first() == LinkRole.SLAVE) {
+            forwardToMaster(pkg, appLabel, title, body, effectiveBody, hideNote, alertCategory, bodyHiddenReason != null)
+            return
+        }
+
         // ---- 确保手环连着 ----
         val session = BandSessionProvider.get(this@BandNotificationListener)
         if (session.connectionState.value != ConnectionState.Authenticated) {
@@ -353,10 +362,53 @@ class BandNotificationListener : NotificationListenerService() {
     }
 
     /**
+     * 从机转发链路：把过滤完的通知交给 [LinkManager] 发给主机，结果记入「最近推送」。
+     *
+     * 与直连手环的差别只在于「谁最终推手环」：过滤链路完全一致，
+     * 「最近推送」里本机显示 forwarded=主机侧结果 —— 用户在一台手机上就能看出
+     * 通知到底被主机收下了还是死在了半路（失败原因写进 dropReason）。
+     */
+    private suspend fun forwardToMaster(
+        pkg: String,
+        appLabel: String,
+        title: String,
+        body: String,
+        effectiveBody: String,
+        hideNote: String,
+        alertCategory: Int,
+        bodyFiltered: Boolean,
+    ) {
+        val result = LinkManager.get(applicationContext)
+            .relayFromSlave(pkg, appLabel, title, effectiveBody, alertCategory)
+
+        val timeLabel = "%02d:%02d".format(LocalTime.now().hour, LocalTime.now().minute)
+        prefs.recordNotification(
+            BandNotification(
+                appName = appLabel,
+                title = title,
+                // 与直连一致：命中内容过滤时正文照存（日志要能看出哪句话被藏了）；
+                // 应用级「只推标题」是隐私设置，正文本来就不进日志。
+                body = if (bodyFiltered) body else effectiveBody,
+                timeLabel = timeLabel,
+                forwarded = result.ok,
+                packageName = pkg,
+                dropReason = when {
+                    result.ok && hideNote.isNotBlank() -> "$hideNote（已交主机「${result.note}」推送手环）"
+                    result.ok -> "已交主机「${result.note}」推送手环"
+                    else -> "转发主机失败：${result.note}"
+                },
+            ),
+        )
+        Log.d(TAG, "从机转发${if (result.ok) "成功" else "失败"}：$appLabel / ${title.take(40)}（${result.note}）")
+    }
+
+    /**
      * 确保手环已认证连接。没连就试着连一次 —— 只在有配对信息时动手。
      * 35 秒超时（和手动测试同值），超时或失败都返回 false，通知不丢，下次再来。
      */
     private suspend fun ensureConnected(): Boolean {
+        // 从机不连手环蓝牙 —— 手环永远握在主机手里
+        if (prefs.linkRole.first() == LinkRole.SLAVE) return false
         // 已连着就不用再连
         if (session.connectionState.value == ConnectionState.Authenticated) return true
         // 已经在连了（前一个通知触发的），等它 —— 10 秒内没好就放弃
