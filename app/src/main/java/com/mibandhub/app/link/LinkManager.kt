@@ -100,15 +100,20 @@ object LinkManager {
 
     private suspend fun alias(): String = aliasCache.ifBlank { defaultAlias() }
 
-    private fun onRoleChanged(role: LinkRole) {
+    private suspend fun onRoleChanged(role: LinkRole) {
         if (role == currentRole) return
         currentRole = role
         Log.i(TAG, "主从角色切换：$role")
         when (role) {
             LinkRole.MASTER -> {
-                // 双保险：冷启动直接恢复主机角色且还没配对码时，先补一个
-                // （UI 切换角色时也会生成，这条覆盖「上次就是主机」的启动路径）
-                if (codeCache.isBlank()) scope.launch { prefs.regenerateLinkPairingCode() }
+                // 直接读盘判断配对码，不能用 codeCache —— 冷启动时 code 和 role 两个
+                // collector 并发发射，缓存还没填充就会被误判成空、把好码重新生成掉。
+                val stored = prefs.linkPairingCode.first()
+                codeCache = stored
+                if (stored.isBlank()) {
+                    Log.i(TAG, "主机还没有配对码，自动生成")
+                    prefs.regenerateLinkPairingCode()
+                }
                 SlaveLinkClient.stop()
                 _masters.value = emptyList()
                 _activeEndpoint.value = null

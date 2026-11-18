@@ -23,8 +23,8 @@ android {
         applicationId = "com.mibandhub.app"
         minSdk = 26
         targetSdk = 35
-        versionCode = 21
-        versionName = "2.1.2"
+        versionCode = 22
+        versionName = "2.1.3"
         vectorDrawables { useSupportLibrary = true }
     }
 

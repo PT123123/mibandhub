@@ -23,6 +23,7 @@ import com.mibandhub.app.link.DiscoveredMaster
 import com.mibandhub.app.link.LinkManager
 import com.mibandhub.app.link.LinkRole
 import com.mibandhub.app.link.LinkSendResult
+import com.mibandhub.app.proto.Notify
 import com.mibandhub.app.service.BandSessionProvider
 import com.mibandhub.app.service.HeartMeasureController
 import com.mibandhub.app.service.NotifyPermissionReminder
@@ -415,7 +416,21 @@ class NotifyViewModel(app: Application) : AndroidViewModel(app) {
 
     fun setLinkAlias(alias: String) = launch { prefs.setLinkAlias(alias) }
 
+    /** 从机填入主机的配对码（主机页展示的 6 位数字）。 */
+    fun setLinkPairingCode(code: String) = launch { prefs.setLinkPairingCode(code) }
+
     fun regenerateLinkPairingCode() = launch { prefs.regenerateLinkPairingCode() }
+
+    /** 从机手动发一条测试通知给主机，验证整条主从链路（结果进 lastSend / 最近推送）。 */
+    fun sendLinkTest() = launch {
+        LinkManager.get(getApplication()).relayFromSlave(
+            pkg = "",
+            appLabel = "手环管家",
+            title = "从机测试通知",
+            body = "主从链路测试：手环弹出这条说明从机 → 主机 → 手环全通了。",
+            alertCategory = Notify.alertCategoryFor("standard"),
+        )
+    }
 
     fun setLinkManualHost(host: String) = launch { prefs.setLinkManualHost(host) }
 

@@ -40,6 +40,12 @@ object MasterLinkServer {
     private const val ANNOUNCE_INTERVAL_MS = 2000L
     private const val CLIENT_TIMEOUT_MS = 8000
 
+    /**
+     * 首选固定端口：从机手动填地址时不用跟着主机重启而改（组播发现被路由器拦的
+     * 环境里，这是唯一稳定的寻址方式）。被占用时回落系统随机端口。
+     */
+    private const val PREFERRED_PORT = 45318
+
     private val _port = MutableStateFlow(0)
 
     /** 当前 HTTP 服务监听的端口（0 = 未启动），UI 与从机宣告共用。 */
@@ -72,10 +78,17 @@ object MasterLinkServer {
         running = true
         serverJob = scope.launch(Dispatchers.IO) {
             runCatching {
-                val ss = ServerSocket(0) // 系统分配空闲端口
+                // 先试固定端口（手动寻址稳定），被占再回落随机端口
+                val ss = runCatching { ServerSocket(PREFERRED_PORT) }
+                    .getOrElse { ServerSocket(0) }
                 serverSocket = ss
                 _port.value = ss.localPort
-                Log.i(TAG, "主从接收服务已启动 :${_port.value}，指纹 $fingerprint")
+                Log.i(
+                    TAG,
+                    "主从接收服务已启动 :${_port.value}" +
+                        (if (_port.value == PREFERRED_PORT) "（固定端口）" else "（固定端口被占，回落随机）") +
+                        "，指纹 $fingerprint",
+                )
                 announceJob = launch { announceLoop(aliasProvider) }
                 while (isActive && running) {
                     runCatching {
@@ -141,17 +154,18 @@ object MasterLinkServer {
         onNotify: suspend (JSONObject) -> LinkSendResult,
     ) {
         client.soTimeout = CLIENT_TIMEOUT_MS
-        // 不用 use 包 reader：关 InputStream 会把整个 Socket 一起关掉，响应可能来不及发完。
-        // Socket 由外层 accept().use 统一关闭。
-        val reader = client.getInputStream().bufferedReader(Charsets.UTF_8)
-        val requestLine = reader.readLine() ?: return
+        // 头部用 ASCII 逐行读、请求体按 Content-Length 读**字节**再 UTF-8 解码。
+        // 不能用 BufferedReader：缓冲会预读 body 字节，且中文 1 字符 = 3 字节，
+        // 按字符数读字节长度的 body 会读到不存在的字符、阻塞到超时。
+        val input = client.getInputStream()
+        val requestLine = readAsciiLine(input)
         val parts = requestLine.split(" ")
         val method = parts.getOrNull(0) ?: ""
         val path = parts.getOrNull(1) ?: "/"
         var contentLength = 0
         var linkCode = ""
         while (true) {
-            val line = reader.readLine() ?: break
+            val line = readAsciiLine(input)
             if (line.isEmpty()) break
             val lower = line.lowercase()
             if (lower.startsWith("content-length:")) {
@@ -161,7 +175,7 @@ object MasterLinkServer {
                 linkCode = line.substringAfter(':').trim()
             }
         }
-        val bodyJson = if (contentLength > 0) readBody(reader, contentLength) else ""
+        val bodyJson = if (contentLength > 0) readUtf8Body(input, contentLength) else ""
 
         val out = client.getOutputStream()
         when {
@@ -201,16 +215,27 @@ object MasterLinkServer {
         }
     }
 
-    /** 按 Content-Length 精确读满请求体（HTTP 头之后就是 body）。 */
-    private fun readBody(reader: java.io.BufferedReader, length: Int): String {
-        val chars = CharArray(length)
+    /** 从流里读一行 ASCII 头（消费掉行尾 CRLF）。 */
+    private fun readAsciiLine(input: java.io.InputStream): String {
+        val sb = StringBuilder()
+        while (true) {
+            val c = input.read()
+            if (c == -1 || c == 10) break // LF 结束一行
+            if (c != 13) sb.append(c.toChar()) // 丢弃 CR
+        }
+        return sb.toString()
+    }
+
+    /** 按 Content-Length 精确读满请求体的**字节**，再 UTF-8 解码 —— 中文正文才有正确长度语义。 */
+    private fun readUtf8Body(input: java.io.InputStream, length: Int): String {
+        val bytes = ByteArray(length)
         var n = 0
         while (n < length) {
-            val r = reader.read(chars, n, length - n)
+            val r = input.read(bytes, n, length - n)
             if (r < 0) break
             n += r
         }
-        return String(chars, 0, n)
+        return String(bytes, 0, n, Charsets.UTF_8)
     }
 
     private fun writeJson(out: java.io.OutputStream, status: Int, body: JSONObject) {

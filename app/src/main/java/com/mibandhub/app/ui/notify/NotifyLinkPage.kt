@@ -54,6 +54,7 @@ fun NotifyLinkPage(vm: NotifyViewModel, onBack: () -> Unit) {
 
     var aliasDraft by remember(alias) { mutableStateOf(alias) }
     var hostDraft by remember(manualHost) { mutableStateOf(manualHost) }
+    var codeDraft by remember(role) { mutableStateOf(vm.linkPairingCode.value) }
 
     SubPage("主从转发", onBack) {
         // ---- 角色选择 ----
@@ -105,17 +106,19 @@ fun NotifyLinkPage(vm: NotifyViewModel, onBack: () -> Unit) {
         Spacer(Modifier.height(12.dp))
 
         when (role) {
-            LinkRole.MASTER -> MasterSection(vm, pairingCode)
+            LinkRole.NONE -> {}
             LinkRole.SLAVE -> SlaveSection(
                 vm = vm,
                 masters = masters,
                 searchStatus = searchStatus,
                 activeEndpoint = activeEndpoint,
                 lastSend = lastSend,
+                codeDraft = codeDraft,
+                onCodeDraftChange = { codeDraft = it },
                 hostDraft = hostDraft,
                 onHostDraftChange = { hostDraft = it },
             )
-            LinkRole.NONE -> {}
+            LinkRole.MASTER -> MasterSection(vm, pairingCode)
         }
 
         Spacer(Modifier.height(12.dp))
@@ -172,9 +175,41 @@ private fun SlaveSection(
     searchStatus: String,
     activeEndpoint: String?,
     lastSend: LinkSendResult?,
+    codeDraft: String,
+    onCodeDraftChange: (String) -> Unit,
     hostDraft: String,
     onHostDraftChange: (String) -> Unit,
 ) {
+    SectionCard(title = "配对码", accent = NotifyAmber) {
+        Text(
+            "输入主机页面显示的 6 位配对码，保存后主机才会接受本机的转发。",
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Spacer(Modifier.height(8.dp))
+        Row(
+            Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
+            OutlinedTextField(
+                value = codeDraft,
+                onValueChange = onCodeDraftChange,
+                modifier = Modifier.weight(1f),
+                singleLine = true,
+                label = { Text("主机的配对码") },
+                placeholder = { Text("6 位数字") },
+            )
+            Button(
+                onClick = { vm.setLinkPairingCode(codeDraft) },
+                colors = ButtonDefaults.buttonColors(containerColor = NotifyAmber),
+                shape = MaterialTheme.shapes.medium,
+            ) {
+                Text("保存")
+            }
+        }
+    }
+    Spacer(Modifier.height(12.dp))
     SectionCard(title = "主机", accent = NotifyAmber) {
         if (masters.isEmpty()) {
             Text(
@@ -215,6 +250,20 @@ private fun SlaveSection(
             )
             Spacer(Modifier.height(4.dp))
         }
+        Spacer(Modifier.height(4.dp))
+        Button(
+            onClick = { vm.sendLinkTest() },
+            colors = ButtonDefaults.buttonColors(containerColor = NotifyAmber),
+            shape = MaterialTheme.shapes.medium,
+        ) {
+            Text("发送测试通知给主机")
+        }
+        Spacer(Modifier.height(2.dp))
+        Text(
+            "会真实推到手环 —— 手环弹出「从机测试通知」即整条链路打通。",
+            style = MaterialTheme.typography.labelMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
     }
     Spacer(Modifier.height(12.dp))
     SectionCard(title = "连接不上时", accent = NotifyAmber) {

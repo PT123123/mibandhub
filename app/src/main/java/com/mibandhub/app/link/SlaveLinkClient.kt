@@ -11,6 +11,7 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.json.JSONObject
+import java.io.ByteArrayOutputStream
 import java.net.DatagramPacket
 import java.net.DatagramSocket
 import java.net.InetAddress
@@ -35,7 +36,12 @@ object SlaveLinkClient {
     private const val MULTICAST_ADDR = "224.0.0.168"
     private const val MULTICAST_PORT = 53318
     private const val CONNECT_TIMEOUT_MS = 5000
-    private const val READ_TIMEOUT_MS = 8000
+
+    /**
+     * 响应读取超时。主机收到通知后可能要先连手环（35 秒窗口）才回结果，
+     * 从机必须等得住 —— 8 秒会在主机正常处理中途就断成「Read timed out」。
+     */
+    private const val READ_TIMEOUT_MS = 40_000
 
     @Volatile private var running = false
     private var listenJob: Job? = null
@@ -113,6 +119,17 @@ object SlaveLinkClient {
         multicastLock = null
     }
 
+    /** 从流里读一行 ASCII 头（消费掉行尾 CRLF）。 */
+    private fun readAsciiLine(input: java.io.InputStream): String {
+        val sb = StringBuilder()
+        while (true) {
+            val c = input.read()
+            if (c == -1 || c == 10) break // LF 结束一行
+            if (c != 13) sb.append(c.toChar()) // 丢弃 CR
+        }
+        return sb.toString()
+    }
+
     /**
      * 把一条通知 POST 给主机（阻塞 IO，挂起执行）。
      *
@@ -143,28 +160,38 @@ object SlaveLinkClient {
                         write(payload)
                         flush()
                     }
-                    val reader = sock.getInputStream().bufferedReader(Charsets.UTF_8)
-                    val statusLine = reader.readLine() ?: error("主机返回了空响应")
+                    val input = sock.getInputStream()
+                    val statusLine = readAsciiLine(input)
+                    if (statusLine.isEmpty()) error("主机返回了空响应")
                     val statusOk = statusLine.contains(" 200")
                     var contentLength = -1
                     while (true) {
-                        val line = reader.readLine() ?: break
+                        val line = readAsciiLine(input)
                         if (line.isEmpty()) break
                         if (line.lowercase().startsWith("content-length:")) {
                             contentLength = line.substringAfter(':').trim().toIntOrNull() ?: -1
                         }
                     }
+                    // 响应体按 Content-Length 读**字节**再 UTF-8 解码 —— note/error 里是中文
                     val respBody = if (contentLength >= 0) {
-                        val chars = CharArray(contentLength)
+                        val bytes = ByteArray(contentLength)
                         var n = 0
                         while (n < contentLength) {
-                            val r = reader.read(chars, n, contentLength - n)
+                            val r = input.read(bytes, n, contentLength - n)
                             if (r < 0) break
                             n += r
                         }
-                        String(chars, 0, n)
+                        String(bytes, 0, n, Charsets.UTF_8)
                     } else {
-                        reader.readText()
+                        // 没给长度（理论不会）：读到流结束
+                        val buf = ByteArrayOutputStream()
+                        val chunk = ByteArray(4096)
+                        while (true) {
+                            val r = input.read(chunk)
+                            if (r < 0) break
+                            buf.write(chunk, 0, r)
+                        }
+                        buf.toString("UTF-8")
                     }
                     val json = runCatching { JSONObject(respBody) }.getOrNull()
                         ?: error("主机响应不是合法 JSON")
