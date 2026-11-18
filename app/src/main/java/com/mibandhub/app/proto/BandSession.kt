@@ -147,19 +147,42 @@ class BandSession(
 
     private var collector: Job? = null
 
+    /** 连接状态监听：GATT 意外断开时复位「已认证」。 */
+    private var stateCollector: Job? = null
+
     fun log(message: String) {
         Log.d(TAG, message)
         _logs.tryEmit(message)
     }
 
-    /** 连接 + 认证。成功后手环即可收发指令。 */
-    suspend fun connectAndAuthenticate(mac: String, authKey: String): Boolean {
+    /**
+     * 「连接 + 认证」的互斥锁。
+     *
+     * 三处都会发起连接（BandService 自动连接、通知触发的连接、主机侧收从机通知），
+     * 各自有独立的「正在连」标志，但底层只有一条 GATT：并发发起时后一个会 close()
+     * 掉前一个的 GATT 并覆盖 pendingConnect/pendingServices，前一个只能干等到
+     * 15 秒超时，还把 gatt 引用搞丢 —— 实测表现为偶发几十秒的卡死。排队 + 排到
+     * 时发现已经连好就直接返回，就不会互相踩。
+     */
+    private val connectMutex = Mutex()
+
+    /**
+     * 连接 + 认证。成功后手环即可收发指令。
+     *
+     * 同一时刻只跑一轮；排到时若已经连上，直接返回成功，不再重连一次。
+     */
+    suspend fun connectAndAuthenticate(mac: String, authKey: String): Boolean = connectMutex.withLock {
+        // 排到我们时前面那轮可能已经连好了 —— 再连一遍就是白等几秒。
+        if (connectionState.value == ConnectionState.Authenticated) {
+            log("已经连上了，跳过重复连接")
+            return@withLock true
+        }
         userDisconnected = false
         log("正在连接 $mac …")
         if (!connection.connect(mac)) {
             val state = connectionState.value
             log("连接失败：${(state as? ConnectionState.Failed)?.reason ?: state}")
-            return false
+            return@withLock false
         }
         log("服务发现完成，共 ${if (connection.hasCharacteristic(Gatt.CHAR_AUTH)) "能" else "不能"}找到认证特征")
 
@@ -167,14 +190,34 @@ class BandSession(
         startCollector()
 
         if (!authenticate(Auth.parseKey(authKey))) {
-            return false
+            return@withLock false
         }
 
         _authenticated.value = true
+        // 「已认证」这一档之前没人置位，导致通知路径每条都重连手环（每条约 5 秒）。
+        connection.markAuthenticated()
+        watchConnectionState()
         connection.enableNotify(Gatt.CHAR_HR_MEASUREMENT)
         refreshBattery()
         enableRealtimeSteps()
-        return true
+        return@withLock true
+    }
+
+    /**
+     * 盯住底层连接状态：GATT 意外断开时把「已认证」复位。
+     *
+     * 不复位的话标志会一直停在 true，让人以为还连着 —— 通知就会对着一条死链路
+     * 空写一遍（写失败也只是白等一个写超时）。
+     */
+    private fun watchConnectionState() {
+        stateCollector?.cancel()
+        stateCollector = scope.launch {
+            connection.state.collect { st ->
+                if (st is ConnectionState.Disconnected || st is ConnectionState.Failed) {
+                    _authenticated.value = false
+                }
+            }
+        }
     }
 
     /**
@@ -1110,6 +1153,8 @@ class BandSession(
         userDisconnected = true
         collector?.cancel()
         collector = null
+        stateCollector?.cancel()
+        stateCollector = null
         connection.close()
         _heartRate.value = null
         _authenticated.value = false

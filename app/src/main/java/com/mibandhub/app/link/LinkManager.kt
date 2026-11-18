@@ -13,7 +13,6 @@ import java.time.LocalTime
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -270,6 +269,20 @@ object LinkManager {
     // ------------------------------------------------------------------
 
     /**
+     * 等手环连上（认证完成），最多等 [timeoutMs]，一连上就立刻返回 true。
+     *
+     * 不能用固定 delay 死等：BLE 连接快则 2 秒、慢则 8 秒，固定死等会把
+     * 「其实早就连好了」的通知也拖到最坏情况 —— 这是转发慢的主要来源之一。
+     */
+    private suspend fun awaitAuthenticated(
+        state: StateFlow<ConnectionState>,
+        timeoutMs: Long,
+    ): Boolean = withTimeoutOrNull(timeoutMs) {
+        state.first { it == ConnectionState.Authenticated }
+        true
+    } ?: false
+
+    /**
      * 主机收到一条验过配对码的从机通知：连手环（必要时自动连）→ 推送 → 记录。
      * 返回给从机的结果里带上手环侧成败，从机的「最近推送」据此显示。
      */
@@ -289,9 +302,10 @@ object LinkManager {
                 return LinkSendResult(false, "主机未配对手环，收到通知也无法推送")
             }
             if (masterConnecting) {
-                // 另一波（自动连接或前一条从机通知）正在连，等它
-                delay(10_000)
-                if (session.connectionState.value != ConnectionState.Authenticated) {
+                // 另一波（自动连接或前一条从机通知）正在连，等它 —— 但要「等结果」不是「等秒数」。
+                // 死等 10 秒的话，连接 5 秒就好时这条通知还要再白等 5 秒：实测并发两条，
+                // 第二条 6.9 秒就推完了，第一条反而 10.8 秒才完成（多出来的就是那 5 秒）。
+                if (!awaitAuthenticated(session.connectionState, 10_000L)) {
                     return LinkSendResult(false, "主机手环未连接")
                 }
             } else {

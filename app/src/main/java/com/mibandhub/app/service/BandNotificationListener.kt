@@ -17,7 +17,6 @@ import com.mibandhub.app.proto.Notify
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
@@ -411,10 +410,13 @@ class BandNotificationListener : NotificationListenerService() {
         if (prefs.linkRole.first() == LinkRole.SLAVE) return false
         // 已连着就不用再连
         if (session.connectionState.value == ConnectionState.Authenticated) return true
-        // 已经在连了（前一个通知触发的），等它 —— 10 秒内没好就放弃
+        // 已经在连了（前一个通知触发的）：等它连上就走，别死等固定秒数。
+        // 连接 5 秒就好时，死等 10 秒会让这条通知白等另外 5 秒 —— 转发慢的直接来源。
         if (connectingForNotify) {
-            delay(10_000)
-            return session.connectionState.value == ConnectionState.Authenticated
+            return withTimeoutOrNull(10_000L) {
+                session.connectionState.first { it == ConnectionState.Authenticated }
+                true
+            } ?: false
         }
 
         val mac = prefs.mac.first()

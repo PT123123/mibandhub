@@ -239,6 +239,19 @@ class BandConnection(private val context: Context) {
         return true
     }
 
+    /**
+     * 认证通过 —— 状态机上的最后一站。
+     *
+     * 之前没人置这个状态，于是「已认证」这个判据在整个 App 里恒为假：通知路径
+     * （直连与主从两条）每次都以为手环没连上，于是每条通知都重连一次手环 ——
+     * 实测每条约 5 秒，而连接明明还在。断线时 [onConnectionStateChange] 会把
+     * 状态退回 Disconnected/Failed，所以这里置位不会让状态粘住。
+     */
+    fun markAuthenticated() {
+        if (_state.value is ConnectionState.Failed) return
+        _state.value = ConnectionState.Authenticated
+    }
+
     /** 写一个特征值。 */
     suspend fun write(characteristic: UUID, data: ByteArray): Boolean = gattMutex.withLock {
         val g = gatt ?: return@withLock false
