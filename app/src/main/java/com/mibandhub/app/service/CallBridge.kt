@@ -52,6 +52,9 @@ class CallBridge private constructor(context: Context) {
         /** 来电页「静音」后，最多保持这么久再自动恢复（防止漏掉通话结束事件）。 */
         private const val MUTE_AUTO_RESTORE_MS = 90_000L
 
+        /** 可操作通知在手环上最多停留这么久 —— 通知不像通话有明确的结束事件。 */
+        private const val NOTIFICATION_ALERT_TIMEOUT_MS = 60_000L
+
         /** 手环来电页最多等这么久，用来等系统来电通知把联系人名字带上来。 */
         private const val CALLER_NAME_WAIT_MS = 450L
 
@@ -80,6 +83,17 @@ class CallBridge private constructor(context: Context) {
             "拒接", "拒绝", "挂断", "结束通话", "挂断通话", "reject", "decline", "hang up", "hangup",
         )
 
+        /**
+         * 可操作通知里允许手环「拒接」键触发的动作。
+         *
+         * 只认应用自己提供的处理类按钮（标记已读/归档/删除/清除/忽略/完成），
+         * 不碰「回复」这种需要 RemoteInput 的动作 —— 没输入内容点了也没用。
+         */
+        private val NOTIFICATION_ACTIONS = REJECT_ACTIONS + listOf(
+            "已读", "标记为已读", "标记已读", "归档", "删除", "清除", "忽略", "完成",
+            "mark as read", "archive", "delete", "dismiss", "done",
+        )
+
         @Volatile
         private var instance: CallBridge? = null
 
@@ -89,10 +103,10 @@ class CallBridge private constructor(context: Context) {
             }
     }
 
-    private enum class Kind { PHONE, THIRD_PARTY }
+    private enum class Kind { PHONE, THIRD_PARTY, NOTIFICATION }
 
-    /** 来电从哪里来：系统电话、第三方通知、QQ 全屏来电（无障碍）。 */
-    private enum class Source { PHONE, NOTIFICATION, ACCESSIBILITY }
+    /** 来电从哪里来：系统电话、第三方通知、QQ 全屏来电（无障碍）、可操作通知。 */
+    private enum class Source { PHONE, NOTIFICATION, ACCESSIBILITY, NOTIFICATION_ACTION }
 
     private data class ActiveCall(
         val kind: Kind,
@@ -128,6 +142,9 @@ class CallBridge private constructor(context: Context) {
     private var eventsJob: Job? = null
     private var alertJob: Job? = null
 
+    /** 可操作通知的自动撤页计时。 */
+    private var actionTimeoutJob: Job? = null
+
     // 静音前保存的系统音量/铃声模式
     private var muted = false
     private var muteJob: Job? = null
@@ -161,6 +178,8 @@ class CallBridge private constructor(context: Context) {
         eventsJob = null
         alertJob?.cancel()
         alertJob = null
+        actionTimeoutJob?.cancel()
+        actionTimeoutJob = null
         restoreAudio()
     }
 
@@ -321,6 +340,59 @@ class CallBridge private constructor(context: Context) {
         return true
     }
 
+    /**
+     * 可操作通知入口：把指定应用的通知伪装成手环来电页，复用「拒接 / 静音」两个键。
+     *
+     * 通知卡片本身没有任何回传事件，所以想让手环能按键处理某条通知，只能借来电页。
+     *
+     * @return true = 已作为可操作通知显示在手环上，调用方不要再发普通通知卡片；
+     *         false = 条件不满足（开关 / 应用规则 / 手环连接 / 已有通话），按普通通知继续。
+     */
+    suspend fun offerActionableNotification(
+        packageName: String,
+        notificationKey: String,
+        appName: String,
+        title: String,
+        notification: Notification,
+    ): Boolean {
+        if (!prefs.notifyActionableEnabled.first()) return false
+        // 复用的是来电页，来电页总开关关掉时也不该出现
+        if (!prefs.callAlertEnabled.first()) return false
+        val rule = prefs.appRules.first().firstOrNull { it.packageName == packageName }
+        if (rule == null || !rule.actionable) return false
+
+        val current = active
+        // 真正的通话优先：已有来电页时，普通通知不抢占
+        if (current != null && current.source != Source.NOTIFICATION_ACTION) return false
+        if (session.connectionState.value != ConnectionState.Authenticated) return false
+
+        val previous = active
+        val label = buildActionableLabel(appName, title)
+        if (previous != null && previous.notificationKey == notificationKey &&
+            previous.label == label
+        ) {
+            return true
+        }
+
+        val call = ActiveCall(
+            kind = Kind.NOTIFICATION,
+            source = Source.NOTIFICATION_ACTION,
+            label = label,
+            notificationKey = notificationKey,
+            rejectIntent = findActionIntent(notification),
+            ringing = true,
+        )
+        active = call
+        if (!session.sendIncomingCall(label)) {
+            // 发送失败：把上一条可操作通知的状态还回去，别把它的按键一起弄丢
+            active = previous
+            return false
+        }
+        scheduleActionTimeout(notificationKey)
+        Log.d(TAG, "可操作通知 -> $label")
+        return true
+    }
+
     private suspend fun consumeSystemCallNotification(
         notificationKey: String,
         title: String,
@@ -400,7 +472,9 @@ class CallBridge private constructor(context: Context) {
     fun onNotificationRemoved(notificationKey: String) {
         val current = active ?: return
         if (current.notificationKey != notificationKey) return
-        if (current.kind == Kind.THIRD_PARTY || !phoneRinging) {
+        if (current.kind == Kind.THIRD_PARTY || current.source == Source.NOTIFICATION_ACTION ||
+            !phoneRinging
+        ) {
             clearCall()
         }
     }
@@ -416,9 +490,16 @@ class CallBridge private constructor(context: Context) {
      */
     fun notifyAccessibilityCallStarted(label: String, reject: () -> Boolean) {
         scope.launch {
-            if (active != null) {
+            val current = active
+            if (current != null && current.source != Source.NOTIFICATION_ACTION) {
                 Log.d(TAG, "已有通话在手环上，忽略新的无障碍来电：$label")
                 return@launch
+            }
+            // 真来电优先：可操作通知页直接让位
+            if (current?.source == Source.NOTIFICATION_ACTION) {
+                actionTimeoutJob?.cancel()
+                actionTimeoutJob = null
+                active = null
             }
             if (!prefs.callThirdPartyEnabled.first()) return@launch
             showAlert(
@@ -469,13 +550,14 @@ class CallBridge private constructor(context: Context) {
             Source.PHONE -> if (call.ringing) endPhoneCall() else false
             Source.NOTIFICATION -> sendRejectIntent(call.rejectIntent)
             Source.ACCESSIBILITY -> call.rejectAction?.invoke() ?: false
+            Source.NOTIFICATION_ACTION -> rejectNotification(call)
         }
         Log.d(TAG, "手环拒接 -> ${call.label}：${if (ok) "成功" else "失败"}")
         clearCall()
     }
 
     private suspend fun muteActiveCall() {
-        if (active == null) {
+        val call = active ?: run {
             Log.d(TAG, "手环静音：当前没有进行中的来电")
             return
         }
@@ -483,7 +565,22 @@ class CallBridge private constructor(context: Context) {
             Log.d(TAG, "手环静音已关闭，忽略")
             return
         }
-        muteRinger(includeMedia = active?.muteMedia == true)
+        muteRinger(includeMedia = call.muteMedia)
+        // 通知的「静音」= 静音铃声 + 收起手环页；不能走 clearCall() 默认的恢复音量
+        if (call.source == Source.NOTIFICATION_ACTION) {
+            clearCall(restoreAudio = false)
+        }
+    }
+
+    /**
+     * 可操作通知的「拒接」：优先触发通知自带的处理按钮（已读/归档/删除等），
+     * 没有可用按钮或触发失败时，直接把手环对应的通知从手机通知栏清除。
+     */
+    private fun rejectNotification(call: ActiveCall): Boolean {
+        if (sendRejectIntent(call.rejectIntent)) return true
+        val key = call.notificationKey ?: return false
+        // cancelNotification 是 NotificationListenerService 的实例方法，借监听器实例来清
+        return BandNotificationListener.instance?.cancelByKey(key) ?: false
     }
 
     private fun sendRejectIntent(intent: PendingIntent?): Boolean {
@@ -506,7 +603,12 @@ class CallBridge private constructor(context: Context) {
 
     private suspend fun showAlert(call: ActiveCall) {
         val previous = active
-        if (previous != null && previous.kind == call.kind &&
+        if (previous != null && previous.source == Source.NOTIFICATION_ACTION) {
+            // 真来电优先：可操作通知页直接让位，发送新来电页本身就是替换
+            actionTimeoutJob?.cancel()
+            actionTimeoutJob = null
+            active = null
+        } else if (previous != null && previous.kind == call.kind &&
             previous.label == call.label && previous.notificationKey == call.notificationKey
         ) {
             return
@@ -523,14 +625,54 @@ class CallBridge private constructor(context: Context) {
         session.sendIncomingCall(call.label)
     }
 
-    private fun clearCall() {
+    private fun clearCall(restoreAudio: Boolean = true) {
         alertJob?.cancel()
         alertJob = null
+        actionTimeoutJob?.cancel()
+        actionTimeoutJob = null
         val had = active
         active = null
-        restoreAudio()
+        // 通知的「静音」= 先静音铃声再收页，这时不能恢复音量（否则静音立刻被撤掉）
+        if (restoreAudio) restoreAudio()
         if (had != null) {
             scope.launch { session.stopIncomingCall() }
+        }
+    }
+
+    /** 可操作通知最多在手环上停留 [NOTIFICATION_ALERT_TIMEOUT_MS]；同一条通知更新会重置。 */
+    private fun scheduleActionTimeout(notificationKey: String) {
+        actionTimeoutJob?.cancel()
+        actionTimeoutJob = scope.launch {
+            delay(NOTIFICATION_ALERT_TIMEOUT_MS)
+            val current = active ?: return@launch
+            if (current.source == Source.NOTIFICATION_ACTION &&
+                current.notificationKey == notificationKey
+            ) {
+                Log.d(TAG, "可操作通知超时，收起手环页")
+                clearCall()
+            }
+        }
+    }
+
+    /**
+     * 通知里可以交给手环「拒接」键执行的处理按钮。
+     *
+     * 需要 RemoteInput 的「回复」不算 —— 没有输入内容点下去只会失败。
+     */
+    private fun findActionIntent(notification: Notification): PendingIntent? =
+        notification.actions.orEmpty().firstOrNull { action ->
+            if (!action.remoteInputs.isNullOrEmpty()) return@firstOrNull false
+            val label = action.title?.toString().orEmpty().lowercase()
+            NOTIFICATION_ACTIONS.any { label.contains(it) }
+        }?.actionIntent
+
+    /** 可操作通知在手环上的标题：「应用 · 通知标题」。 */
+    private fun buildActionableLabel(appName: String, title: String): String {
+        val text = title.trim()
+        return if (text.isBlank() || text.equals(appName, ignoreCase = true)) {
+            "$appName · 新通知"
+        } else {
+            "$appName · ${text.take(30)}"
         }
     }
 

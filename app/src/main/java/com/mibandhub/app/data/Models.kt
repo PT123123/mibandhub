@@ -76,6 +76,12 @@ data class AppRule(
     val enabled: Boolean,
     /** 是否把通知正文一起推到手环；false = 只推应用名 + 标题。 */
     val showDetail: Boolean = true,
+    /**
+     * 该应用的通知是否以「可操作来电页」形式显示在手环上：
+     * 复用电话通道的两个按键 —— 拒接 = 执行通知自带的处理按钮（没有就清除通知），
+     * 静音 = 静音手机铃声并收起手环页。仅对直连手环（主机/独立模式）生效。
+     */
+    val actionable: Boolean = false,
 )
 
 /** 手机上装的应用 —— 「添加应用」列表里可选的那一份。 */

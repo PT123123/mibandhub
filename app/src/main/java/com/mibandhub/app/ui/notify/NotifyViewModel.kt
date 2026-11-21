@@ -89,6 +89,8 @@ class NotifyViewModel(app: Application) : AndroidViewModel(app) {
         prefs.callMuteEnabled.stateIn(viewModelScope, SharingStarted.Eagerly, true)
     val callThirdPartyEnabled: StateFlow<Boolean> =
         prefs.callThirdPartyEnabled.stateIn(viewModelScope, SharingStarted.Eagerly, true)
+    val notifyActionableEnabled: StateFlow<Boolean> =
+        prefs.notifyActionableEnabled.stateIn(viewModelScope, SharingStarted.Eagerly, false)
 
     val dndEnabled: StateFlow<Boolean> =
         prefs.dndEnabled.stateIn(viewModelScope, SharingStarted.Eagerly, false)
@@ -418,6 +420,8 @@ class NotifyViewModel(app: Application) : AndroidViewModel(app) {
 
     fun setCallThirdParty(enabled: Boolean) = launch { prefs.setCallThirdPartyEnabled(enabled) }
 
+    fun setNotifyActionable(enabled: Boolean) = launch { prefs.setNotifyActionableEnabled(enabled) }
+
     /** 系统「勿扰访问」设置页：部分 ROM 切静音模式需要这里授权。 */
     fun notificationPolicySettingsIntent(): Intent =
         Intent(android.provider.Settings.ACTION_NOTIFICATION_POLICY_ACCESS_SETTINGS)
@@ -477,6 +481,15 @@ class NotifyViewModel(app: Application) : AndroidViewModel(app) {
         prefs.setAppRules(
             prefs.appRules.first().map {
                 if (it.packageName == packageName) it.copy(showDetail = showDetail) else it
+            },
+        )
+    }
+
+    /** 单个应用的「可操作」开关：开启后它的通知复用手环来电页的两个按键。 */
+    fun setAppActionable(packageName: String, actionable: Boolean) = launch {
+        prefs.setAppRules(
+            prefs.appRules.first().map {
+                if (it.packageName == packageName) it.copy(actionable = actionable) else it
             },
         )
     }

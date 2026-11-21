@@ -815,6 +815,7 @@ fun NotifyCallPage(vm: NotifyViewModel, onBack: () -> Unit) {
     val callRejectEnabled by vm.callRejectEnabled.collectAsStateWithLifecycle()
     val callMuteEnabled by vm.callMuteEnabled.collectAsStateWithLifecycle()
     val callThirdPartyEnabled by vm.callThirdPartyEnabled.collectAsStateWithLifecycle()
+    val notifyActionableEnabled by vm.notifyActionableEnabled.collectAsStateWithLifecycle()
 
     val notificationManager =
         context.getSystemService(android.app.NotificationManager::class.java)
@@ -930,6 +931,27 @@ fun NotifyCallPage(vm: NotifyViewModel, onBack: () -> Unit) {
                 checked = callThirdPartyEnabled,
                 onCheckedChange = { vm.setCallThirdParty(it) },
                 accent = NotifyAmber,
+            )
+        }
+
+        Spacer(Modifier.height(10.dp))
+
+        SectionCard(title = "通知快捷操作", accent = NotifyAmber) {
+            SwitchSettingRow(
+                title = "允许通知复用来电页",
+                subtitle = "在「应用名单」里给单个应用打开「可操作」后，它的通知会以手环来电页显示：" +
+                    "按拒接执行通知自带的处理按钮（没有就清除通知），按静音静音铃声并收起页面",
+                checked = notifyActionableEnabled,
+                onCheckedChange = { vm.setNotifyActionable(it) },
+                accent = NotifyAmber,
+            )
+            Spacer(Modifier.height(8.dp))
+            Text(
+                "两个按键是否生效沿用上面的「允许手环拒接 / 静音」开关。" +
+                    "手环上没有接听键，所以这里只能「处理掉」或「静音」；一次只显示一条，" +
+                    "真正的来电会顶掉通知页。",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         }
 
@@ -1078,7 +1100,8 @@ fun NotifyAppsPage(vm: NotifyViewModel, onBack: () -> Unit) {
             Text(
                 "手机上的应用都能加进来：下面这份只是出厂参考名单，点「添加应用」" +
                     "从已安装的应用里随便挑。每个应用还可以单独点「含正文 / 仅标题」" +
-                    "决定它的通知要不要带上正文。",
+                    "决定它的通知要不要带上正文；点「可操作」可以让它的通知复用手环" +
+                    "来电页的拒接 / 静音键。",
                 style = MaterialTheme.typography.labelMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -1136,6 +1159,30 @@ fun NotifyAppsPage(vm: NotifyViewModel, onBack: () -> Unit) {
                             if (rule.showDetail) "含正文" else "仅标题",
                             style = MaterialTheme.typography.labelMedium,
                             color = if (rule.showDetail) {
+                                NotifyAmber
+                            } else {
+                                MaterialTheme.colorScheme.onSurfaceVariant
+                            },
+                        )
+                    }
+                    Spacer(Modifier.width(6.dp))
+                    // 单应用的「可操作」开关：让它的通知复用手环来电页的两个按键
+                    Box(
+                        Modifier
+                            .clip(RoundedCornerShape(8.dp))
+                            .background(
+                                if (rule.actionable) NotifyAmber.copy(alpha = 0.12f)
+                                else Color.Transparent,
+                            )
+                            .clickable(enabled = forwardEnabled) {
+                                vm.setAppActionable(rule.packageName, !rule.actionable)
+                            }
+                            .padding(horizontal = 8.dp, vertical = 6.dp),
+                    ) {
+                        Text(
+                            if (rule.actionable) "可操作 ✓" else "可操作",
+                            style = MaterialTheme.typography.labelMedium,
+                            color = if (rule.actionable) {
                                 NotifyAmber
                             } else {
                                 MaterialTheme.colorScheme.onSurfaceVariant

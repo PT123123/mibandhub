@@ -128,6 +128,9 @@ class BandPrefs(private val context: Context) {
         val CALL_MUTE = booleanPreferencesKey("call_mute_enabled")
         val CALL_THIRD_PARTY = booleanPreferencesKey("call_third_party_enabled")
 
+        /** 通知快捷操作总开关：允许指定应用的通知复用手环来电页的两个按键。 */
+        val NOTIFY_ACTIONABLE = booleanPreferencesKey("notify_actionable_enabled")
+
         /** 真实推到手环的通知记录（最近推送页），新的在前。 */
         val RECENT_NOTIFICATIONS = stringPreferencesKey("recent_notifications")
 
@@ -204,6 +207,10 @@ class BandPrefs(private val context: Context) {
         context.bandDataStore.data.map { it[Keys.CALL_MUTE] ?: true }
     val callThirdPartyEnabled: Flow<Boolean> =
         context.bandDataStore.data.map { it[Keys.CALL_THIRD_PARTY] ?: true }
+
+    /** 通知快捷操作总开关，默认关 —— 需要用户明确选应用后才启用。 */
+    val notifyActionableEnabled: Flow<Boolean> =
+        context.bandDataStore.data.map { it[Keys.NOTIFY_ACTIONABLE] ?: false }
 
     // ---- 主从转发 ----
     val linkRole: Flow<LinkRole> =
@@ -317,6 +324,10 @@ class BandPrefs(private val context: Context) {
 
     suspend fun setCallThirdPartyEnabled(enabled: Boolean) {
         context.bandDataStore.edit { it[Keys.CALL_THIRD_PARTY] = enabled }
+    }
+
+    suspend fun setNotifyActionableEnabled(enabled: Boolean) {
+        context.bandDataStore.edit { it[Keys.NOTIFY_ACTIONABLE] = enabled }
     }
 
     // ---- 主从转发 ----
@@ -740,7 +751,7 @@ class BandPrefs(private val context: Context) {
             // 不能让它再回落到出厂参考名单，否则移除过的应用会自己回来。
             prefs[Keys.APP_RULES] = rules.joinToString("\n") {
                 "${it.packageName}|${it.appName}|${if (it.enabled) 1 else 0}" +
-                    "|${if (it.showDetail) 1 else 0}"
+                    "|${if (it.showDetail) 1 else 0}|${if (it.actionable) 1 else 0}"
             }
         }
     }
@@ -815,9 +826,16 @@ class BandPrefs(private val context: Context) {
         if (raw.isNullOrBlank()) return emptyList()
         return raw.lineSequence().mapNotNull { line ->
             val p = line.split('|')
-            // 第 4 列（showDetail）是后来加的：老数据只有 3 列，默认显示详细内容
-            if (p.size !in 3..4) return@mapNotNull null
-            AppRule(p[0], p[1], p[2] == "1", p.getOrNull(3) != "0")
+            // 第 4 列（showDetail）、第 5 列（actionable）都是后来加的：
+            // 老数据只有 3 / 4 列，分别默认「显示详细内容」「不可操作」。
+            if (p.size !in 3..5) return@mapNotNull null
+            AppRule(
+                packageName = p[0],
+                appName = p[1],
+                enabled = p[2] == "1",
+                showDetail = p.getOrNull(3) != "0",
+                actionable = p.getOrNull(4) == "1",
+            )
         }.toList()
     }
 

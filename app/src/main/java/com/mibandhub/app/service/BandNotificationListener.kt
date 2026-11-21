@@ -60,6 +60,16 @@ class BandNotificationListener : NotificationListenerService() {
         @JvmStatic
         var instantiatedAt: Long = 0
             private set
+
+        /**
+         * 当前绑定着的监听器实例。
+         *
+         * CallBridge 执行「可操作通知 → 拒接」时要用它清通知 ——
+         * [NotificationListenerService.cancelNotification] 是实例方法，不是静态方法。
+         */
+        @Volatile
+        var instance: BandNotificationListener? = null
+            private set
     }
 
     private lateinit var prefs: BandPrefs
@@ -87,11 +97,26 @@ class BandNotificationListener : NotificationListenerService() {
     override fun onCreate() {
         super.onCreate()
         instantiatedAt = System.currentTimeMillis()
+        instance = this
         prefs = BandPrefs(this)
         session = BandSessionProvider.get(this)
         // 通知监听几乎全程活着，是通话桥最可靠的生命周期锚点：
         // 即使保活服务没起来，来电/QQ 通话也能推到手环。
         CallBridge.get(this).start()
+    }
+
+    override fun onDestroy() {
+        if (instance === this) instance = null
+        super.onDestroy()
+    }
+
+    /** 清除一条通知（手环「拒接」对可操作通知的最后一步）。 */
+    fun cancelByKey(key: String): Boolean = try {
+        cancelNotification(key)
+        true
+    } catch (e: Exception) {
+        Log.w(TAG, "清除通知失败：$key", e)
+        false
     }
 
     override fun onNotificationPosted(sbn: StatusBarNotification?) {
@@ -293,9 +318,38 @@ class BandNotificationListener : NotificationListenerService() {
         // ---- 振动档位 → 告警类别（手环按类别存的振动模式来震）----
         val alertCategory = Notify.alertCategoryFor(prefs.notifyVibration.first())
 
+        // ---- 可操作通知：指定应用的通知复用手环来电页 ----
+        // 通知卡片本身不回传任何按键，想让手环能「拒接 / 静音」只能借电话通道。
+        // 只在直连手环（主机 / 独立）时生效；从机没连手环，继续走主从转发。
+        val role = prefs.linkRole.first()
+        if (role != LinkRole.SLAVE &&
+            CallBridge.get(applicationContext).offerActionableNotification(
+                packageName = pkg,
+                notificationKey = sbn.key,
+                appName = appLabel,
+                title = title.ifBlank { "(无标题)" },
+                notification = activeNotification,
+            )
+        ) {
+            val timeLabel = "%02d:%02d".format(LocalTime.now().hour, LocalTime.now().minute)
+            prefs.recordNotification(
+                BandNotification(
+                    appName = appLabel,
+                    title = title.ifBlank { "(无标题)" },
+                    body = effectiveBody,
+                    timeLabel = timeLabel,
+                    forwarded = true,
+                    packageName = pkg,
+                    dropReason = "已作为可操作通知推送到手环",
+                ),
+            )
+            Log.d(TAG, "已按可操作通知推送到手环：$appLabel / ${title.take(40)}")
+            return
+        }
+
         // ---- 主从转发：从机不连手环蓝牙，把过滤完的通知交给局域网主机，由主机推手环 ----
         // 过滤（名单/关键词/敏感/去重/勿扰/仅锁屏）在上面已经全部完成，这里只管「交给谁」。
-        if (prefs.linkRole.first() == LinkRole.SLAVE) {
+        if (role == LinkRole.SLAVE) {
             forwardToMaster(pkg, appLabel, title, body, effectiveBody, hideNote, alertCategory, bodyHiddenReason != null)
             return
         }
