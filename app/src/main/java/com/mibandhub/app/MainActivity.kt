@@ -107,6 +107,21 @@ class MainActivity : ComponentActivity() {
         ) {
             missing += PERMISSION_SENSITIVE_NOTIFICATIONS
         }
+        // 来电控制：识别系统电话响铃 + 手环上按「拒接」。
+        // 平板没有电话硬件，跳过这两项，避免无意义的权限弹窗。
+        if (packageManager.hasSystemFeature(PackageManager.FEATURE_TELEPHONY)) {
+            if (ContextCompat.checkSelfPermission(this, Manifest.permission.READ_PHONE_STATE) !=
+                PackageManager.PERMISSION_GRANTED
+            ) {
+                missing += Manifest.permission.READ_PHONE_STATE
+            }
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O &&
+                ContextCompat.checkSelfPermission(this, Manifest.permission.ANSWER_PHONE_CALLS) !=
+                PackageManager.PERMISSION_GRANTED
+            ) {
+                missing += Manifest.permission.ANSWER_PHONE_CALLS
+            }
+        }
         if (missing.isEmpty()) {
             BandService.start(this)
         } else {

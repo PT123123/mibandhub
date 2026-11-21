@@ -51,6 +51,7 @@ import com.mibandhub.app.ui.market.BrowserScreen
 import com.mibandhub.app.ui.market.MarketScreen
 import com.mibandhub.app.ui.market.MarketViewModel
 import com.mibandhub.app.ui.notify.NotifyAppsPage
+import com.mibandhub.app.ui.notify.NotifyCallPage
 import com.mibandhub.app.ui.notify.NotifyDedupePage
 import com.mibandhub.app.ui.notify.NotifyDndPage
 import com.mibandhub.app.ui.notify.NotifyForwardPage
@@ -188,6 +189,7 @@ fun AppRoot(initialRoute: String? = null, externalRoute: String? = null) {
             }
             // 通知 tab 的子页面：目录上点一下才进得来，返回一律 pop 回目录。
             composable(NotifyRoutes.FORWARD) { NotifyForwardPage(notifyVm) { nav.popBackStack() } }
+            composable(NotifyRoutes.CALLS) { NotifyCallPage(notifyVm) { nav.popBackStack() } }
             composable(NotifyRoutes.TEST) { NotifyTestPage(notifyVm) { nav.popBackStack() } }
             composable(NotifyRoutes.DND) { NotifyDndPage(notifyVm) { nav.popBackStack() } }
             composable(NotifyRoutes.KEYWORD) { NotifyKeywordPage(notifyVm) { nav.popBackStack() } }

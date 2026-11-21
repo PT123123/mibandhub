@@ -3,8 +3,10 @@
 package com.mibandhub.app.ui.notify
 
 import android.Manifest
+import android.content.pm.PackageManager
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.core.content.ContextCompat
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -783,6 +785,199 @@ fun NotifyVibrationPage(vm: NotifyViewModel, onBack: () -> Unit) {
                 selectedIndex = VIBRATIONS.indexOf(vibration).coerceAtLeast(0),
                 accent = NotifyAmber,
                 onSelect = { vm.setVibration(VIBRATIONS[it]) },
+            )
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// 来电控制
+// ---------------------------------------------------------------------------
+
+/**
+ * 来电控制子页面：系统电话 + QQ/微信等第三方通话。
+ *
+ * 两个能力分别对应手环来电页上的两个按钮：
+ *   - 「拒接」→ 手机结束通话；
+ *   - 「静音」→ 手机铃声/媒体音量静音，通话结束自动恢复。
+ */
+@Composable
+fun NotifyCallPage(vm: NotifyViewModel, onBack: () -> Unit) {
+    val context = LocalContext.current
+    val callAlertEnabled by vm.callAlertEnabled.collectAsStateWithLifecycle()
+    val callRejectEnabled by vm.callRejectEnabled.collectAsStateWithLifecycle()
+    val callMuteEnabled by vm.callMuteEnabled.collectAsStateWithLifecycle()
+    val callThirdPartyEnabled by vm.callThirdPartyEnabled.collectAsStateWithLifecycle()
+
+    val notificationManager =
+        context.getSystemService(android.app.NotificationManager::class.java)
+    var phoneGranted by remember {
+        mutableStateOf(
+            ContextCompat.checkSelfPermission(context, Manifest.permission.READ_PHONE_STATE) ==
+                PackageManager.PERMISSION_GRANTED,
+        )
+    }
+    var answerGranted by remember {
+        mutableStateOf(
+            ContextCompat.checkSelfPermission(context, Manifest.permission.ANSWER_PHONE_CALLS) ==
+                PackageManager.PERMISSION_GRANTED,
+        )
+    }
+    var dndGranted by remember {
+        mutableStateOf(notificationManager?.isNotificationPolicyAccessGranted == true)
+    }
+
+    val permissionLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestMultiplePermissions(),
+    ) {
+        phoneGranted = ContextCompat.checkSelfPermission(
+            context,
+            Manifest.permission.READ_PHONE_STATE,
+        ) == PackageManager.PERMISSION_GRANTED
+        answerGranted = ContextCompat.checkSelfPermission(
+            context,
+            Manifest.permission.ANSWER_PHONE_CALLS,
+        ) == PackageManager.PERMISSION_GRANTED
+    }
+
+    // 从系统设置授权回来时刷新状态
+    LaunchedEffect(Unit) {
+        phoneGranted = ContextCompat.checkSelfPermission(
+            context,
+            Manifest.permission.READ_PHONE_STATE,
+        ) == PackageManager.PERMISSION_GRANTED
+        answerGranted = ContextCompat.checkSelfPermission(
+            context,
+            Manifest.permission.ANSWER_PHONE_CALLS,
+        ) == PackageManager.PERMISSION_GRANTED
+        dndGranted = notificationManager?.isNotificationPolicyAccessGranted == true
+    }
+
+    SubPage("来电控制", onBack) {
+        if (!phoneGranted || !answerGranted) {
+            NoticeBanner(
+                title = "需要电话权限才能在手机上执行拒接",
+                tone = NotifyAmber,
+                detail = "「电话状态」用来识别来电，「拒接电话」用于手环上按拒接。" +
+                    "没有授权时，来电识别和普通通知转发都不受影响。",
+                action = {
+                    Spacer(Modifier.height(10.dp))
+                    Button(
+                        onClick = {
+                            permissionLauncher.launch(
+                                arrayOf(
+                                    Manifest.permission.READ_PHONE_STATE,
+                                    Manifest.permission.ANSWER_PHONE_CALLS,
+                                ),
+                            )
+                        },
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = NotifyAmber,
+                            contentColor = MaterialTheme.colorScheme.onPrimary,
+                        ),
+                        shape = RoundedCornerShape(12.dp),
+                    ) {
+                        Text("申请通话权限")
+                    }
+                },
+            )
+            Spacer(Modifier.height(12.dp))
+        }
+
+        SectionCard(title = "来电页", accent = NotifyAmber) {
+            SwitchSettingRow(
+                title = "来电时显示在手环上",
+                subtitle = "系统电话和 QQ / 微信等第三方通话都会进入手环来电页",
+                checked = callAlertEnabled,
+                onCheckedChange = { vm.setCallAlert(it) },
+                accent = NotifyAmber,
+            )
+            Spacer(Modifier.height(8.dp))
+            SwitchSettingRow(
+                title = "允许手环拒接",
+                subtitle = "手环上按「拒接」结束通话；第三方通话依赖对方通知里的「拒绝 / 挂断」按钮",
+                checked = callRejectEnabled,
+                onCheckedChange = { vm.setCallReject(it) },
+                enabled = callAlertEnabled,
+                accent = NotifyAmber,
+            )
+            Spacer(Modifier.height(8.dp))
+            SwitchSettingRow(
+                title = "允许手环静音",
+                subtitle = "手环上按「静音」静音手机铃声；通话结束或超时后自动恢复",
+                checked = callMuteEnabled,
+                onCheckedChange = { vm.setCallMute(it) },
+                enabled = callAlertEnabled,
+                accent = NotifyAmber,
+            )
+            Spacer(Modifier.height(8.dp))
+            SwitchSettingRow(
+                title = "QQ / 微信等第三方通话",
+                subtitle = "从通知里识别语音、视频通话；关闭后这些通知按普通消息转发",
+                checked = callThirdPartyEnabled,
+                onCheckedChange = { vm.setCallThirdParty(it) },
+                accent = NotifyAmber,
+            )
+        }
+
+        Spacer(Modifier.height(10.dp))
+
+        SectionCard(title = "权限与限制", accent = NotifyAmber) {
+            KeyValueRow(
+                key = "电话状态",
+                value = if (phoneGranted) "已授权" else "未授权",
+                valueColor = if (phoneGranted) MaterialTheme.colorScheme.onSurface else PulseRed,
+            )
+            KeyValueRow(
+                key = "拒接电话",
+                value = if (answerGranted) "已授权" else "未授权",
+                valueColor = if (answerGranted) MaterialTheme.colorScheme.onSurface else PulseRed,
+            )
+            KeyValueRow(
+                key = "静音（勿扰访问）",
+                value = if (dndGranted) "已授权" else "未授权（仍会静音铃声流）",
+                valueColor = if (dndGranted) MaterialTheme.colorScheme.onSurface else NotifyAmber,
+            )
+            Spacer(Modifier.height(6.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                if (!phoneGranted || !answerGranted) {
+                    Button(
+                        onClick = {
+                            permissionLauncher.launch(
+                                arrayOf(
+                                    Manifest.permission.READ_PHONE_STATE,
+                                    Manifest.permission.ANSWER_PHONE_CALLS,
+                                ),
+                            )
+                        },
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = NotifyAmber,
+                            contentColor = MaterialTheme.colorScheme.onPrimary,
+                        ),
+                        shape = RoundedCornerShape(12.dp),
+                    ) {
+                        Text("申请通话权限")
+                    }
+                }
+                if (!dndGranted) {
+                    OutlinedButton(
+                        onClick = {
+                            runCatching {
+                                context.startActivity(vm.notificationPolicySettingsIntent())
+                            }
+                        },
+                        shape = RoundedCornerShape(12.dp),
+                    ) {
+                        Text("去开勿扰访问")
+                    }
+                }
+            }
+            Spacer(Modifier.height(8.dp))
+            Text(
+                "QQ / 微信没有公开的拒接接口，手环拒接会触发对方通知里的「拒绝 / 挂断」按钮；" +
+                    "如果那个通知里没有按钮，手环只能静音和提醒，无法替你挂断。",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         }
     }

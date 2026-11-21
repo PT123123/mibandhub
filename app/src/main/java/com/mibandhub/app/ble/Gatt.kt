@@ -26,6 +26,17 @@ object Gatt {
     val SERVICE_HEART_RATE = b("180d")
     val SERVICE_DEVICE_INFO = b("180a")
 
+    /**
+     * 标准告警通知服务（ANS）。
+     *
+     * 手环的「来电」页只认这条通道：Mi Band 4/5 的普通消息走 chunked，
+     * 但来电必须发 New Alert（2a46）且类别为 Call，手环才会显示
+     * 「拒接 / 静音」两个按钮。手环按下按键后从 00000010 上报事件
+     * （0x07 拒接、0x09 忽略/静音，见 Gadgetbridge HuamiDeviceEvent）。
+     */
+    val SERVICE_ALERT_NOTIFICATION = b("1811")
+    val CHAR_NEW_ALERT = b("2a46")
+
     // ---------------- MiBand 服务（FEE0）下的特征 ----------------
     val CHAR_DEVICE_NAME = b("ff02")
 

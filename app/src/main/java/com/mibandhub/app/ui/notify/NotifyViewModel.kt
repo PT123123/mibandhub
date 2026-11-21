@@ -80,6 +80,16 @@ class NotifyViewModel(app: Application) : AndroidViewModel(app) {
     val forwardEnabled: StateFlow<Boolean> =
         prefs.forwardNotifications.stateIn(viewModelScope, SharingStarted.Eagerly, true)
 
+    // ---- 来电控制 ----
+    val callAlertEnabled: StateFlow<Boolean> =
+        prefs.callAlertEnabled.stateIn(viewModelScope, SharingStarted.Eagerly, true)
+    val callRejectEnabled: StateFlow<Boolean> =
+        prefs.callRejectEnabled.stateIn(viewModelScope, SharingStarted.Eagerly, true)
+    val callMuteEnabled: StateFlow<Boolean> =
+        prefs.callMuteEnabled.stateIn(viewModelScope, SharingStarted.Eagerly, true)
+    val callThirdPartyEnabled: StateFlow<Boolean> =
+        prefs.callThirdPartyEnabled.stateIn(viewModelScope, SharingStarted.Eagerly, true)
+
     val dndEnabled: StateFlow<Boolean> =
         prefs.dndEnabled.stateIn(viewModelScope, SharingStarted.Eagerly, false)
     val dndStart: StateFlow<Int> = prefs.dndStart.stateIn(viewModelScope, SharingStarted.Eagerly, 22 * 60)
@@ -398,6 +408,19 @@ class NotifyViewModel(app: Application) : AndroidViewModel(app) {
     fun setOnlyLocked(enabled: Boolean) = launch { prefs.setNotifyOnlyLocked(enabled) }
 
     fun setForwardOngoing(enabled: Boolean) = launch { prefs.setForwardOngoing(enabled) }
+
+    // ---- 来电控制 ----
+    fun setCallAlert(enabled: Boolean) = launch { prefs.setCallAlertEnabled(enabled) }
+
+    fun setCallReject(enabled: Boolean) = launch { prefs.setCallRejectEnabled(enabled) }
+
+    fun setCallMute(enabled: Boolean) = launch { prefs.setCallMuteEnabled(enabled) }
+
+    fun setCallThirdParty(enabled: Boolean) = launch { prefs.setCallThirdPartyEnabled(enabled) }
+
+    /** 系统「勿扰访问」设置页：部分 ROM 切静音模式需要这里授权。 */
+    fun notificationPolicySettingsIntent(): Intent =
+        Intent(android.provider.Settings.ACTION_NOTIFICATION_POLICY_ACCESS_SETTINGS)
 
     fun setVibration(pattern: String) = launch { prefs.setNotifyVibration(pattern) }
 

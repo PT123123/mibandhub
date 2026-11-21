@@ -89,6 +89,9 @@ class BandNotificationListener : NotificationListenerService() {
         instantiatedAt = System.currentTimeMillis()
         prefs = BandPrefs(this)
         session = BandSessionProvider.get(this)
+        // 通知监听几乎全程活着，是通话桥最可靠的生命周期锚点：
+        // 即使保活服务没起来，来电/QQ 通话也能推到手环。
+        CallBridge.get(this).start()
     }
 
     override fun onNotificationPosted(sbn: StatusBarNotification?) {
@@ -131,6 +134,22 @@ class BandNotificationListener : NotificationListenerService() {
 
         if (title.isBlank() && body.isBlank()) {
             Log.d(TAG, "通知标题和正文都是空的，跳过")
+            return
+        }
+
+        // ---- 来电分流：系统电话 / QQ、微信等第三方通话 ----
+        // 这类通知不上普通消息链路（否则会在手环上叠一张普通通知卡），
+        // 而是交给 CallBridge 发 ANS 来电页，并在手环按键时执行拒接/静音。
+        val activeNotification = notification ?: return
+        if (CallBridge.get(applicationContext).consumeNotification(
+                packageName = pkg,
+                notificationKey = sbn.key,
+                title = title,
+                body = body,
+                notification = activeNotification,
+            )
+        ) {
+            Log.d(TAG, "按来电处理并已交 CallBridge：$pkg / ${title.take(30)}")
             return
         }
 
@@ -503,6 +522,12 @@ class BandNotificationListener : NotificationListenerService() {
             "com.android.systemui", // SystemUI
         )
         return noisePrefixes.any { pkg.startsWith(it) }
+    }
+
+    override fun onNotificationRemoved(sbn: StatusBarNotification?) {
+        if (sbn != null) {
+            CallBridge.get(applicationContext).onNotificationRemoved(sbn.key)
+        }
     }
 
     override fun onListenerConnected() {

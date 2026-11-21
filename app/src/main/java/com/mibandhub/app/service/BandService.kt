@@ -135,6 +135,9 @@ class BandService : Service() {
             IntentFilter(Intent.ACTION_BATTERY_CHANGED),
             ContextCompat.RECEIVER_NOT_EXPORTED,
         )
+        // 通话桥：保活服务常驻，顺便把系统来电监听挂上；
+        // 通知监听里也有一处 start()，两处幂等，不互相覆盖。
+        CallBridge.get(this).start()
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -147,6 +150,8 @@ class BandService : Service() {
         // 再走一遍 startAsForeground 会把常驻通知重置成占位文案，StateFlow 不变更
         // 就不重发，得干等下一个分钟 tick 才恢复。冷启动的第一次 start 不带 action，
         // 负责把前台通知立起来；onCreate 先 start、onResume 后 APP_OPEN，顺序天然安全。
+        // 从系统设置授完电话权限回到 app 时，这里会把来电监听补注册上
+        CallBridge.get(this).start()
         if (intent?.action != ACTION_APP_OPEN) {
             startAsForeground()
         }

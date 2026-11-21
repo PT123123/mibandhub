@@ -92,6 +92,19 @@ class BandSession(
 
         /** 序号跳变时整轮作废重来的上限（含第一次），防着极端固件反复断流时无限转。 */
         private const val SYNC_MAX_ROUNDS = 3
+
+        // ---- 来电页 ----
+        /** ANS New Alert 的 Call 类别。 */
+        private const val ALERT_CATEGORY_CALL = 0x03
+
+        /** 手环设备事件：来电页按了「拒接」。 */
+        private const val NOTIFY_CALL_REJECT = 0x07
+
+        /** 手环设备事件：来电页按了「忽略 / 静音」。 */
+        private const val NOTIFY_CALL_IGNORE = 0x09
+
+        /** 手环设备事件：手机静音模式状态变化（部分固件会用来上报「静音」）。 */
+        private const val NOTIFY_SILENT_MODE = 0x10
     }
 
     private val connection = BandConnection(context)
@@ -126,6 +139,16 @@ class BandSession(
 
     private val _logs = MutableSharedFlow<String>(extraBufferCapacity = 256)
     val logs: SharedFlow<String> = _logs
+
+    /**
+     * 手环设备事件（00000010）的首字节。
+     *
+     * 来电页上的「拒接 / 静音」就是从这里上来的：0x07 = 拒接，0x09 = 忽略（静音）。
+     * 用 SharedFlow 而不是 StateFlow —— 这是一次性动作，不能被新订阅者重放，
+     * 否则刚连上就会把历史按键再执行一遍。
+     */
+    private val _callEvents = MutableSharedFlow<Int>(extraBufferCapacity = 16)
+    val callEvents: SharedFlow<Int> = _callEvents
 
     /**
      * 固件/表盘通道（1531）推上来的原始回复。
@@ -200,6 +223,7 @@ class BandSession(
         connection.enableNotify(Gatt.CHAR_HR_MEASUREMENT)
         refreshBattery()
         enableRealtimeSteps()
+        enableCallEvents()
         return@withLock true
     }
 
@@ -319,6 +343,23 @@ class BandSession(
                         "认证上报 <- " + msg.value.joinToString(" ") { "%02x".format(it) },
                     )
 
+                    // 手环按键/状态事件。来电页的「拒接（0x07）/ 静音（0x09）」
+                    // 就从这里来；其他事件目前只打日志，保留原始字节便于排查。
+                    Gatt.CHAR_DEVICE_EVENT -> {
+                        val event = msg.value.firstOrNull()?.toInt()?.and(0xff)
+                        if (event != null) {
+                            if (event == NOTIFY_CALL_REJECT || event == NOTIFY_CALL_IGNORE ||
+                                event == NOTIFY_SILENT_MODE
+                            ) {
+                                _callEvents.tryEmit(event)
+                            }
+                            log(
+                                "设备事件 <- " +
+                                    msg.value.joinToString(" ") { "%02x".format(it) },
+                            )
+                        }
+                    }
+
                     // 表盘下发期间手环的应答 —— 逐条排队，等 [installWatchFace] 来取。
                     WatchFace.CHAR_CONTROL -> firmwareIn.trySend(msg.value)
                 }
@@ -412,6 +453,85 @@ class BandSession(
         }
         log("通知发送完成（${chunks.size} 包全部写入）")
         return true
+    }
+
+    // ------------------------------------------------------------------
+    // 来电页（ANS New Alert 类别 3）
+    // ------------------------------------------------------------------
+
+    /**
+     * 订阅手环设备事件（00000010）—— 来电页上的「拒接 / 静音」从这里上来。
+     * 这条特征缺失时不影响普通通知，只是手环上的按键控制不可用。
+     */
+    private suspend fun enableCallEvents() {
+        if (!connection.hasCharacteristic(Gatt.CHAR_DEVICE_EVENT)) {
+            log("没有设备事件特征（00000010），来电按键控制不可用")
+            return
+        }
+        if (!connection.enableNotify(Gatt.CHAR_DEVICE_EVENT)) {
+            log("订阅设备事件失败，来电按键控制不可用")
+        }
+    }
+
+    /**
+     * 让手环显示来电页（来电人 + 拒接/静音按钮）。
+     *
+     * 优先走标准 ANS 的 New Alert（2a46）：`[Call 类别, 1, 来电人名字]`。
+     * Gadgetbridge 对 Mi Band 4/5 的来电就是这么发的。部分固件没有 ANS 服务，
+     * 这时退回 MB3 的 chunked 来电包 `[0x03, 0x01, 名字, 0, 0, 0]`。
+     */
+    suspend fun sendIncomingCall(caller: String): Boolean {
+        if (!_authenticated.value) {
+            log("来电页下发失败：会话未认证")
+            return false
+        }
+        val name = caller.trim().ifBlank { "来电" }
+        val nameBytes = Notify.truncateUtf8(name, 60).toByteArray(Charsets.UTF_8)
+
+        if (connection.hasCharacteristic(Gatt.CHAR_NEW_ALERT)) {
+            val payload = byteArrayOf(ALERT_CATEGORY_CALL.toByte(), 0x01) + nameBytes
+            if (connection.write(Gatt.CHAR_NEW_ALERT, payload)) {
+                log("来电页已下发 -> $name（ANS）")
+                return true
+            }
+            log("ANS 写入失败，改用 chunked 兜底")
+        }
+
+        if (!connection.hasCharacteristic(Gatt.CHAR_CHUNKED)) {
+            log("来电页下发失败：没有 ANS 也没有 chunked 通道")
+            return false
+        }
+        val payload = byteArrayOf(ALERT_CATEGORY_CALL.toByte(), 0x01) + nameBytes +
+            byteArrayOf(0x00, 0x00, 0x00)
+        val chunks = Notify.chunk(payload)
+        for ((index, chunk) in chunks.withIndex()) {
+            if (index > 0) delay(30)
+            if (!connection.write(Gatt.CHAR_CHUNKED, chunk)) {
+                log("来电页第 ${index + 1}/${chunks.size} 包写入失败，中止")
+                return false
+            }
+        }
+        log("来电页已下发 -> $name（chunked 兜底）")
+        return true
+    }
+
+    /** 结束手环上的来电页（通话接通/挂断/被拒后调用）。 */
+    suspend fun stopIncomingCall() {
+        if (!_authenticated.value) return
+        if (connection.hasCharacteristic(Gatt.CHAR_NEW_ALERT)) {
+            if (connection.write(Gatt.CHAR_NEW_ALERT, byteArrayOf(ALERT_CATEGORY_CALL.toByte(), 0x00))) {
+                log("来电页已结束（ANS）")
+            } else {
+                log("结束来电页失败（ANS 写入被拒）")
+            }
+            return
+        }
+        if (connection.hasCharacteristic(Gatt.CHAR_CHUNKED)) {
+            Notify.chunk(byteArrayOf(ALERT_CATEGORY_CALL.toByte(), 0x00)).forEach {
+                connection.write(Gatt.CHAR_CHUNKED, it)
+            }
+            log("来电页已结束（chunked 兜底）")
+        }
     }
 
     /** 读一次电量。 */

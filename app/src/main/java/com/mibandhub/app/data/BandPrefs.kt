@@ -122,6 +122,12 @@ class BandPrefs(private val context: Context) {
         val FORWARD_ONGOING = booleanPreferencesKey("forward_ongoing")
         val APP_RULES = stringPreferencesKey("app_rules")
 
+        // ---- 来电控制 ----
+        val CALL_ALERT = booleanPreferencesKey("call_alert_enabled")
+        val CALL_REJECT = booleanPreferencesKey("call_reject_enabled")
+        val CALL_MUTE = booleanPreferencesKey("call_mute_enabled")
+        val CALL_THIRD_PARTY = booleanPreferencesKey("call_third_party_enabled")
+
         /** 真实推到手环的通知记录（最近推送页），新的在前。 */
         val RECENT_NOTIFICATIONS = stringPreferencesKey("recent_notifications")
 
@@ -188,6 +194,16 @@ class BandPrefs(private val context: Context) {
     val autoConnect: Flow<Boolean> = context.bandDataStore.data.map { it[Keys.AUTO_CONNECT] ?: true }
     val forwardNotifications: Flow<Boolean> =
         context.bandDataStore.data.map { it[Keys.FORWARD_NOTIFICATIONS] ?: true }
+
+    // ---- 来电控制（默认全开：来电页 + 拒接 + 静音 + 第三方通话） ----
+    val callAlertEnabled: Flow<Boolean> =
+        context.bandDataStore.data.map { it[Keys.CALL_ALERT] ?: true }
+    val callRejectEnabled: Flow<Boolean> =
+        context.bandDataStore.data.map { it[Keys.CALL_REJECT] ?: true }
+    val callMuteEnabled: Flow<Boolean> =
+        context.bandDataStore.data.map { it[Keys.CALL_MUTE] ?: true }
+    val callThirdPartyEnabled: Flow<Boolean> =
+        context.bandDataStore.data.map { it[Keys.CALL_THIRD_PARTY] ?: true }
 
     // ---- 主从转发 ----
     val linkRole: Flow<LinkRole> =
@@ -284,6 +300,23 @@ class BandPrefs(private val context: Context) {
 
     suspend fun setForwardNotifications(enabled: Boolean) {
         context.bandDataStore.edit { it[Keys.FORWARD_NOTIFICATIONS] = enabled }
+    }
+
+    // ---- 来电控制 ----
+    suspend fun setCallAlertEnabled(enabled: Boolean) {
+        context.bandDataStore.edit { it[Keys.CALL_ALERT] = enabled }
+    }
+
+    suspend fun setCallRejectEnabled(enabled: Boolean) {
+        context.bandDataStore.edit { it[Keys.CALL_REJECT] = enabled }
+    }
+
+    suspend fun setCallMuteEnabled(enabled: Boolean) {
+        context.bandDataStore.edit { it[Keys.CALL_MUTE] = enabled }
+    }
+
+    suspend fun setCallThirdPartyEnabled(enabled: Boolean) {
+        context.bandDataStore.edit { it[Keys.CALL_THIRD_PARTY] = enabled }
     }
 
     // ---- 主从转发 ----

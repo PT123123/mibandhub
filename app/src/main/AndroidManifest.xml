@@ -34,6 +34,19 @@
          不申请的表现是「偶尔有通知不上手环」，很容易被当成偶发问题。 -->
     <uses-permission android:name="android.permission.RECEIVE_SENSITIVE_NOTIFICATIONS" />
 
+    <!-- 来电控制：识别系统电话的响铃/挂断状态；ANSWER_PHONE_CALLS 用于手环上按「拒接」。
+         平板（主从模式的从机）没有电话硬件，不声明 required，避免装不上。 -->
+    <uses-feature
+        android:name="android.hardware.telephony"
+        android:required="false" />
+    <uses-permission android:name="android.permission.READ_PHONE_STATE" />
+    <uses-permission android:name="android.permission.ANSWER_PHONE_CALLS" />
+
+    <!-- 手环上按「静音」时直接调铃声/媒体音量；ACCESS_NOTIFICATION_POLICY 用于
+         在部分 ROM 上把铃声模式切到静音（用户需在系统「勿扰权限」里额外授权）。 -->
+    <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
+    <uses-permission android:name="android.permission.ACCESS_NOTIFICATION_POLICY" />
+
     <!-- 配对页「扫码填入」+ 心率页「闪光灯测心率」共用相机权限。
          闪光灯走 CameraX 的 enableTorch()，不需要 android.permission.FLASHLIGHT；
          两个 uses-feature 都设 required=false，没相机/没闪光灯的设备照样能装，

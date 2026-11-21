@@ -34,6 +34,7 @@ import com.mibandhub.app.ui.theme.PulseRed
  */
 object NotifyRoutes {
     const val FORWARD = "notify-forward"
+    const val CALLS = "notify-calls"
     const val TEST = "notify-test"
     const val DND = "notify-dnd"
     const val KEYWORD = "notify-keyword"
@@ -60,6 +61,8 @@ fun NotifyScreen(
 ) {
     val context = LocalContext.current
     val forwardEnabled by vm.forwardEnabled.collectAsStateWithLifecycle()
+    val callAlertEnabled by vm.callAlertEnabled.collectAsStateWithLifecycle()
+    val callThirdPartyEnabled by vm.callThirdPartyEnabled.collectAsStateWithLifecycle()
     val notifyPermission by vm.notifyPermission.collectAsStateWithLifecycle()
     val listenerBound by vm.listenerBound.collectAsStateWithLifecycle()
     val dndEnabled by vm.dndEnabled.collectAsStateWithLifecycle()
@@ -168,6 +171,19 @@ fun NotifyScreen(
             },
             accent = NotifyAmber,
             onClick = { onNavigate(NotifyRoutes.FORWARD) },
+        )
+        Spacer(Modifier.height(10.dp))
+
+        // ---- 来电控制：系统电话 / QQ 微信通话的手环来电页 + 拒接/静音 ----
+        NavRow(
+            title = "来电控制",
+            subtitle = when {
+                !callAlertEnabled -> "已关闭 · 来电不上手环"
+                callThirdPartyEnabled -> "已开启 · 手机与 QQ/微信来电可拒接、静音"
+                else -> "已开启 · 仅系统电话来电"
+            },
+            accent = NotifyAmber,
+            onClick = { onNavigate(NotifyRoutes.CALLS) },
         )
         Spacer(Modifier.height(10.dp))
 
