@@ -100,6 +100,9 @@ class BandNotificationListener : NotificationListenerService() {
         instance = this
         prefs = BandPrefs(this)
         session = BandSessionProvider.get(this)
+        // GymBuddy 的训练提醒默认走手环的拒接/静音（只迁移一次）；
+        // 放在监听器里跑，用户即使没打开通知页也能及时生效。
+        scope.launch { prefs.ensureGymBuddyActionable() }
         // 通知监听几乎全程活着，是通话桥最可靠的生命周期锚点：
         // 即使保活服务没起来，来电/QQ 通话也能推到手环。
         CallBridge.get(this).start()

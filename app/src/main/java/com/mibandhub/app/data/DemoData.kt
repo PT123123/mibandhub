@@ -50,7 +50,7 @@ object DemoData {
     )
 
     /**
-     * 出厂默认的转发应用名单（白名单模式用）：美团、微信、短信、来电、日历。
+     * 出厂默认的转发应用名单（白名单模式用）：美团、微信、短信、来电、日历、GymBuddy。
      * 用户只要动过名单（哪怕存成空），就完全照用户存的来（见 BandPrefs.appRules）。
      */
     fun appRules(): List<AppRule> = listOf(
@@ -59,6 +59,8 @@ object DemoData {
         AppRule("com.android.mms", "短信", true),
         AppRule("com.android.dialer", "来电", true),
         AppRule("com.android.calendar", "日历", true),
+        // 训练提醒默认就按「可操作」走：手环拒接 = 关闭提醒，静音 = 停声音/震动。
+        AppRule(BandPrefs.GYM_BUDDY_PACKAGE, "GymBuddy", true, actionable = true),
     )
 
     /**

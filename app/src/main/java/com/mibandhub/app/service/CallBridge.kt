@@ -91,7 +91,13 @@ class CallBridge private constructor(context: Context) {
          */
         private val NOTIFICATION_ACTIONS = REJECT_ACTIONS + listOf(
             "已读", "标记为已读", "标记已读", "归档", "删除", "清除", "忽略", "完成",
-            "mark as read", "archive", "delete", "dismiss", "done",
+            "关闭", "停止", "mark as read", "archive", "delete", "dismiss", "done", "close", "stop",
+        )
+
+        /** 通知里可交给手环「静音」键执行的动作（应用自己停声音/震动）。 */
+        private val MUTE_ACTIONS = listOf(
+            "静音", "静默", "关闭声音", "关掉声音", "静音提醒",
+            "mute", "silence",
         )
 
         @Volatile
@@ -114,6 +120,8 @@ class CallBridge private constructor(context: Context) {
         val label: String,
         val notificationKey: String? = null,
         val rejectIntent: PendingIntent? = null,
+        /** 可操作通知里「静音」键要触发的应用动作（没有就退回静音系统铃声）。 */
+        val muteIntent: PendingIntent? = null,
         /** 无障碍来源的拒接动作；返回是否点击成功。 */
         val rejectAction: (() -> Boolean)? = null,
         val ringing: Boolean = true,
@@ -150,6 +158,7 @@ class CallBridge private constructor(context: Context) {
     private var muteJob: Job? = null
     private var savedRingVolume = -1
     private var savedMusicVolume = -1
+    private var savedAlarmVolume = -1
     private var savedRingerMode = -1
 
     // ------------------------------------------------------------------
@@ -380,6 +389,7 @@ class CallBridge private constructor(context: Context) {
             label = label,
             notificationKey = notificationKey,
             rejectIntent = findActionIntent(notification),
+            muteIntent = findMuteIntent(notification),
             ringing = true,
         )
         active = call
@@ -472,9 +482,9 @@ class CallBridge private constructor(context: Context) {
     fun onNotificationRemoved(notificationKey: String) {
         val current = active ?: return
         if (current.notificationKey != notificationKey) return
-        if (current.kind == Kind.THIRD_PARTY || current.source == Source.NOTIFICATION_ACTION ||
-            !phoneRinging
-        ) {
+        // 可操作通知不在这里收页：GymBuddy 的全屏提醒弹窗一出现就会清掉自己的通知，
+        // 跟着收会让手环刚弹出的页面立刻消失。它靠按键或 60 秒超时结束。
+        if (current.kind == Kind.THIRD_PARTY || !phoneRinging) {
             clearCall()
         }
     }
@@ -565,11 +575,18 @@ class CallBridge private constructor(context: Context) {
             Log.d(TAG, "手环静音已关闭，忽略")
             return
         }
-        muteRinger(includeMedia = call.muteMedia)
-        // 通知的「静音」= 静音铃声 + 收起手环页；不能走 clearCall() 默认的恢复音量
         if (call.source == Source.NOTIFICATION_ACTION) {
-            clearCall(restoreAudio = false)
+            // 应用自带「静音」按钮（如 GymBuddy）：让它自己停声音/震动，不动系统音量
+            if (sendRejectIntent(call.muteIntent)) {
+                clearCall()
+            } else {
+                // 没有按钮就退回静音铃声；闹钟类提醒要连闹钟流一起静音
+                muteRinger(includeMedia = false, includeAlarm = true)
+                clearCall(restoreAudio = false)
+            }
+            return
         }
+        muteRinger(includeMedia = call.muteMedia)
     }
 
     /**
@@ -585,7 +602,7 @@ class CallBridge private constructor(context: Context) {
 
     private fun sendRejectIntent(intent: PendingIntent?): Boolean {
         if (intent == null) {
-            Log.d(TAG, "第三方通话通知里没有「拒绝/挂断」按钮，无法自动拒接")
+            Log.d(TAG, "通知里没有可执行的动作按钮")
             return false
         }
         return try {
@@ -666,6 +683,14 @@ class CallBridge private constructor(context: Context) {
             NOTIFICATION_ACTIONS.any { label.contains(it) }
         }?.actionIntent
 
+    /** 通知里「静音」键要触发的应用动作；没有就由 [muteRinger] 兜底。 */
+    private fun findMuteIntent(notification: Notification): PendingIntent? =
+        notification.actions.orEmpty().firstOrNull { action ->
+            if (!action.remoteInputs.isNullOrEmpty()) return@firstOrNull false
+            val label = action.title?.toString().orEmpty().lowercase()
+            MUTE_ACTIONS.any { label.contains(it) }
+        }?.actionIntent
+
     /** 可操作通知在手环上的标题：「应用 · 通知标题」。 */
     private fun buildActionableLabel(appName: String, title: String): String {
         val text = title.trim()
@@ -680,17 +705,23 @@ class CallBridge private constructor(context: Context) {
     // 静音 / 恢复
     // ------------------------------------------------------------------
 
-    private fun muteRinger(includeMedia: Boolean) {
+    private fun muteRinger(includeMedia: Boolean, includeAlarm: Boolean = false) {
         if (muted) return
         val am = audio ?: return
         savedRingerMode = am.ringerMode
         savedRingVolume = am.getStreamVolume(AudioManager.STREAM_RING)
         savedMusicVolume = am.getStreamVolume(AudioManager.STREAM_MUSIC)
+        savedAlarmVolume = am.getStreamVolume(AudioManager.STREAM_ALARM)
 
         runCatching { am.adjustStreamVolume(AudioManager.STREAM_RING, AudioManager.ADJUST_MUTE, 0) }
             .onFailure { Log.w(TAG, "静音铃声流失败", it) }
         runCatching {
             am.adjustStreamVolume(AudioManager.STREAM_NOTIFICATION, AudioManager.ADJUST_MUTE, 0)
+        }
+        // 闹钟类提醒（GymBuddy 等）走 USAGE_ALARM，只静音铃声流管不住它
+        if (includeAlarm) {
+            runCatching { am.adjustStreamVolume(AudioManager.STREAM_ALARM, AudioManager.ADJUST_MUTE, 0) }
+                .onFailure { Log.w(TAG, "静音闹钟流失败", it) }
         }
         // 无障碍能检测到 QQ 来电页关闭（接起/挂断），所以这里可以安全地连媒体流一起静音；
         // 通知来源的第三方通话无法可靠判断接起时机，不静音媒体流。
@@ -729,9 +760,13 @@ class CallBridge private constructor(context: Context) {
             if (savedMusicVolume >= 0) {
                 am.setStreamVolume(AudioManager.STREAM_MUSIC, savedMusicVolume, 0)
             }
+            if (savedAlarmVolume >= 0) {
+                am.setStreamVolume(AudioManager.STREAM_ALARM, savedAlarmVolume, 0)
+            }
         }.onFailure { Log.w(TAG, "恢复手机音量失败", it) }
         savedRingVolume = -1
         savedMusicVolume = -1
+        savedAlarmVolume = -1
         savedRingerMode = -1
         Log.d(TAG, "已恢复手机音量")
     }

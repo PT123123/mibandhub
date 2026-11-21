@@ -77,6 +77,11 @@ class NotifyViewModel(app: Application) : AndroidViewModel(app) {
     private val prefs = BandPrefs(app)
     private val session = BandSessionProvider.get(app)
 
+    init {
+        // GymBuddy 的训练提醒默认走手环的拒接/静音（只迁移一次）。
+        launch { prefs.ensureGymBuddyActionable() }
+    }
+
     val forwardEnabled: StateFlow<Boolean> =
         prefs.forwardNotifications.stateIn(viewModelScope, SharingStarted.Eagerly, true)
 

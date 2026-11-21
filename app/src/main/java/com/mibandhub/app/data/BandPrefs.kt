@@ -41,6 +41,9 @@ class BandPrefs(private val context: Context) {
         val PPG_DURATION_OPTIONS = listOf(15, 20, 30)
 
         const val PPG_DURATION_DEFAULT_SEC = 20
+
+        /** GymBuddy 的包名：训练提醒默认按「可操作通知」处理。 */
+        const val GYM_BUDDY_PACKAGE = "com.pt123123.gymbuddy"
     }
 
     private object Keys {
@@ -131,6 +134,9 @@ class BandPrefs(private val context: Context) {
         /** 通知快捷操作总开关：允许指定应用的通知复用手环来电页的两个按键。 */
         val NOTIFY_ACTIONABLE = booleanPreferencesKey("notify_actionable_enabled")
 
+        /** GymBuddy 默认「可操作」的一次性迁移标记。 */
+        val GYM_ACTIONABLE_MIGRATED = booleanPreferencesKey("gym_actionable_migrated")
+
         /** 真实推到手环的通知记录（最近推送页），新的在前。 */
         val RECENT_NOTIFICATIONS = stringPreferencesKey("recent_notifications")
 
@@ -208,7 +214,7 @@ class BandPrefs(private val context: Context) {
     val callThirdPartyEnabled: Flow<Boolean> =
         context.bandDataStore.data.map { it[Keys.CALL_THIRD_PARTY] ?: true }
 
-    /** 通知快捷操作总开关，默认关 —— 需要用户明确选应用后才启用。 */
+    /** 通知快捷操作总开关；从未设置过时，GymBuddy 迁移会默认打开一次。 */
     val notifyActionableEnabled: Flow<Boolean> =
         context.bandDataStore.data.map { it[Keys.NOTIFY_ACTIONABLE] ?: false }
 
@@ -749,11 +755,50 @@ class BandPrefs(private val context: Context) {
         context.bandDataStore.edit { prefs ->
             // 空列表也照写（写空串）—— 键存在就代表「用户已经动过」，
             // 不能让它再回落到出厂参考名单，否则移除过的应用会自己回来。
-            prefs[Keys.APP_RULES] = rules.joinToString("\n") {
-                "${it.packageName}|${it.appName}|${if (it.enabled) 1 else 0}" +
-                    "|${if (it.showDetail) 1 else 0}|${if (it.actionable) 1 else 0}"
-            }
+            prefs[Keys.APP_RULES] = encodeAppRules(rules)
         }
+    }
+
+    /**
+     * 一次性迁移：把 GymBuddy 加入名单并标记为「可操作」。
+     *
+     * 用户明确要求训练提醒也走手环的拒接/静音，所以升级后默认打开一次；
+     * 迁移只跑一次，之后用户在应用名单里关掉「可操作」不会被再次覆盖。
+     */
+    suspend fun ensureGymBuddyActionable() {
+        context.bandDataStore.edit { prefs ->
+            if (prefs[Keys.GYM_ACTIONABLE_MIGRATED] == true) return@edit
+            prefs[Keys.GYM_ACTIONABLE_MIGRATED] = true
+            // 从未设置过总开关时顺手打开一次；用户明确关过就尊重用户的选择
+            if (prefs[Keys.NOTIFY_ACTIONABLE] == null) {
+                prefs[Keys.NOTIFY_ACTIONABLE] = true
+            }
+
+            val raw = prefs[Keys.APP_RULES]
+            // 名单还没落盘时，出厂默认（DemoData.appRules）里已经带了 GymBuddy，
+            // 不要为了迁移把整份默认名单实体化。
+            if (raw == null) return@edit
+
+            val rules = decodeAppRules(raw)
+            val existing = rules.firstOrNull { it.packageName == GYM_BUDDY_PACKAGE }
+            val updated = when {
+                existing == null -> {
+                    // 黑名单模式下 enabled=true 表示「拦截」，新加进来要让它是放行状态
+                    val enabled = prefs[Keys.APP_FILTER_BLACKLIST] != true
+                    rules + AppRule(GYM_BUDDY_PACKAGE, "GymBuddy", enabled, actionable = true)
+                }
+                existing.actionable -> return@edit
+                else -> rules.map {
+                    if (it.packageName == GYM_BUDDY_PACKAGE) it.copy(actionable = true) else it
+                }
+            }
+            prefs[Keys.APP_RULES] = encodeAppRules(updated)
+        }
+    }
+
+    private fun encodeAppRules(rules: List<AppRule>): String = rules.joinToString("\n") {
+        "${it.packageName}|${it.appName}|${if (it.enabled) 1 else 0}" +
+            "|${if (it.showDetail) 1 else 0}|${if (it.actionable) 1 else 0}"
     }
 
     /**
