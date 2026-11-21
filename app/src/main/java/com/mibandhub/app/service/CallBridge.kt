@@ -91,12 +91,20 @@ class CallBridge private constructor(context: Context) {
 
     private enum class Kind { PHONE, THIRD_PARTY }
 
+    /** 来电从哪里来：系统电话、第三方通知、QQ 全屏来电（无障碍）。 */
+    private enum class Source { PHONE, NOTIFICATION, ACCESSIBILITY }
+
     private data class ActiveCall(
         val kind: Kind,
+        val source: Source,
         val label: String,
         val notificationKey: String? = null,
         val rejectIntent: PendingIntent? = null,
+        /** 无障碍来源的拒接动作；返回是否点击成功。 */
+        val rejectAction: (() -> Boolean)? = null,
         val ringing: Boolean = true,
+        /** 第三方通话是否连媒体流一起静音（QQ 铃声常走媒体流）。 */
+        val muteMedia: Boolean = false,
     )
 
     private val appContext = context.applicationContext
@@ -124,6 +132,7 @@ class CallBridge private constructor(context: Context) {
     private var muted = false
     private var muteJob: Job? = null
     private var savedRingVolume = -1
+    private var savedMusicVolume = -1
     private var savedRingerMode = -1
 
     // ------------------------------------------------------------------
@@ -205,7 +214,7 @@ class CallBridge private constructor(context: Context) {
             delay(CALLER_NAME_WAIT_MS)
             if (!phoneRinging) return@launch
             val label = systemCallTitle?.takeIf { it.isNotBlank() } ?: "来电"
-            showAlert(ActiveCall(Kind.PHONE, label, ringing = true))
+            showAlert(ActiveCall(Kind.PHONE, Source.PHONE, label, ringing = true))
         }
     }
 
@@ -288,6 +297,8 @@ class CallBridge private constructor(context: Context) {
         if (CALL_NEGATIVE.any { text.contains(it) }) return false
 
         if (!prefs.callThirdPartyEnabled.first()) return false
+        // 无障碍已经识别到 QQ 全屏来电时，不要再被同一通电话的通知覆盖
+        if (active?.source == Source.ACCESSIBILITY) return true
 
         val appName = resolveAppLabel(packageName)
         val label = buildThirdPartyLabel(appName, title, body)
@@ -300,6 +311,7 @@ class CallBridge private constructor(context: Context) {
         showAlert(
             ActiveCall(
                 kind = Kind.THIRD_PARTY,
+                source = Source.NOTIFICATION,
                 label = label,
                 notificationKey = notificationKey,
                 rejectIntent = findRejectIntent(notification),
@@ -356,6 +368,7 @@ class CallBridge private constructor(context: Context) {
                     showAlert(
                         ActiveCall(
                             kind = Kind.PHONE,
+                            source = Source.PHONE,
                             label = caller.ifBlank { "来电" },
                             notificationKey = notificationKey,
                             ringing = true,
@@ -374,6 +387,7 @@ class CallBridge private constructor(context: Context) {
         showAlert(
             ActiveCall(
                 kind = Kind.PHONE,
+                source = Source.PHONE,
                 label = caller.ifBlank { "来电" },
                 notificationKey = notificationKey,
                 ringing = true,
@@ -392,6 +406,53 @@ class CallBridge private constructor(context: Context) {
     }
 
     // ------------------------------------------------------------------
+    // QQ / 微信全屏来电（无障碍服务调用）
+    // ------------------------------------------------------------------
+
+    /**
+     * 无障碍服务识别到 QQ 全屏来电页。
+     *
+     * @param reject 由无障碍服务提供的拒接动作（点击 QQ 界面的「拒绝」）。
+     */
+    fun notifyAccessibilityCallStarted(label: String, reject: () -> Boolean) {
+        scope.launch {
+            if (active != null) {
+                Log.d(TAG, "已有通话在手环上，忽略新的无障碍来电：$label")
+                return@launch
+            }
+            if (!prefs.callThirdPartyEnabled.first()) return@launch
+            showAlert(
+                ActiveCall(
+                    kind = Kind.THIRD_PARTY,
+                    source = Source.ACCESSIBILITY,
+                    label = label,
+                    rejectAction = reject,
+                    ringing = true,
+                    muteMedia = true,
+                ),
+            )
+            Log.d(TAG, "无障碍来电 -> $label")
+        }
+    }
+
+    /** 来电页内容变化，例如联系人名字后到达。 */
+    fun notifyAccessibilityCallUpdated(label: String) {
+        scope.launch {
+            val current = active ?: return@launch
+            if (current.source != Source.ACCESSIBILITY || current.label == label) return@launch
+            showAlert(current.copy(label = label))
+        }
+    }
+
+    /** 来电页关闭：接起、拒接、对方取消，都走这里撤掉手环来电页并恢复音量。 */
+    fun notifyAccessibilityCallEnded() {
+        if (active?.source == Source.ACCESSIBILITY) {
+            Log.d(TAG, "无障碍来电结束")
+            clearCall()
+        }
+    }
+
+    // ------------------------------------------------------------------
     // 手环按键
     // ------------------------------------------------------------------
 
@@ -404,9 +465,10 @@ class CallBridge private constructor(context: Context) {
             Log.d(TAG, "手环拒接已关闭，忽略")
             return
         }
-        val ok = when (call.kind) {
-            Kind.PHONE -> if (call.ringing) endPhoneCall() else false
-            Kind.THIRD_PARTY -> sendRejectIntent(call.rejectIntent)
+        val ok = when (call.source) {
+            Source.PHONE -> if (call.ringing) endPhoneCall() else false
+            Source.NOTIFICATION -> sendRejectIntent(call.rejectIntent)
+            Source.ACCESSIBILITY -> call.rejectAction?.invoke() ?: false
         }
         Log.d(TAG, "手环拒接 -> ${call.label}：${if (ok) "成功" else "失败"}")
         clearCall()
@@ -421,7 +483,7 @@ class CallBridge private constructor(context: Context) {
             Log.d(TAG, "手环静音已关闭，忽略")
             return
         }
-        muteRinger()
+        muteRinger(includeMedia = active?.muteMedia == true)
     }
 
     private fun sendRejectIntent(intent: PendingIntent?): Boolean {
@@ -476,19 +538,24 @@ class CallBridge private constructor(context: Context) {
     // 静音 / 恢复
     // ------------------------------------------------------------------
 
-    private fun muteRinger() {
+    private fun muteRinger(includeMedia: Boolean) {
         if (muted) return
         val am = audio ?: return
         savedRingerMode = am.ringerMode
         savedRingVolume = am.getStreamVolume(AudioManager.STREAM_RING)
+        savedMusicVolume = am.getStreamVolume(AudioManager.STREAM_MUSIC)
 
         runCatching { am.adjustStreamVolume(AudioManager.STREAM_RING, AudioManager.ADJUST_MUTE, 0) }
             .onFailure { Log.w(TAG, "静音铃声流失败", it) }
         runCatching {
             am.adjustStreamVolume(AudioManager.STREAM_NOTIFICATION, AudioManager.ADJUST_MUTE, 0)
         }
-        // 不静音媒体流：QQ 接通后可能走媒体/通话流，误静音会让对方声音消失，
-        // 等真实机型验证了 QQ 铃声走哪条流再考虑加。
+        // 无障碍能检测到 QQ 来电页关闭（接起/挂断），所以这里可以安全地连媒体流一起静音；
+        // 通知来源的第三方通话无法可靠判断接起时机，不静音媒体流。
+        if (includeMedia) {
+            runCatching { am.adjustStreamVolume(AudioManager.STREAM_MUSIC, AudioManager.ADJUST_MUTE, 0) }
+                .onFailure { Log.w(TAG, "静音媒体流失败", it) }
+        }
 
         if (am.ringerMode == AudioManager.RINGER_MODE_NORMAL) {
             runCatching { am.ringerMode = AudioManager.RINGER_MODE_SILENT }
@@ -517,8 +584,12 @@ class CallBridge private constructor(context: Context) {
             if (savedRingVolume >= 0) {
                 am.setStreamVolume(AudioManager.STREAM_RING, savedRingVolume, 0)
             }
+            if (savedMusicVolume >= 0) {
+                am.setStreamVolume(AudioManager.STREAM_MUSIC, savedMusicVolume, 0)
+            }
         }.onFailure { Log.w(TAG, "恢复手机音量失败", it) }
         savedRingVolume = -1
+        savedMusicVolume = -1
         savedRingerMode = -1
         Log.d(TAG, "已恢复手机音量")
     }

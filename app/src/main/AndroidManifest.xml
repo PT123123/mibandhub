@@ -197,6 +197,21 @@
             </intent-filter>
         </service>
 
+        <!-- QQ/TIM 来电不发通知、只拉全屏 Activity，只能靠无障碍识别并点「拒绝」。
+             需要用户在系统设置里手动开启，关闭后不影响其他通话链路。 -->
+        <service
+            android:name=".service.QqCallAccessibilityService"
+            android:exported="true"
+            android:label="QQ/微信通话控制"
+            android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE">
+            <intent-filter>
+                <action android:name="android.accessibilityservice.AccessibilityService" />
+            </intent-filter>
+            <meta-data
+                android:name="android.accessibilityservice"
+                android:resource="@xml/accessibility_service_config" />
+        </service>
+
         <!-- 桌面控件：主控件「昨晚睡眠」（2×2，可拉大）+ 两个原生控件
              （1×1 睡眠时长 / 1×2 睡眠+心率曲线）。统一走原生 AppWidget 路径，
              澎湃OS/ColorOS 桌面上从「添加小部件 → 小部件/安卓小组件」分类按「手环管家」分组找。

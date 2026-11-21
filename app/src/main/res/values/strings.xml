@@ -2,6 +2,7 @@
 <resources>
     <string name="app_name">手环管家</string>
     <string name="notification_listener_label">手环管家 · 通知转发</string>
+    <string name="accessibility_qq_calls_desc">用于识别 QQ/TIM 的全屏语音、视频来电，把来电显示到手环，并响应手环上的「拒接」。只读取 QQ/TIM 的来电界面，不读取其他应用内容。</string>
 
     <!-- 底部导航 -->
     <string name="nav_home">首页</string>

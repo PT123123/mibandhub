@@ -3,10 +3,17 @@
 package com.mibandhub.app.ui.notify
 
 import android.Manifest
+import android.content.ComponentName
+import android.content.Context
+import android.content.Intent
 import android.content.pm.PackageManager
+import android.provider.Settings
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.core.content.ContextCompat
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.compose.LifecycleEventEffect
+import com.mibandhub.app.service.QqCallAccessibilityService
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -826,6 +833,7 @@ fun NotifyCallPage(vm: NotifyViewModel, onBack: () -> Unit) {
     var dndGranted by remember {
         mutableStateOf(notificationManager?.isNotificationPolicyAccessGranted == true)
     }
+    var a11yGranted by remember { mutableStateOf(isQqAccessibilityEnabled(context)) }
 
     val permissionLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions(),
@@ -851,6 +859,11 @@ fun NotifyCallPage(vm: NotifyViewModel, onBack: () -> Unit) {
             Manifest.permission.ANSWER_PHONE_CALLS,
         ) == PackageManager.PERMISSION_GRANTED
         dndGranted = notificationManager?.isNotificationPolicyAccessGranted == true
+    }
+
+    // 从系统无障碍设置返回时刷新状态
+    LifecycleEventEffect(Lifecycle.Event.ON_RESUME) {
+        a11yGranted = isQqAccessibilityEnabled(context)
     }
 
     SubPage("来电控制", onBack) {
@@ -938,6 +951,11 @@ fun NotifyCallPage(vm: NotifyViewModel, onBack: () -> Unit) {
                 value = if (dndGranted) "已授权" else "未授权（仍会静音铃声流）",
                 valueColor = if (dndGranted) MaterialTheme.colorScheme.onSurface else NotifyAmber,
             )
+            KeyValueRow(
+                key = "QQ 全屏来电（无障碍）",
+                value = if (a11yGranted) "已开启" else "未开启",
+                valueColor = if (a11yGranted) MaterialTheme.colorScheme.onSurface else NotifyAmber,
+            )
             Spacer(Modifier.height(6.dp))
             Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                 if (!phoneGranted || !answerGranted) {
@@ -972,15 +990,50 @@ fun NotifyCallPage(vm: NotifyViewModel, onBack: () -> Unit) {
                     }
                 }
             }
+            if (!a11yGranted) {
+                Spacer(Modifier.height(8.dp))
+                Button(
+                    onClick = {
+                        runCatching {
+                            context.startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
+                        }
+                    },
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = NotifyAmber,
+                        contentColor = MaterialTheme.colorScheme.onPrimary,
+                    ),
+                    shape = RoundedCornerShape(12.dp),
+                ) {
+                    Text("去开启 QQ 通话无障碍")
+                }
+            }
             Spacer(Modifier.height(8.dp))
             Text(
-                "QQ / 微信没有公开的拒接接口，手环拒接会触发对方通知里的「拒绝 / 挂断」按钮；" +
-                    "如果那个通知里没有按钮，手环只能静音和提醒，无法替你挂断。",
+                "QQ 来电是全屏界面，不会发通知；开启无障碍后，手环才能识别并点 QQ 的「拒绝」。" +
+                    "微信等其他会发通知的通话仍走通知按钮；通知里没有按钮时只能提醒和静音。",
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         }
     }
+}
+
+/** 无障碍服务是否已在系统设置里启用。 */
+private fun isQqAccessibilityEnabled(context: Context): Boolean {
+    val enabled = Settings.Secure.getInt(
+        context.contentResolver,
+        Settings.Secure.ACCESSIBILITY_ENABLED,
+        0,
+    ) == 1
+    if (!enabled) return false
+    val services = Settings.Secure.getString(
+        context.contentResolver,
+        Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES,
+    ).orEmpty()
+    val component = ComponentName(context, QqCallAccessibilityService::class.java)
+    val full = component.flattenToString()
+    val short = component.flattenToShortString()
+    return services.split(':').any { it.equals(full, true) || it.equals(short, true) }
 }
 
 // ---------------------------------------------------------------------------
